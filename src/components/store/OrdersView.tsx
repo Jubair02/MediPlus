@@ -7,6 +7,7 @@ import {
   LogIn,
   MapPin,
   Package,
+  Printer,
   RefreshCcw,
   Truck,
   XCircle,
@@ -54,6 +55,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { MedImage } from '@/components/store/MedicineCard'
+import { printInvoice } from '@/lib/invoice'
 import { cn } from '@/lib/utils'
 
 const CANCELABLE: OrderStatus[] = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING']
@@ -526,6 +528,21 @@ export default function OrdersView() {
                   )}
                 </div>
               )}
+
+              {/* Actions */}
+              <div className="flex justify-end gap-2 border-t pt-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const ok = printInvoice(detail)
+                    if (!ok) toast.error('Please allow pop-ups to print the invoice')
+                  }}
+                >
+                  <Printer className="size-4" aria-hidden="true" />
+                  Print invoice
+                </Button>
+              </div>
             </>
           )}
         </DialogContent>

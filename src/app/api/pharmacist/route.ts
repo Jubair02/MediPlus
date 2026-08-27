@@ -18,7 +18,8 @@ export async function GET(request: Request) {
     if (resource === 'stats') {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
-      const [pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock] =
+      const in90Days = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+      const [pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount] =
         await Promise.all([
           db.prescription.count({ where: { status: 'PENDING' } }),
           db.prescription.count({ where: { status: 'APPROVED', updatedAt: { gte: todayStart } } }),
@@ -32,9 +33,16 @@ export async function GET(request: Request) {
             orderBy: { stock: 'asc' },
             take: 10,
           }),
+          db.medicine.findMany({
+            where: { status: 'ACTIVE', expiryDate: { not: null, lte: in90Days } },
+            include: { category: true },
+            orderBy: { expiryDate: 'asc' },
+            take: 10,
+          }),
+          db.medicine.count({ where: { status: 'ACTIVE', expiryDate: { not: null, lte: in90Days } } }),
         ])
       return Response.json({
-        stats: { pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock },
+        stats: { pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount },
       })
     }
 

@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { FileWarning, Pill, ShoppingCart } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import { FileWarning, Heart, Pill, ShoppingCart } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
@@ -26,6 +26,11 @@ export function MedImage({
 }) {
   const [failed, setFailed] = useState(false)
 
+  // Catch images that failed BEFORE React attached onError (hydration race)
+  const imgRef = useCallback((node: HTMLImageElement | null) => {
+    if (node && node.complete && node.naturalWidth === 0) setFailed(true)
+  }, [])
+
   if (!src || failed) {
     return (
       <div
@@ -40,6 +45,7 @@ export function MedImage({
 
   return (
     <img
+      ref={imgRef}
       src={src}
       alt={alt}
       loading="lazy"
@@ -74,6 +80,32 @@ export async function addToCart(medicine: Medicine, quantity = 1): Promise<boole
   }
 }
 
+/**
+ * Shared wishlist toggle (used by MedicineCard + MedicineDetailModal).
+ * Resolves to the new "in wishlist" state, or null when not signed in.
+ */
+export async function toggleWishlist(medicineId: string): Promise<boolean | null> {
+  const { user, setAuthOpen, toggleWishlistId } = useAppStore.getState()
+  if (!user) {
+    setAuthOpen(true)
+    toast.info('Please sign in to save favourites')
+    return null
+  }
+  try {
+    const d = await api<{ ids: string[]; added: boolean }>('/api/wishlist', {
+      method: 'POST',
+      body: { medicineId },
+    })
+    useAppStore.getState().setWishlistIds(d.ids)
+    toggleWishlistId(medicineId, d.added)
+    toast.success(d.added ? 'Saved to your wishlist' : 'Removed from wishlist')
+    return d.added
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : 'Failed to update wishlist')
+    return null
+  }
+}
+
 const stockToneClass: Record<string, string> = {
   in: 'text-emerald-600',
   low: 'text-amber-600',
@@ -91,6 +123,15 @@ export default function MedicineCard({
   const pct = discountPercent(medicine)
   const stock = stockLabel(medicine.stock)
   const out = medicine.stock <= 0
+  const wishlisted = useAppStore((s) => s.wishlistIds.includes(medicine.id))
+
+  const onHeart = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation()
+      void toggleWishlist(medicine.id)
+    },
+    [medicine.id]
+  )
 
   return (
     <Card
@@ -131,6 +172,21 @@ export default function MedicineCard({
             </span>
           </div>
         )}
+        <button
+          type="button"
+          aria-label={wishlisted ? `Remove ${medicine.name} from wishlist` : `Save ${medicine.name} to wishlist`}
+          aria-pressed={wishlisted}
+          onClick={onHeart}
+          className="absolute bottom-2 right-2 z-10 flex size-9 items-center justify-center rounded-full bg-white/90 shadow-md backdrop-blur transition hover:scale-110 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Heart
+            className={cn(
+              'size-4 transition-colors',
+              wishlisted ? 'fill-red-500 text-red-500' : 'text-gray-500'
+            )}
+            aria-hidden="true"
+          />
+        </button>
       </div>
 
       {/* Body */}

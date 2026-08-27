@@ -9,6 +9,7 @@ import Footer from '@/components/store/Footer'
 import HomeView from '@/components/store/HomeView'
 import CatalogView from '@/components/store/CatalogView'
 import CartView from '@/components/store/CartView'
+import WishlistView from '@/components/store/WishlistView'
 import CheckoutView from '@/components/store/CheckoutView'
 import OrdersView from '@/components/store/OrdersView'
 import PrescriptionsView from '@/components/store/PrescriptionsView'
@@ -23,14 +24,18 @@ export default function Page() {
   const view = useAppStore((s) => s.view)
   const user = useAppStore((s) => s.user)
   const setCartCount = useAppStore((s) => s.setCartCount)
+  const setWishlistIds = useAppStore((s) => s.setWishlistIds)
 
-  // Refresh cart badge on first load when logged in
+  // Refresh cart badge + wishlist on first load when logged in
   useEffect(() => {
     if (!user) return
     api<{ items: unknown[] }>('/api/cart')
       .then((d) => setCartCount(d.items.length))
       .catch(() => {})
-  }, [user, setCartCount])
+    api<{ ids: string[] }>('/api/wishlist')
+      .then((d) => setWishlistIds(d.ids))
+      .catch(() => {})
+  }, [user, setCartCount, setWishlistIds])
 
   // Scroll to top on view change
   useEffect(() => {
@@ -43,6 +48,8 @@ export default function Page() {
         return <CatalogView />
       case 'cart':
         return <CartView />
+      case 'wishlist':
+        return <WishlistView />
       case 'checkout':
         return <CheckoutView />
       case 'orders':

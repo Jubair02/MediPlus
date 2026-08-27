@@ -47,6 +47,11 @@ export interface CartItem {
   medicine: Medicine
 }
 
+export interface WishlistItem {
+  id: string
+  medicine: Medicine
+}
+
 export interface Prescription {
   id: string
   image: string
@@ -145,6 +150,8 @@ export interface PharmacistStats {
   lowStockCount: number
   prescriptionMedicines: number
   lowStock: Medicine[]
+  expiringSoon: Medicine[]
+  expiringSoonCount: number
 }
 
 export interface NotificationItem {

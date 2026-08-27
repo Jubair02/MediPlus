@@ -9,6 +9,7 @@ export type View =
   | 'home'
   | 'catalog'
   | 'cart'
+  | 'wishlist'
   | 'checkout'
   | 'orders'
   | 'prescriptions'
@@ -34,6 +35,7 @@ interface AppState {
   view: View
   authOpen: boolean
   cartCount: number
+  wishlistIds: string[]
   detailMedicine: Medicine | null
   filters: CatalogFilters
   successOrderNo: string | null
@@ -44,6 +46,8 @@ interface AppState {
   setView: (view: View) => void
   setAuthOpen: (open: boolean) => void
   setCartCount: (n: number) => void
+  setWishlistIds: (ids: string[]) => void
+  toggleWishlistId: (id: string, added: boolean) => void
   setDetailMedicine: (m: Medicine | null) => void
   setFilters: (f: Partial<CatalogFilters>) => void
   resetFilters: () => void
@@ -67,6 +71,7 @@ export const useAppStore = create<AppState>()(
       view: 'home',
       authOpen: false,
       cartCount: 0,
+      wishlistIds: [],
       detailMedicine: null,
       filters: defaultFilters,
       successOrderNo: null,
@@ -77,12 +82,17 @@ export const useAppStore = create<AppState>()(
       },
       logout: () => {
         setToken(null)
-        set({ user: null, view: 'home', cartCount: 0, successOrderNo: null })
+        set({ user: null, view: 'home', cartCount: 0, wishlistIds: [], successOrderNo: null })
       },
       setUser: (user) => set({ user }),
       setView: (view) => set({ view }),
       setAuthOpen: (authOpen) => set({ authOpen }),
       setCartCount: (cartCount) => set({ cartCount }),
+      setWishlistIds: (wishlistIds) => set({ wishlistIds }),
+      toggleWishlistId: (id, added) =>
+        set((s) => ({
+          wishlistIds: added ? [...s.wishlistIds, id] : s.wishlistIds.filter((w) => w !== id),
+        })),
       setDetailMedicine: (detailMedicine) => set({ detailMedicine }),
       setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
       resetFilters: () => set({ filters: defaultFilters }),

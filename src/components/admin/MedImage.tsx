@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Pill } from 'lucide-react'
 
 interface MedImageProps {
@@ -12,6 +12,11 @@ interface MedImageProps {
 /** Medicine/prescription image with a gradient + Pill fallback when missing or broken. */
 export default function MedImage({ src, alt, className = '' }: MedImageProps) {
   const [failed, setFailed] = useState(false)
+
+  // Catch images that failed BEFORE React attached onError (hydration race)
+  const imgRef = useCallback((node: HTMLImageElement | null) => {
+    if (node && node.complete && node.naturalWidth === 0) setFailed(true)
+  }, [])
 
   if (!src || failed) {
     return (
@@ -26,6 +31,6 @@ export default function MedImage({ src, alt, className = '' }: MedImageProps) {
   }
 
   return (
-    <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />
+    <img ref={imgRef} src={src} alt={alt} className={className} onError={() => setFailed(true)} />
   )
 }

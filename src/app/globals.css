@@ -80,36 +80,36 @@
 
 .dark {
   --background: oklch(0.17 0.02 175);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --foreground: oklch(0.96 0.01 165);
+  --card: oklch(0.215 0.025 172);
+  --card-foreground: oklch(0.96 0.01 165);
+  --popover: oklch(0.215 0.025 172);
+  --popover-foreground: oklch(0.96 0.01 165);
+  --primary: oklch(0.72 0.14 165);
+  --primary-foreground: oklch(0.16 0.03 170);
+  --secondary: oklch(0.28 0.035 170);
+  --secondary-foreground: oklch(0.96 0.01 165);
+  --muted: oklch(0.27 0.03 172);
+  --muted-foreground: oklch(0.72 0.02 170);
+  --accent: oklch(0.3 0.05 168);
+  --accent-foreground: oklch(0.96 0.01 165);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.72 0.14 165);
+  --chart-1: oklch(0.72 0.14 165);
+  --chart-2: oklch(0.75 0.14 155);
+  --chart-3: oklch(0.78 0.13 190);
+  --chart-4: oklch(0.8 0.14 110);
+  --chart-5: oklch(0.72 0.13 65);
+  --sidebar: oklch(0.195 0.025 172);
+  --sidebar-foreground: oklch(0.96 0.01 165);
+  --sidebar-primary: oklch(0.72 0.14 165);
+  --sidebar-primary-foreground: oklch(0.16 0.03 170);
+  --sidebar-accent: oklch(0.3 0.05 168);
+  --sidebar-accent-foreground: oklch(0.96 0.01 165);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.72 0.14 165);
 }
 
 @layer base {
@@ -166,4 +166,65 @@
 
 .med-gradient {
   background: linear-gradient(135deg, oklch(0.96 0.04 168), oklch(0.93 0.06 152));
+}
+
+/* ---------- Dark-mode adaptation for tone badges & light surfaces ----------
+   Many small components use Tailwind light-tone utilities (bg-emerald-100 /
+   text-emerald-800 etc). These scoped overrides keep them legible in dark mode
+   without touching every component. */
+.dark .med-gradient {
+  background: linear-gradient(135deg, oklch(0.3 0.05 170), oklch(0.26 0.07 160));
+}
+.dark .bg-emerald-100 {
+  background-color: oklch(0.35 0.06 165 / 0.55);
+}
+.dark .bg-amber-100 {
+  background-color: oklch(0.35 0.06 75 / 0.5);
+}
+.dark .bg-red-100 {
+  background-color: oklch(0.35 0.08 25 / 0.45);
+}
+.dark .bg-gray-100 {
+  background-color: oklch(0.32 0.02 170 / 0.5);
+}
+.dark .text-emerald-800,
+.dark .text-emerald-700 {
+  color: oklch(0.85 0.13 165);
+}
+.dark .text-amber-800,
+.dark .text-amber-700,
+.dark .text-amber-950 {
+  color: oklch(0.86 0.12 80);
+}
+.dark .text-red-800,
+.dark .text-red-700 {
+  color: oklch(0.84 0.12 22);
+}
+.dark .text-gray-600 {
+  color: oklch(0.75 0.01 170);
+}
+.dark .text-emerald-950 {
+  color: oklch(0.93 0.02 168);
+}
+.dark .text-emerald-900\/80,
+.dark .text-emerald-900\/90 {
+  color: oklch(0.85 0.04 168 / 0.85);
+}
+.dark .bg-white\/60 {
+  background-color: oklch(0.28 0.03 170 / 0.5);
+}
+.dark .bg-white\/70 {
+  background-color: oklch(0.3 0.04 168 / 0.7);
+}
+.dark .hover\:bg-white:hover {
+  background-color: oklch(0.28 0.03 170 / 0.8);
+}
+.dark .bg-white\/90 {
+  background-color: oklch(0.28 0.03 170 / 0.92);
+}
+.dark .border-emerald-700\/30 {
+  border-color: oklch(0.72 0.14 165 / 0.35);
+}
+.dark .bg-emerald-950 {
+  background-color: oklch(0.14 0.03 172);
 }

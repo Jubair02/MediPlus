@@ -1,18 +1,22 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useTheme } from 'next-themes'
 import {
   Bell,
   FileText,
+  Heart,
   Home,
   LayoutDashboard,
   LogIn,
   LogOut,
   Menu,
+  Moon,
   Package,
   Pill,
   Search,
   ShoppingCart,
+  Sun,
   UserRound,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -52,9 +56,27 @@ const ROLE_DASHBOARD: Partial<Record<Role, View>> = {
 const NAV_ITEMS: { view: View; label: string; icon: typeof Home; authOnly?: boolean }[] = [
   { view: 'home', label: 'Home', icon: Home },
   { view: 'catalog', label: 'Medicines', icon: Pill },
+  { view: 'wishlist', label: 'Wishlist', icon: Heart, authOnly: true },
   { view: 'orders', label: 'My Orders', icon: Package, authOnly: true },
   { view: 'prescriptions', label: 'Prescriptions', icon: FileText, authOnly: true },
 ]
+
+function ThemeToggle() {
+  const { setTheme, resolvedTheme } = useTheme()
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="size-11"
+      aria-label="Toggle dark mode"
+      onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+    >
+      {/* CSS-driven swap avoids hydration mismatch — .dark class lives on <html> */}
+      <Moon className="size-5 dark:hidden" aria-hidden="true" />
+      <Sun className="hidden size-5 dark:block" aria-hidden="true" />
+    </Button>
+  )
+}
 
 function NavLinks({
   user,
@@ -75,7 +97,7 @@ function NavLinks({
           type="button"
           onClick={() => go(n.view)}
           className={cn(
-            'flex min-h-11 items-center rounded-md text-sm transition-colors hover:text-primary',
+            'flex min-h-11 items-center whitespace-nowrap rounded-md text-sm transition-colors hover:text-primary',
             stacked ? 'w-full gap-2 px-3 text-left' : 'px-3 py-2',
             view === n.view ? 'font-semibold text-primary' : 'text-muted-foreground'
           )}
@@ -117,6 +139,7 @@ export default function Header() {
   const user = useAppStore((s) => s.user)
   const view = useAppStore((s) => s.view)
   const cartCount = useAppStore((s) => s.cartCount)
+  const wishlistCount = useAppStore((s) => s.wishlistIds.length)
   const filters = useAppStore((s) => s.filters)
   const setView = useAppStore((s) => s.setView)
   const setFilters = useAppStore((s) => s.setFilters)
@@ -260,6 +283,30 @@ export default function Header() {
 
         {/* Right actions */}
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2 md:ml-2">
+          {/* Theme toggle */}
+          <ThemeToggle />
+
+          {/* Wishlist (icon-only, logged in only) */}
+          {user && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative size-11"
+              onClick={() => setView('wishlist')}
+              aria-label={`Wishlist, ${wishlistCount} saved`}
+            >
+              <Heart
+                className={cn('size-5', wishlistCount > 0 && 'fill-red-500 text-red-500')}
+                aria-hidden="true"
+              />
+              {wishlistCount > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex size-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                  {wishlistCount > 9 ? '9+' : wishlistCount}
+                </span>
+              )}
+            </Button>
+          )}
+
           {/* Cart */}
           <Button
             variant="outline"
@@ -376,6 +423,10 @@ export default function Header() {
                         : 'Delivery dashboard'}
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem onClick={() => setView('wishlist')}>
+                  <Heart className="size-4" aria-hidden="true" />
+                  My Wishlist
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setView('orders')}>
                   <Package className="size-4" aria-hidden="true" />
                   My Orders

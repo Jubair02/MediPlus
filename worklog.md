@@ -134,3 +134,33 @@ Work Log:
 Stage Summary:
 - MVP COMPLETE: all 4 role flows work end-to-end in the browser. Auth (JWT), catalog, cart, coupons, prescription gate, checkout (COD + bKash demo), order lifecycle, delivery assignment, notifications, admin CRUD + reports.
 - Pending: 16 images regenerating in background (fallback safe), demo data intact, dev server healthy on port 3000.
+
+---
+Task ID: 4 (webDevReview round 2)
+Agent: main (Z.ai Code)
+Task: QA pass, bug fixes, dark mode, wishlist, expiring-soon panel, printable invoice
+
+Work Log (Current project status):
+- QA via agent-browser found 1 real bug: MedImage hydration race — images that 404'd BEFORE React attached onError rendered as broken (hero). Fixed in all 3 MedImage copies (store/MedicineCard.tsx, admin/MedImage.tsx, pharmacist/MedImage.tsx) with a ref callback checking `complete && naturalWidth===0` on mount.
+- Nav "My Orders" wrapped to 2 lines → added whitespace-nowrap.
+- Stale-state incidents: (1) dev server held OLD Prisma client after WishlistItem model push → /api/wishlist 500 'Cannot read properties of undefined (reading findMany)'; old next-server (PID survived bun wrapper kill) kept serving stale code + stale Turbopack CSS cache (same CSS chunk hash pre/post restart). FIX: kill next dev + next-server tree, `rm -rf .next`, restart `bun run dev`. Lesson for future rounds: after prisma db push, restart next-server properly (kill `next dev` AND `next-server` PIDs, clear .next if CSS looks stale).
+
+Work Log (New features):
+- WISHLIST (full stack): Prisma WishlistItem model (unique userId+medicineId, cascade); /api/wishlist GET(list+ids)/POST(toggle)/DELETE; store: wishlistIds + toggleWishlistId + 'wishlist' View; MedicineCard heart button (fill-red when saved, works for guests → auth prompt); WishlistView (skeletons, empty state, add-all-in-stock-to-cart, live sync when unhearting from cards); header heart w/ count badge + nav link + dropdown item.
+- DARK MODE: next-themes ThemeProvider in layout (class attribute, light default); CSS-driven Sun/Moon toggle in header (no hydration mismatch); new dark palette (emerald-tinted dark surfaces, oklch); scoped `.dark` overrides in globals.css remap tone badges (bg-emerald-100/amber-100/red-100/gray-100, text-*), white overlays (white/60|70|90), med-gradient → coherent dark equivalents across ALL components without touching each file.
+- PHARMACIST EXPIRING-SOON: /api/pharmacist stats now include expiringSoon (ACTIVE, expiry ≤ 90d, asc, take 10) + expiringSoonCount; PharmacistOverview shows 'Expiring within 90 days' card with day-countdown badges (red ≤30d/'Expired', amber ≤90d); seeded 5 medicines with near/expired dates (Savoy -5d, Torex 20d, Cef-3 45d, Amoxin 75d, Fungin 85d).
+- PRINTABLE INVOICE: src/lib/invoice.ts — standalone print window with branded layout (logo, order meta w/ payment+status, billed-to, delivery staff, coupon, items table w/ Rx marks, totals, footer); 'Print invoice' button in customer order detail dialog; popup blocked → error toast.
+
+Work Log (Verification results):
+- ESLint full src: 0 problems. tsc src/: clean.
+- Wishlist API cycle tested via curl (add → list 1 → remove). Browser: hearted 3 items → badge '3', wishlist view renders, unheart from card → '2 saved', add-all-in-stock → cart 2.
+- Dark mode verified across home/catalog/pharmacist dashboards (dark hero, legible outline buttons, badges readable).
+- Invoice popup opened (tab 'Invoice MP-100006') with correct PAID/DELIVERED data, ৳ totals, items table.
+- Expiring panel shows Expired/20d/45d/75d/85d badges correctly.
+- Images: 35/35 generated (hero needed 1344x768 — API rejects non-32-multiple sizes like 1440x720).
+- Final: fresh light-mode home with real hero photo, catalog with real product photos, 27 medicines.
+
+Stage Summary:
+- App is feature-complete for MVP + wishlist + dark mode + expiry tracking + invoices. All roles verified again post-changes.
+- Risks/notes: Turbopack cache can serve stale CSS after heavy edits (rm -rf .next fixes); Prisma model additions REQUIRE next-server restart (kill both PIDs); z-ai image sizes must be 32-multiples within 512-2880px.
+- Next round suggestions: customer-side 'recommended/expiring-soon discount' automation, order prescription re-upload on reject, admin export CSV reports, email/SMS-style notification center page, stock movement audit log, product Q&A, or multi-image medicine gallery.

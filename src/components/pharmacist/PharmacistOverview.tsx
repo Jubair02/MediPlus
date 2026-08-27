@@ -1,7 +1,7 @@
 'use client'
 
-import { AlertTriangle, CheckCircle2, FileCheck, Pill, RefreshCw, XCircle } from 'lucide-react'
-import { fmtBDT } from '@/lib/format'
+import { AlertTriangle, CalendarClock, CheckCircle2, FileCheck, Pill, RefreshCw, XCircle } from 'lucide-react'
+import { fmtBDT, fmtDate } from '@/lib/format'
 import type { PharmacistStats } from '@/lib/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -170,6 +170,59 @@ export default function PharmacistOverview({
                   )}
                 </li>
               ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Expiring soon list (<= 90 days) */}
+      <Card className="p-4">
+        <CardHeader className="p-0 pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <CalendarClock className="h-4 w-4 text-amber-500" /> Expiring within 90 days
+          </CardTitle>
+          <CardDescription>Plan promotions or returns before expiry</CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          {(stats.expiringSoon ?? []).length === 0 ? (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              No medicines nearing expiry in the next 90 days.
+            </div>
+          ) : (
+            <ul className="max-h-96 space-y-2 overflow-y-auto scrollbar-thin">
+              {stats.expiringSoon.map((m) => {
+                const days = m.expiryDate ? Math.ceil((new Date(m.expiryDate).getTime() - Date.now()) / 86400000) : null
+                const soon = days !== null && days <= 30
+                return (
+                  <li
+                    key={m.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border p-2.5 transition-colors hover:bg-accent/50"
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-amber-500/10">
+                        <Pill className="h-4 w-4 text-amber-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{m.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {m.category?.name ?? 'Uncategorized'} · {fmtBDT(m.price)} · expires {fmtDate(m.expiryDate)}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={
+                        soon
+                          ? 'border-red-300 bg-red-100 text-red-800'
+                          : 'border-amber-300 bg-amber-100 text-amber-800'
+                      }
+                    >
+                      {days !== null && days < 0 ? 'Expired' : `${days}d left`}
+                    </Badge>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </CardContent>
