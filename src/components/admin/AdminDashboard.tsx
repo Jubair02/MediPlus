@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Pill,
   ShoppingBag,
+  Ticket,
   Users,
   type LucideIcon,
 } from 'lucide-react'
@@ -19,6 +20,7 @@ import AdminOverview from './AdminOverview'
 import AdminOrders from './AdminOrders'
 import AdminMedicines from './AdminMedicines'
 import AdminCategories from './AdminCategories'
+import AdminCoupons from './AdminCoupons'
 import AdminUsers from './AdminUsers'
 import AdminStaff from './AdminStaff'
 import AdminReports from './AdminReports'
@@ -28,6 +30,7 @@ type AdminTab =
   | 'orders'
   | 'medicines'
   | 'categories'
+  | 'coupons'
   | 'users'
   | 'staff'
   | 'reports'
@@ -37,6 +40,7 @@ const NAV: { id: AdminTab; label: string; icon: LucideIcon }[] = [
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
   { id: 'medicines', label: 'Medicines', icon: Pill },
   { id: 'categories', label: 'Categories', icon: FolderTree },
+  { id: 'coupons', label: 'Coupons', icon: Ticket },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'staff', label: 'Staff', icon: BriefcaseMedical },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
@@ -47,6 +51,7 @@ const TITLES: Record<AdminTab, { title: string; subtitle: string }> = {
   orders: { title: 'Orders', subtitle: 'Confirm, assign delivery staff and track every order' },
   medicines: { title: 'Medicines', subtitle: 'Manage the catalog, pricing and stock levels' },
   categories: { title: 'Categories', subtitle: 'Organize the catalog into departments' },
+  coupons: { title: 'Coupons', subtitle: 'Create discount campaigns and track redemptions' },
   users: { title: 'Users', subtitle: 'Accounts, roles and access control' },
   staff: { title: 'Staff', subtitle: 'Pharmacists and delivery personnel' },
   reports: { title: 'Reports', subtitle: 'Sales and performance analytics' },
@@ -141,6 +146,7 @@ export default function AdminDashboard() {
           {activeTab === 'orders' && <AdminOrders />}
           {activeTab === 'medicines' && <AdminMedicines />}
           {activeTab === 'categories' && <AdminCategories />}
+          {activeTab === 'coupons' && <AdminCoupons />}
           {activeTab === 'users' && <AdminUsers />}
           {activeTab === 'staff' && <AdminStaff />}
           {activeTab === 'reports' && <AdminReports />}

@@ -1,0 +1,630 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useRef, useState } from 'react'
+     4→import {
+     5→  Banknote,
+     6→  CheckCircle2,
+     7→  FileText,
+     8→  FileWarning,
+     9→  ImagePlus,
+    10→  Loader2,
+    11→  LogIn,
+    12→  MapPin,
+    13→  Plus,
+    14→  ShoppingBag,
+    15→  Smartphone,
+    16→  Tag,
+    17→  X,
+    18→} from 'lucide-react'
+    19→import { toast } from 'sonner'
+    20→import { api, fileToCompressedDataUrl } from '@/lib/api'
+    21→import { useAppStore } from '@/lib/store'
+    22→import { DELIVERY_FEE, effectivePrice, fmtBDT, fmtDate } from '@/lib/format'
+    23→import type { Address, CartItem, CouponInfo, Order, PaymentMethod, Prescription } from '@/lib/types'
+    24→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    25→import { Badge } from '@/components/ui/badge'
+    26→import { Button } from '@/components/ui/button'
+    27→import { Card } from '@/components/ui/card'
+    28→import {
+    29→  Dialog,
+    30→  DialogContent,
+    31→  DialogDescription,
+    32→  DialogHeader,
+    33→  DialogTitle,
+    34→} from '@/components/ui/dialog'
+    35→import { Input } from '@/components/ui/input'
+    36→import { Label } from '@/components/ui/label'
+    37→import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+    38→import { Separator } from '@/components/ui/separator'
+    39→import { Skeleton } from '@/components/ui/skeleton'
+    40→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    41→import { Textarea } from '@/components/ui/textarea'
+    42→import AddressFormDialog from '@/components/store/AddressFormDialog'
+    43→import { cn } from '@/lib/utils'
+    44→
+    45→const FREE_DELIVERY_THRESHOLD = 2000
+    46→
+    47→export default function CheckoutView() {
+    48→  const user = useAppStore((s) => s.user)
+    49→  const setView = useAppStore((s) => s.setView)
+    50→  const setAuthOpen = useAppStore((s) => s.setAuthOpen)
+    51→  const setCartCount = useAppStore((s) => s.setCartCount)
+    52→  const setSuccessOrderNo = useAppStore((s) => s.setSuccessOrderNo)
+    53→
+    54→  const [ready, setReady] = useState(false)
+    55→  const [cartItems, setCartItems] = useState<CartItem[] | null>(null)
+    56→  const [addresses, setAddresses] = useState<Address[]>([])
+    57→  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null)
+    58→  const [addressDialogOpen, setAddressDialogOpen] = useState(false)
+    59→
+    60→  const [approvedRx, setApprovedRx] = useState<Prescription[]>([])
+    61→  const [selectedRxId, setSelectedRxId] = useState<string | null>(null)
+    62→  const [upload, setUpload] = useState<{ image: string; note: string } | null>(null)
+    63→  const [processingFile, setProcessingFile] = useState(false)
+    64→  const fileInputRef = useRef<HTMLInputElement>(null)
+    65→
+    66→  const [coupon, setCoupon] = useState<CouponInfo | null>(null)
+    67→  const [couponInput, setCouponInput] = useState('')
+    68→  const [applyingCoupon, setApplyingCoupon] = useState(false)
+    69→
+    70→  const [payment, setPayment] = useState<PaymentMethod>('COD')
+    71→  const [placing, setPlacing] = useState(false)
+    72→  const [placedOrder, setPlacedOrder] = useState<Order | null>(null)
+    73→
+    74→  // ---------- initial load ----------
+    75→  useEffect(() => {
+    76→    if (!user) return
+    77→    const ac = new AbortController()
+    78→    const load = async () => {
+    79→      try {
+    80→        const [cartRes, addrRes] = await Promise.all([
+    81→          api<{ items: CartItem[] }>('/api/cart', { signal: ac.signal }),
+    82→          api<{ addresses: Address[] }>('/api/addresses', { signal: ac.signal }),
+    83→        ])
+    84→        if (ac.signal.aborted) return
+    85→        setCartItems(cartRes.items)
+    86→        setCartCount(cartRes.items.length)
+    87→        setAddresses(addrRes.addresses)
+    88→        const preferred = addrRes.addresses.find((a) => a.isDefault) ?? addrRes.addresses[0]
+    89→        if (preferred?.id) setSelectedAddressId(preferred.id)
+    90→
+    91→        if (cartRes.items.some((i) => i.medicine.requiresPrescription)) {
+    92→          const rxRes = await api<{ prescriptions: Prescription[] }>('/api/prescriptions', {
+    93→            signal: ac.signal,
+    94→          })
+    95→          if (ac.signal.aborted) return
+    96→          const approved = rxRes.prescriptions.filter((p) => p.status === 'APPROVED')
+    97→          setApprovedRx(approved)
+    98→          if (approved[0]?.id) setSelectedRxId(approved[0].id)
+    99→        }
+   100→      } catch (err) {
+   101→        if (!ac.signal.aborted) {
+   102→          toast.error(err instanceof Error ? err.message : 'Failed to load checkout')
+   103→        }
+   104→      } finally {
+   105→        if (!ac.signal.aborted) setReady(true)
+   106→      }
+   107→    }
+   108→    void load()
+   109→    return () => ac.abort()
+   110→  }, [user, setCartCount])
+   111→
+   112→  // ---------- guard: signed out ----------
+   113→  if (!user) {
+   114→    return (
+   115→      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
+   116→        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
+   117→          <LogIn className="size-8 text-primary" aria-hidden="true" />
+   118→        </span>
+   119→        <h1 className="mt-4 text-xl font-bold">Sign in to checkout</h1>
+   120→        <p className="mt-1 text-sm text-muted-foreground">
+   121→          You need an account to place an order and track its delivery.
+   122→        </p>
+   123→        <Button className="mt-6 h-11 rounded-xl" onClick={() => setAuthOpen(true)}>
+   124→          <LogIn className="size-4" aria-hidden="true" />
+   125→          Sign in
+   126→        </Button>
+   127→      </div>
+   128→    )
+   129→  }
+   130→
+   131→  const needsRx = (cartItems ?? []).some((i) => i.medicine.requiresPrescription)
+   132→  const subtotal = (cartItems ?? []).reduce(
+   133→    (sum, i) => sum + effectivePrice(i.medicine) * i.quantity,
+   134→    0
+   135→  )
+   136→  const discount = coupon?.discount ?? 0
+   137→  const deliveryFee = subtotal >= FREE_DELIVERY_THRESHOLD ? 0 : DELIVERY_FEE
+   138→  const total = Math.max(0, subtotal - discount) + deliveryFee
+   139→  const rxReady = !needsRx || selectedRxId != null || !!upload?.image
+   140→  const canPlace =
+   141→    ready && (cartItems?.length ?? 0) > 0 && !!selectedAddressId && rxReady && !placing
+   142→
+   143→  // ---------- actions ----------
+   144→  const onPickFile = async (file: File | undefined) => {
+   145→    if (!file) return
+   146→    setProcessingFile(true)
+   147→    try {
+   148→      const dataUrl = await fileToCompressedDataUrl(file)
+   149→      setUpload({ image: dataUrl, note: '' })
+   150→      setSelectedRxId(null)
+   151→    } catch (err) {
+   152→      toast.error(err instanceof Error ? err.message : 'Could not read that image')
+   153→    } finally {
+   154→      setProcessingFile(false)
+   155→      if (fileInputRef.current) fileInputRef.current.value = ''
+   156→    }
+   157→  }
+   158→
+   159→  const applyCoupon = async () => {
+   160→    const code = couponInput.trim()
+   161→    if (!code) return
+   162→    setApplyingCoupon(true)
+   163→    try {
+   164→      const d = await api<{ coupon: CouponInfo }>('/api/coupons', {
+   165→        method: 'POST',
+   166→        body: { code, subtotal },
+   167→      })
+   168→      setCoupon(d.coupon)
+   169→      toast.success(`Coupon ${d.coupon.code} applied — you save ${fmtBDT(d.coupon.discount)}`)
+   170→    } catch (err) {
+   171→      toast.error(err instanceof Error ? err.message : 'Invalid coupon')
+   172→    } finally {
+   173→      setApplyingCoupon(false)
+   174→    }
+   175→  }
+   176→
+   177→  const placeOrder = async () => {
+   178→    if (!canPlace) return
+   179→    setPlacing(true)
+   180→    try {
+   181→      const body: Record<string, unknown> = {
+   182→        paymentMethod: payment,
+   183→        ...(coupon ? { couponCode: coupon.code } : {}),
+   184→      }
+   185→      if (selectedAddressId) body.addressId = selectedAddressId
+   186→      if (needsRx) {
+   187→        if (upload?.image) {
+   188→          body.prescription = { image: upload.image, note: upload.note.trim() || undefined }
+   189→        } else if (selectedRxId) {
+   190→          body.prescriptionId = selectedRxId
+   191→        }
+   192→      }
+   193→      const d = await api<{ order: Order }>('/api/orders', { method: 'POST', body })
+   194→      setPlacedOrder(d.order)
+   195→      setSuccessOrderNo(d.order.orderNo)
+   196→      setCartCount(0)
+   197→    } catch (err) {
+   198→      toast.error(err instanceof Error ? err.message : 'Failed to place order')
+   199→    } finally {
+   200→      setPlacing(false)
+   201→    }
+   202→  }
+   203→
+   204→  const addressSaved = (a: Address) => {
+   205→    setAddresses((prev) => {
+   206→      const exists = prev.some((p) => p.id === a.id)
+   207→      const next = exists ? prev.map((p) => (p.id === a.id ? a : p)) : [...prev, a]
+   208→      return a.isDefault ? next.map((p) => ({ ...p, isDefault: p.id === a.id })) : next
+   209→    })
+   210→    if (a.id) setSelectedAddressId(a.id)
+   211→  }
+   212→
+   213→  // ---------- loading skeleton ----------
+   214→  if (!ready) {
+   215→    return (
+   216→      <div className="mx-auto max-w-6xl px-4 py-8 lg:px-6">
+   217→        <Skeleton className="mb-6 h-8 w-56" />
+   218→        <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
+   219→          <div className="space-y-4">
+   220→            {Array.from({ length: 3 }).map((_, i) => (
+   221→              <Skeleton key={i} className="h-40 rounded-xl" />
+   222→            ))}
+   223→          </div>
+   224→          <Skeleton className="h-80 rounded-xl" />
+   225→        </div>
+   226→      </div>
+   227→    )
+   228→  }
+   229→
+   230→  // ---------- empty cart ----------
+   231→  if (!cartItems || cartItems.length === 0) {
+   232→    return (
+   233→      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
+   234→        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
+   235→          <ShoppingBag className="size-8 text-primary" aria-hidden="true" />
+   236→        </span>
+   237→        <h1 className="mt-4 text-xl font-bold">Nothing to check out</h1>
+   238→        <p className="mt-1 text-sm text-muted-foreground">
+   239→          Your cart is empty — add some medicines first.
+   240→        </p>
+   241→        <Button className="mt-6 h-11 rounded-xl" onClick={() => setView('catalog')}>
+   242→          Browse medicines
+   243→        </Button>
+   244→      </div>
+   245→    )
+   246→  }
+   247→
+   248→  return (
+   249→    <div className="mx-auto max-w-6xl px-4 pb-16 pt-6 lg:px-6">
+   250→      <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Checkout</h1>
+   251→
+   252→      <div className="mt-6 grid items-start gap-6 lg:grid-cols-[1fr_22rem]">
+   253→        {/* ---------- Left column ---------- */}
+   254→        <div className="space-y-6">
+   255→          {/* 1. Delivery address */}
+   256→          <Card className="gap-4 p-5 shadow-sm">
+   257→            <div className="flex items-center justify-between gap-3">
+   258→              <h2 className="flex items-center gap-2 font-semibold">
+   259→                <MapPin className="size-4 text-primary" aria-hidden="true" />
+   260→                Delivery address
+   261→              </h2>
+   262→              <Button
+   263→                variant="outline"
+   264→                size="sm"
+   265→                className="h-9 gap-1.5 rounded-lg"
+   266→                onClick={() => setAddressDialogOpen(true)}
+   267→              >
+   268→                <Plus className="size-4" aria-hidden="true" />
+   269→                Add new
+   270→              </Button>
+   271→            </div>
+   272→
+   273→            {addresses.length === 0 ? (
+   274→              <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+   275→                No saved addresses yet — add one so we know where to deliver.
+   276→              </p>
+   277→            ) : (
+   278→              <div role="radiogroup" aria-label="Delivery address" className="grid gap-3 sm:grid-cols-2">
+   279→                {addresses.map((a) => {
+   280→                  const selected = selectedAddressId === a.id
+   281→                  return (
+   282→                    <button
+   283→                      key={a.id}
+   284→                      type="button"
+   285→                      role="radio"
+   286→                      aria-checked={selected}
+   287→                      onClick={() => a.id && setSelectedAddressId(a.id)}
+   288→                      className={cn(
+   289→                        'rounded-xl border p-4 text-left transition-all',
+   290→                        selected
+   291→                          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+   292→                          : 'shadow-sm hover:border-primary/40'
+   293→                      )}
+   294→                    >
+   295→                      <div className="flex items-center gap-2">
+   296→                        <Badge variant="secondary" className="rounded-md">
+   297→                          {a.label}
+   298→                        </Badge>
+   299→                        {a.isDefault && (
+   300→                          <Badge className="rounded-md bg-emerald-100 text-emerald-700">Default</Badge>
+   301→                        )}
+   302→                      </div>
+   303→                      <p className="mt-2 text-sm font-semibold">{a.recipient}</p>
+   304→                      <p className="text-xs text-muted-foreground">{a.phone}</p>
+   305→                      <p className="mt-1 text-sm leading-snug">
+   306→                        {a.line1}
+   307→                        {a.area ? `, ${a.area}` : ''}, {a.city}
+   308→                        {a.postcode ? ` ${a.postcode}` : ''}
+   309→                      </p>
+   310→                    </button>
+   311→                  )
+   312→                })}
+   313→              </div>
+   314→            )}
+   315→          </Card>
+   316→
+   317→          {/* 2. Prescription (only when cart contains Rx medicines) */}
+   318→          {needsRx && (
+   319→            <Card className="gap-4 p-5 shadow-sm">
+   320→              <h2 className="flex items-center gap-2 font-semibold">
+   321→                <FileWarning className="size-4 text-amber-600" aria-hidden="true" />
+   322→                Prescription
+   323→              </h2>
+   324→              <Alert className="border-amber-300 bg-amber-50 text-amber-900">
+   325→                <FileWarning className="size-4 text-amber-600" aria-hidden="true" />
+   326→                <AlertTitle>Pharmacist approval required</AlertTitle>
+   327→                <AlertDescription className="text-amber-800">
+   328→                  Your prescription must be approved by a licensed pharmacist before your order is
+   329→                  processed.
+   330→                </AlertDescription>
+   331→              </Alert>
+   332→
+   333→              <Tabs defaultValue="select">
+   334→                <TabsList className="w-full sm:w-auto">
+   335→                  <TabsTrigger value="select">Select approved</TabsTrigger>
+   336→                  <TabsTrigger value="upload">Upload new</TabsTrigger>
+   337→                </TabsList>
+   338→
+   339→                <TabsContent value="select" className="mt-3">
+   340→                  {approvedRx.length === 0 ? (
+   341→                    <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+   342→                      You have no approved prescriptions yet. Upload a new one — a pharmacist will
+   343→                      review it shortly.
+   344→                    </p>
+   345→                  ) : (
+   346→                    <div role="radiogroup" aria-label="Approved prescriptions" className="grid gap-2">
+   347→                      {approvedRx.map((p) => {
+   348→                        const selected = selectedRxId === p.id
+   349→                        return (
+   350→                          <button
+   351→                            key={p.id}
+   352→                            type="button"
+   353→                            role="radio"
+   354→                            aria-checked={selected}
+   355→                            onClick={() => {
+   356→                              setSelectedRxId(p.id)
+   357→                              setUpload(null)
+   358→                            }}
+   359→                            className={cn(
+   360→                              'flex items-center gap-3 rounded-xl border p-3 text-left transition-all',
+   361→                              selected
+   362→                                ? 'border-primary bg-primary/5 ring-1 ring-primary'
+   363→                                : 'shadow-sm hover:border-primary/40'
+   364→                            )}
+   365→                          >
+   366→                            <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+   367→                              <FileText className="size-5 text-primary" aria-hidden="true" />
+   368→                            </span>
+   369→                            <span className="min-w-0 flex-1">
+   370→                              <span className="block text-sm font-medium">
+   371→                                Prescription · {fmtDate(p.createdAt)}
+   372→                              </span>
+   373→                              <span className="block truncate text-xs text-muted-foreground">
+   374→                                {p.note || 'No note attached'}
+   375→                              </span>
+   376→                            </span>
+   377→                          </button>
+   378→                        )
+   379→                      })}
+   380→                    </div>
+   381→                  )}
+   382→                </TabsContent>
+   383→
+   384→                <TabsContent value="upload" className="mt-3">
+   385→                  <input
+   386→                    ref={fileInputRef}
+   387→                    type="file"
+   388→                    accept="image/*"
+   389→                    className="hidden"
+   390→                    onChange={(e) => void onPickFile(e.target.files?.[0])}
+   391→                  />
+   392→                  {upload?.image ? (
+   393→                    <div className="space-y-3">
+   394→                      <img
+   395→                        src={upload.image}
+   396→                        alt="Prescription preview"
+   397→                        className="max-h-48 w-auto rounded-lg border"
+   398→                      />
+   399→                      <Textarea
+   400→                        placeholder="Note for the pharmacist (optional)"
+   401→                        value={upload.note}
+   402→                        onChange={(e) => setUpload((u) => (u ? { ...u, note: e.target.value } : u))}
+   403→                        className="min-h-20"
+   404→                      />
+   405→                    </div>
+   406→                  ) : (
+   407→                    <button
+   408→                      type="button"
+   409→                      onClick={() => fileInputRef.current?.click()}
+   410→                      className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-6 text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+   411→                    >
+   412→                      {processingFile ? (
+   413→                        <Loader2 className="size-6 animate-spin text-primary" aria-hidden="true" />
+   414→                      ) : (
+   415→                        <ImagePlus className="size-6 text-primary" aria-hidden="true" />
+   416→                      )}
+   417→                      {processingFile ? 'Processing image…' : 'Tap to choose a prescription photo'}
+   418→                    </button>
+   419→                  )}
+   420→                </TabsContent>
+   421→              </Tabs>
+   422→            </Card>
+   423→          )}
+   424→
+   425→          {/* 3. Payment */}
+   426→          <Card className="gap-4 p-5 shadow-sm">
+   427→            <h2 className="font-semibold">Payment method</h2>
+   428→            <RadioGroup
+   429→              value={payment}
+   430→              onValueChange={(v) => setPayment(v as PaymentMethod)}
+   431→              className="gap-3"
+   432→            >
+   433→              <div
+   434→                className={cn(
+   435→                  'flex items-start gap-3 rounded-xl border p-4 transition-colors',
+   436→                  payment === 'COD' ? 'border-primary bg-primary/5' : 'shadow-sm'
+   437→                )}
+   438→              >
+   439→                <RadioGroupItem value="COD" id="pay-cod" className="mt-0.5" />
+   440→                <label htmlFor="pay-cod" className="flex-1 cursor-pointer">
+   441→                  <span className="flex items-center gap-2 text-sm font-medium">
+   442→                    <Banknote className="size-4 text-primary" aria-hidden="true" />
+   443→                    Cash on Delivery
+   444→                  </span>
+   445→                  <span className="mt-0.5 block text-sm text-muted-foreground">
+   446→                    Pay when you receive your order
+   447→                  </span>
+   448→                </label>
+   449→              </div>
+   450→              <div
+   451→                className={cn(
+   452→                  'flex items-start gap-3 rounded-xl border p-4 transition-colors',
+   453→                  payment === 'BKASH_DEMO' ? 'border-primary bg-primary/5' : 'shadow-sm'
+   454→                )}
+   455→              >
+   456→                <RadioGroupItem value="BKASH_DEMO" id="pay-bkash" className="mt-0.5" />
+   457→                <label htmlFor="pay-bkash" className="flex-1 cursor-pointer">
+   458→                  <span className="flex items-center gap-2 text-sm font-medium">
+   459→                    <Smartphone className="size-4 text-primary" aria-hidden="true" />
+   460→                    bKash (Demo)
+   461→                  </span>
+   462→                  <span className="mt-0.5 block text-sm text-muted-foreground">
+   463→                    Instant demo payment — auto-marked as paid
+   464→                  </span>
+   465→                </label>
+   466→              </div>
+   467→            </RadioGroup>
+   468→          </Card>
+   469→        </div>
+   470→
+   471→        {/* ---------- Right column: summary ---------- */}
+   472→        <Card className="sticky top-28 gap-0 p-5 shadow-sm">
+   473→          <h2 className="font-semibold">Order summary</h2>
+   474→          <Separator className="my-4" />
+   475→
+   476→          <ul className="max-h-40 space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+   477→            {cartItems.map((i) => (
+   478→              <li key={i.id} className="flex items-start justify-between gap-3 text-sm">
+   479→                <span className="min-w-0">
+   480→                  <span className="line-clamp-1">{i.medicine.name}</span>
+   481→                  <span className="text-xs text-muted-foreground">× {i.quantity}</span>
+   482→                </span>
+   483→                <span className="shrink-0 font-medium">
+   484→                  {fmtBDT(effectivePrice(i.medicine) * i.quantity)}
+   485→                </span>
+   486→              </li>
+   487→            ))}
+   488→          </ul>
+   489→
+   490→          <Separator className="my-4" />
+   491→
+   492→          {/* Coupon */}
+   493→          {coupon ? (
+   494→            <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm">
+   495→              <span className="flex min-w-0 items-center gap-1.5 text-emerald-800">
+   496→                <Tag className="size-3.5 shrink-0" aria-hidden="true" />
+   497→                <span className="truncate font-semibold">{coupon.code}</span>
+   498→                <span>− {fmtBDT(coupon.discount)}</span>
+   499→              </span>
+   500→              <button
+   501→                type="button"
+   502→                aria-label="Remove coupon"
+   503→                className="flex size-6 shrink-0 items-center justify-center rounded-full text-emerald-700 hover:bg-emerald-100"
+   504→                onClick={() => setCoupon(null)}
+   505→              >
+   506→                <X className="size-3.5" aria-hidden="true" />
+   507→              </button>
+   508→            </div>
+   509→          ) : (
+   510→            <div className="flex items-center gap-2">
+   511→              <Input
+   512→                value={couponInput}
+   513→                onChange={(e) => setCouponInput(e.target.value)}
+   514→                placeholder="Coupon code"
+   515→                aria-label="Coupon code"
+   516→                className="h-11 uppercase"
+   517→              />
+   518→              <Button
+   519→                variant="outline"
+   520→                className="h-11 shrink-0 rounded-xl"
+   521→                disabled={!couponInput.trim() || applyingCoupon}
+   522→                onClick={() => void applyCoupon()}
+   523→              >
+   524→                {applyingCoupon ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : 'Apply'}
+   525→              </Button>
+   526→            </div>
+   527→          )}
+   528→
+   529→          <div className="mt-4 space-y-2 text-sm">
+   530→            <div className="flex items-center justify-between">
+   531→              <span className="text-muted-foreground">Subtotal</span>
+   532→              <span className="font-medium">{fmtBDT(subtotal)}</span>
+   533→            </div>
+   534→            {discount > 0 && (
+   535→              <div className="flex items-center justify-between">
+   536→                <span className="text-muted-foreground">Discount</span>
+   537→                <span className="font-medium text-emerald-600">− {fmtBDT(discount)}</span>
+   538→              </div>
+   539→            )}
+   540→            <div className="flex items-center justify-between">
+   541→              <span className="text-muted-foreground">Delivery fee</span>
+   542→              {deliveryFee === 0 ? (
+   543→                <Badge className="rounded-md bg-emerald-100 text-emerald-700">FREE</Badge>
+   544→              ) : (
+   545→                <span className="font-medium">{fmtBDT(deliveryFee)}</span>
+   546→              )}
+   547→            </div>
+   548→            <Separator className="my-3" />
+   549→            <div className="flex items-center justify-between text-base">
+   550→              <span className="font-semibold">Total</span>
+   551→              <span className="font-extrabold text-primary">{fmtBDT(total)}</span>
+   552→            </div>
+   553→          </div>
+   554→
+   555→          {needsRx && !rxReady && (
+   556→            <Alert className="mt-4 border-amber-300 bg-amber-50 text-amber-900">
+   557→              <FileWarning className="size-4 text-amber-600" aria-hidden="true" />
+   558→              <AlertDescription className="text-amber-800">
+   559→                Select an approved prescription or upload a new one to place your order.
+   560→              </AlertDescription>
+   561→            </Alert>
+   562→          )}
+   563→          {!selectedAddressId && (
+   564→            <p className="mt-3 text-xs font-medium text-amber-600">
+   565→              Select or add a delivery address to continue.
+   566→            </p>
+   567→          )}
+   568→
+   569→          <Button
+   570→            className="mt-5 h-11 w-full rounded-xl"
+   571→            disabled={!canPlace}
+   572→            onClick={() => void placeOrder()}
+   573→          >
+   574→            {placing && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+   575→            {placing ? 'Placing order…' : 'Place order'}
+   576→          </Button>
+   577→        </Card>
+   578→      </div>
+   579→
+   580→      {/* Add address dialog */}
+   581→      <AddressFormDialog
+   582→        open={addressDialogOpen}
+   583→        onOpenChange={setAddressDialogOpen}
+   584→        onSaved={addressSaved}
+   585→      />
+   586→
+   587→      {/* Success dialog */}
+   588→      <Dialog open={!!placedOrder} onOpenChange={(open) => !open && setPlacedOrder(null)}>
+   589→        <DialogContent className="sm:max-w-sm">
+   590→          <DialogHeader>
+   591→            <div className="mx-auto flex flex-col items-center gap-3 text-center">
+   592→              <CheckCircle2 className="size-16 text-emerald-500" aria-hidden="true" />
+   593→              <DialogTitle className="text-xl">Order placed successfully!</DialogTitle>
+   594→              <DialogDescription>
+   595→                Order no: <span className="font-mono font-semibold text-foreground">{placedOrder?.orderNo}</span>
+   596→              </DialogDescription>
+   597→              {needsRx && placedOrder && (
+   598→                <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+   599→                  Your prescription will be reviewed by a licensed pharmacist before dispatch.
+   600→                </p>
+   601→              )}
+   602→            </div>
+   603→          </DialogHeader>
+   604→          <div className="flex flex-col gap-2">
+   605→            <Button
+   606→              className="h-11 w-full rounded-xl"
+   607→              onClick={() => {
+   608→                setPlacedOrder(null)
+   609→                setView('orders')
+   610→              }}
+   611→            >
+   612→              Track my order
+   613→            </Button>
+   614→            <Button
+   615→              variant="outline"
+   616→              className="h-11 w-full rounded-xl"
+   617→              onClick={() => {
+   618→                setPlacedOrder(null)
+   619→                setView('home')
+   620→              }}
+   621→            >
+   622→              Continue shopping
+   623→            </Button>
+   624→          </div>
+   625→        </DialogContent>
+   626→      </Dialog>
+   627→    </div>
+   628→  )
+   629→}
+   630→

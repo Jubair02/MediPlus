@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
-import { notFound, serverError } from '@/lib/auth'
+import { getAuthUser, notFound, serverError } from '@/lib/auth'
 import { numParam } from '../_lib'
 
 function effective(m: { price: number; discountPrice: number | null }): number {
@@ -33,6 +33,7 @@ function withRatings<T extends { id: string }>(medicine: T, ratings: Map<string,
 
 /**
  * GET /api/medicines?id=<id>            → single ACTIVE medicine (include category)
+ * GET /api/medicines?recommended=true&limit=4 → personalized picks from order history (auth) with top-rated fallback
  * GET /api/medicines?search&category&minPrice&maxPrice&rxOnly&sort&featured&page&limit
  */
 export async function GET(request: Request) {
@@ -44,6 +45,55 @@ export async function GET(request: Request) {
       if (!medicine || medicine.status !== 'ACTIVE') return notFound('Medicine not found')
       const ratings = await ratingsFor([medicine.id])
       return Response.json({ medicine: withRatings(medicine, ratings) })
+    }
+
+    // ---- recommended for you: history-driven picks, top-rated fallback ----
+    if (sp.get('recommended') === 'true') {
+      const take = Math.min(8, Math.max(1, Math.trunc(numParam(sp.get('limit')) ?? 4)))
+      const user = await getAuthUser(request)
+
+      let picks: Prisma.MedicineGetPayload<{ include: { category: true } }>[] = []
+      if (user) {
+        const orders = await db.order.findMany({
+          where: { userId: user.id, status: { not: 'CANCELLED' } },
+          select: { items: { select: { medicineId: true } } },
+        })
+        const orderedIds = [...new Set(orders.flatMap((o) => o.items.map((it) => it.medicineId).filter((x): x is string => !!x)))]
+        if (orderedIds.length > 0) {
+          const orderedMeds = await db.medicine.findMany({ where: { id: { in: orderedIds } }, select: { categoryId: true } })
+          const categoryIds = [...new Set(orderedMeds.map((m) => m.categoryId).filter((x): x is string => !!x))]
+          if (categoryIds.length > 0) {
+            picks = await db.medicine.findMany({
+              where: { status: 'ACTIVE', categoryId: { in: categoryIds }, id: { notIn: orderedIds } },
+              include: { category: true },
+              orderBy: { createdAt: 'desc' },
+              take,
+            })
+          }
+        }
+      }
+
+      if (picks.length === 0) {
+        // fallback (guest / no history / no matches): top-rated actives — same scoring as ?sort=rating
+        picks = await db.medicine.findMany({ where: { status: 'ACTIVE' }, include: { category: true } })
+        const groups = await db.review.groupBy({
+          by: ['medicineId'],
+          _avg: { rating: true },
+          _count: { _all: true },
+        })
+        const score = new Map(
+          groups.map((g) => {
+            const avg = g._avg.rating ?? 0
+            const count = g._count._all
+            return [g.medicineId, avg > 0 ? avg + Math.min(1, count / 10) : -1] as const
+          })
+        )
+        picks.sort((a, b) => (score.get(b.id) ?? -1) - (score.get(a.id) ?? -1))
+        picks = picks.slice(0, take)
+      }
+
+      const ratings = await ratingsFor(picks.map((m) => m.id))
+      return Response.json({ medicines: picks.map((m) => withRatings(m, ratings)) })
     }
 
     const search = sp.get('search')?.trim()

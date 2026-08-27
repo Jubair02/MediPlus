@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError, hashPassword } from '@/lib/auth'
 import {
@@ -39,6 +40,101 @@ function round1(n: number): number {
 
 function csvRow(values: unknown[]): string {
   return values.map(escapeCsv).join(',')
+}
+
+// ---------- coupons (validation shared by create / update) ----------
+
+const COUPON_CODE_RE = /^[A-Z0-9_-]{1,20}$/ // trimmed + uppercased before test
+
+interface CouponWriteData {
+  code?: string
+  type?: string
+  value?: number
+  minAmount?: number
+  maxDiscount?: number | null
+  expiresAt?: Date | null
+  isActive?: boolean
+}
+
+/**
+ * Validate a coupon payload. mode 'create' requires code/type/value; mode 'update'
+ * validates only the provided fields, using `existing` for cross-field checks
+ * (e.g. value ≤ 90 is judged against the row's resulting type).
+ */
+function parseCouponInput(raw: unknown, mode: 'create'): { error: string } | { data: CouponWriteData & { code: string; type: string; value: number } }
+function parseCouponInput(raw: unknown, mode: 'update', existing: { type: string }): { error: string } | { data: CouponWriteData }
+function parseCouponInput(
+  raw: unknown,
+  mode: 'create' | 'update',
+  existing?: { type: string } | null
+): { error: string } | { data: CouponWriteData } {
+  if (typeof raw !== 'object' || raw === null) {
+    return { error: mode === 'create' ? 'Coupon data is required' : 'Nothing to update' }
+  }
+  const d = raw as Record<string, unknown>
+  const data: CouponWriteData = {}
+
+  if (d.code !== undefined || mode === 'create') {
+    const code = typeof d.code === 'string' ? d.code.trim().toUpperCase() : ''
+    if (!code) return { error: 'Coupon code is required' }
+    if (!COUPON_CODE_RE.test(code)) return { error: 'Code must be 1-20 characters using A-Z, 0-9, "_" or "-"' }
+    data.code = code
+  }
+
+  // effective type = provided type, else the row's current type (for cross-field checks on update)
+  const effectiveType = d.type !== undefined ? d.type : existing?.type
+  if (d.type !== undefined || mode === 'create') {
+    if (d.type !== 'PERCENT' && d.type !== 'FIXED') return { error: 'Type must be PERCENT or FIXED' }
+    data.type = d.type
+  }
+
+  if (d.value !== undefined || mode === 'create') {
+    const value = numOr(d.value, NaN)
+    if (!Number.isFinite(value) || value <= 0) return { error: 'Value must be greater than 0' }
+    if (effectiveType === 'PERCENT' && value > 90) return { error: 'Percent value cannot exceed 90' }
+    data.value = round2(value)
+  }
+
+  if (d.minAmount !== undefined) {
+    const minAmount = numOr(d.minAmount, NaN)
+    if (!Number.isFinite(minAmount) || minAmount < 0) return { error: 'Minimum amount must be 0 or greater' }
+    data.minAmount = round2(minAmount)
+  }
+
+  if (d.maxDiscount !== undefined) {
+    if (d.maxDiscount === null || d.maxDiscount === '') {
+      data.maxDiscount = null
+    } else {
+      const maxDiscount = numOr(d.maxDiscount, NaN)
+      if (!Number.isFinite(maxDiscount) || maxDiscount <= 0) return { error: 'Max discount must be greater than 0' }
+      if (effectiveType !== 'PERCENT') return { error: 'Max discount is only allowed for PERCENT coupons' }
+      data.maxDiscount = round2(maxDiscount)
+    }
+  }
+
+  if (d.expiresAt !== undefined) {
+    if (d.expiresAt === null || d.expiresAt === '') {
+      data.expiresAt = null
+    } else if (typeof d.expiresAt === 'string') {
+      const dt = new Date(d.expiresAt)
+      if (Number.isNaN(dt.getTime())) return { error: 'Invalid expiry date' }
+      const dayStart = new Date(dt)
+      dayStart.setHours(0, 0, 0, 0)
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      if (dayStart < todayStart) return { error: 'Expiry date cannot be in the past' }
+      data.expiresAt = dt
+    } else {
+      return { error: 'Invalid expiry date' }
+    }
+  }
+
+  if (d.isActive !== undefined) {
+    if (typeof d.isActive !== 'boolean') return { error: 'isActive must be true or false' }
+    data.isActive = d.isActive
+  }
+
+  return { data }
 }
 
 /** Shared data source for the reports view and the export-report CSV (same shape as GET ?resource=reports). */
@@ -113,7 +209,7 @@ async function reportData(days: number) {
   return { salesByDay, categorySales, topMedicines, lowStock }
 }
 
-/** GET /api/admin?resource=stats|users|medicines|categories|orders|staff|reports */
+/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports */
 export async function GET(request: Request) {
   try {
     const user = await requireRole(request, ['ADMIN'])
@@ -143,6 +239,8 @@ export async function GET(request: Request) {
         recentOrdersRaw,
         totalReviews,
         reviewAgg,
+        activeCoupons,
+        couponRedemptions,
       ] = await Promise.all([
         db.user.count({ where: { role: 'CUSTOMER' } }),
         db.order.count({ where: { status: notCancelled } }),
@@ -166,6 +264,8 @@ export async function GET(request: Request) {
         db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'desc' }, take: 8 }),
         db.review.count(),
         db.review.aggregate({ _avg: { rating: true } }),
+        db.coupon.count({ where: { isActive: true } }),
+        db.order.count({ where: { status: notCancelled, couponCode: { not: null } } }),
       ])
 
       // revenue by day (last 7 days)
@@ -217,6 +317,8 @@ export async function GET(request: Request) {
           recentOrders: recentOrdersRaw.map((o) => parseOrder(o, { prescriptionImage: true })),
           totalReviews,
           avgRating: reviewAgg._avg.rating == null ? null : round1(reviewAgg._avg.rating),
+          activeCoupons,
+          couponRedemptions,
         },
       })
     }
@@ -293,6 +395,38 @@ export async function GET(request: Request) {
       }
       const orders = await db.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' } })
       return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+    }
+
+    if (resource === 'coupons') {
+      const [coupons, usage] = await Promise.all([
+        db.coupon.findMany({ orderBy: { createdAt: 'desc' } }),
+        // one grouped pass: order count + Σ discount per couponCode over non-cancelled orders
+        db.order.groupBy({
+          by: ['couponCode'],
+          where: { couponCode: { not: null }, status: { not: 'CANCELLED' } },
+          _count: { _all: true },
+          _sum: { discount: true },
+        }),
+      ])
+      const usageByCode = new Map(usage.map((g) => [g.couponCode as string, g]))
+      return Response.json({
+        coupons: coupons.map((c) => {
+          const u = usageByCode.get(c.code)
+          return {
+            id: c.id,
+            code: c.code,
+            type: c.type,
+            value: c.value,
+            minAmount: c.minAmount,
+            maxDiscount: c.maxDiscount,
+            isActive: c.isActive,
+            expiresAt: c.expiresAt,
+            createdAt: c.createdAt,
+            usedCount: u?._count._all ?? 0,
+            discountAmount: round2(u?._sum.discount ?? 0),
+          }
+        }),
+      })
     }
 
     if (resource === 'staff') {
@@ -408,6 +542,9 @@ export async function GET(request: Request) {
  *  {action:'create-category'|'update-category'|'delete-category', ...}
  *  {action:'update-order', id, status?, deliveryStaffId?}
  *  {action:'create-staff', data:{name,email,password,phone?,role}}
+ *  {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}}
+ *  {action:'update-coupon', id, coupon:{...partial coupon fields}}
+ *  {action:'delete-coupon', id}
  */
 export async function PUT(request: Request) {
   try {
@@ -535,6 +672,49 @@ export async function PUT(request: Request) {
       const existing = await db.category.findUnique({ where: { id } })
       if (!existing) return notFound('Category not found')
       await db.category.delete({ where: { id } })
+      return Response.json({ ok: true })
+    }
+
+    // ---- coupons ----
+    if (action === 'create-coupon') {
+      const parsed = parseCouponInput(body.coupon, 'create')
+      if ('error' in parsed) return badRequest(parsed.error)
+      try {
+        const coupon = await db.coupon.create({ data: parsed.data })
+        return Response.json({ coupon }, { status: 201 })
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          return badRequest('A coupon with this code already exists')
+        }
+        throw e
+      }
+    }
+
+    if (action === 'update-coupon') {
+      const id = optStr(body.id)
+      if (!id) return badRequest('Coupon id is required')
+      const existing = await db.coupon.findUnique({ where: { id } })
+      if (!existing) return notFound('Coupon not found')
+      const parsed = parseCouponInput(body.coupon, 'update', existing)
+      if ('error' in parsed) return badRequest(parsed.error)
+      try {
+        const coupon = await db.coupon.update({ where: { id }, data: parsed.data })
+        return Response.json({ coupon })
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          return badRequest('A coupon with this code already exists')
+        }
+        throw e
+      }
+    }
+
+    if (action === 'delete-coupon') {
+      const id = optStr(body.id)
+      if (!id) return badRequest('Coupon id is required')
+      const existing = await db.coupon.findUnique({ where: { id } })
+      if (!existing) return notFound('Coupon not found')
+      // Orders store couponCode as a plain string (no relation) — safe to delete
+      await db.coupon.delete({ where: { id } })
       return Response.json({ ok: true })
     }
 

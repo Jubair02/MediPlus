@@ -280,3 +280,133 @@ Stage Summary:
 - Demo data: MP-100008 (cancelled, rejected Rx) drives the re-upload demo; MP-100009/MP-100010 are PRESCRIPTION_REVIEW demo orders created by E2E tests — pharmacist queue shows 3 pending.
 - Risks/notes: movements seeded with reason SEED; review aggregates use groupBy (Prisma relation include only supports _count); CSV export needs auth header (downloaded via fetch→blob, not window.open).
 - Next round ideas: medicine multi-image gallery, product Q&A, delivery staff performance report, bKash-style payment page simulation, admin coupon management CRUD UI, customer 'recommended for you' from order history.
+
+---
+Task ID: 6 (QA round, in progress)
+Agent: main (Z.ai Code)
+Task: Status assessment + agent-browser QA sweep before Round 6
+
+Work Log (QA results — all PASS):
+- Storefront: home hero, categories, deals, top-rated render clean; guest + customer nav OK.
+- Customer flow E2E: login → catalog → add 2 items to cart → cart view → checkout → coupon SAVE10 applied (−৳200 toast) → Place order (COD) → success dialog MP-100011 ✓. No console/page errors.
+- Admin: dashboard 7 stat cards render (5 users/9 orders/৳8,152 revenue/14 reviews ★4.3), welcome toast, sidebar nav OK.
+- Pharmacist: prescriptions queue renders — Pending(3)/Approved(2)/Rejected(1)/All(6) ✓.
+- Delivery: greeting header, stat tiles, active order MP-100002 w/ Mark Delivered / Report Failed actions ✓.
+- ISSUE FOUND (cosmetic, demo data): prescriptions for MP-100009 & MP-100010 (E2E test artifacts) render as solid black/green placeholder images — plan: replace with realistic generated Rx image in Round 6.
+- Confirmed /api/admin?resource=coupons → "Unknown resource": admin coupon CRUD does not exist yet → Round 6 feature.
+
+Assessment: Project STABLE → proceed to Round 6 new features (coupon CRUD, bKash payment simulation, recommended-for-you, styling detail pass).
+
+---
+Task ID: 6-a
+Agent: general-purpose (backend)
+Task: Coupon admin CRUD, recommended-for-you endpoint, Rx demo image polish
+
+Work Log:
+- Admin coupon CRUD in src/app/api/admin/route.ts (owner file; no other src files touched):
+  - GET ?resource=coupons → all coupons newest-first, each with usedCount + discountAmount computed in ONE db.order.groupBy by couponCode (where couponCode != null AND status != CANCELLED) carrying both _count._all and _sum.discount (single grouped pass instead of groupBy+aggregate), mapped onto rows; discountAmount = round2(Σ discount ?? 0).
+  - PUT {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}} → 201 {coupon}. Shared parseCouponInput() validator: code required/trimmed/uppercased, /^[A-Z0-9_-]{1,20}$/; type PERCENT|FIXED; value > 0 (PERCENT ≤ 90); minAmount ≥ 0; maxDiscount > 0 only when PERCENT (null/'' clears); expiresAt ISO parsed, rejected when date < today (same-day allowed), null clears; isActive must be boolean, defaults true via schema. Prisma P2002 → badRequest('A coupon with this code already exists').
+  - PUT {action:'update-coupon', id, coupon:{partial}} → 404 if missing; provided fields validated only, cross-field checks use the row's resulting type (existing passed into validator via 'update' overload, mirroring buildMedicineData pattern); code change collision → P2002 → same badRequest.
+  - PUT {action:'delete-coupon', id} → 404 if missing → {ok:true} (couponCode on orders is a plain string, no FK, safe).
+  - GET/PUT route doc-comments updated to list coupons.
+- Recommended-for-you in src/app/api/medicines/route.ts (owner file): ?recommended=true&limit=N (default 4, clamp 1..8). Reads getAuthUser(request); for authed users: orders (status != CANCELLED) → distinct ordered medicineIds → their categoryIds → ACTIVE medicines where categoryId IN cats AND id NOT IN ordered, include category, orderBy createdAt desc, take limit. Empty result (or guest/no history) → fallback = existing ?sort=rating scoring (avg + min(count/10,1), unrated sink) over all ACTIVE, sliced to limit. Response { medicines:[...] } with rating/ratingCount via ratingsFor/withRatings + category object. All existing branches untouched.
+- Rx demo image polish: loaded image-generation skill, generated ONE 1024x1024 photo via z-ai CLI (handwritten Rx on Bangladeshi clinic letterhead 'Dhanmondi Health Care Clinic, Dhaka', blue scrawl, Rx symbol, 'Tab. Napa Extra 1+0+1' / 'Monas 10' legible, white paper top-down, natural light) → public/images/rx-sample.png (converted to true PNG via sharp; z-ai CLI writes JPEG bytes). New idempotent scripts/fix-rx-images.ts: resolves prescriptionId of orders MP-100009/MP-100010, updates image → '/images/rx-sample.png', skips if already pointing there; re-run = 0 updates. Seeded/real prescriptions untouched (checked first: those two were jpeg data-URL test uploads that rendered as solid placeholders).
+
+Verification (all PASS):
+- bunx eslint src/app/api → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples//skills/ noise elsewhere).
+- curl E2E (admin@medplus.com token): GET ?resource=coupons → SAVE10 usedCount 1 / discountAmount 200 (matches DB: 1 non-cancelled order, Σ discount 200), FIRST50/HEALTH15 0/0 ✓. create-coupon 'test20' → 201 uppercased TEST20; duplicate code → 400 'already exists'; type HALF → 400; PERCENT 95 → 400 'cannot exceed 90'; maxDiscount on FIXED → 400; 'BAD CODE!' / 22-char code → 400; past expiry → 400; today expiry → 201 allowed ✓.
+- update-coupon toggle isActive:false → public POST /api/coupons rejects ('Invalid coupon code'); toggle back + rename TEST20B → 200; rename to colliding code → 400 P2002; update unknown id → 404. delete-coupon → {ok:true} ×3, repeat delete → 404, deleted code publicly rejected ✓.
+- POST /api/coupons with new coupons: TEST20 @subtotal 1000 → 20% = 200 capped at maxDiscount 150 ✓; below minAmount 500 → 'Minimum order ৳500 required' ✓; TESTFIX (FIXED 75, min 100) @100 → discount 75 ✓. All test coupons deleted afterwards; final state = seeded SAVE10/FIRST50/HEALTH15 only.
+- GET /api/medicines?recommended=true&limit=4 as customer@medplus.com (has 7 non-cancelled orders) → exactly 4 (Crepe Bandage/First Aid, Bisocor/Heart & BP, Sodium Bicarbonate + Seclo/Pain Relief) — all ACTIVE, zero overlap with their 9 ordered medicineIds, categories ⊆ history categories, each with rating/ratingCount/category keys ✓. Guest call → top-rated fallback identical to ?sort=rating top-4 (Neuro-B 5(1), Digital BP Monitor 5(1), Napa Extra 4.7(3), Seclo 4.5(2)) ✓; default limit 4; limit=99 capped to 8 ✓.
+- http://localhost:3000/images/rx-sample.png → HTTP 200 image/png 1.05MB; dev.log tail clean (no errors/500s; dev server NOT restarted — no schema change).
+
+Stage Summary (API contracts for frontend agents):
+- GET /api/admin?resource=coupons (ADMIN) → { coupons: [{ id, code, type:'PERCENT'|'FIXED', value, minAmount, maxDiscount: number|null, isActive, expiresAt: string|null, createdAt, usedCount, discountAmount }] } newest first. usedCount = non-cancelled orders using the code; discountAmount = rounded Σ order.discount for those orders.
+- PUT /api/admin (ADMIN) bodies: {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}} → 201 {coupon} (full row; code auto-trimmed+uppercased, expiresAt accepts ISO date, must be today or later); {action:'update-coupon', id, coupon:{...partial}} → 200 {coupon}, 404 'Coupon not found'; {action:'delete-coupon', id} → 200 {ok:true}, 404 on repeat. Errors: 400 {error} incl. 'A coupon with this code already exists' (P2002), 'Type must be PERCENT or FIXED', 'Percent value cannot exceed 90', 'Max discount is only allowed for PERCENT coupons', 'Expiry date cannot be in the past'.
+- GET /api/medicines?recommended=true&limit=4 (limit optional, default 4, max 8; optional Bearer token) → { medicines: [Medicine & { rating:number|null, ratingCount:number, category }] } — personalized (order-history categories, excludes already-ordered, newest first) when signed in with history, else top-rated fallback; same item shape as catalog list (no total/page/pages on this branch).
+
+---
+Task ID: 6-b
+Agent: frontend-styling-expert
+Task: bKash payment simulation dialog + checkout payment UX
+
+Work Log:
+- NEW src/components/store/BkashPayDialog.tsx — controlled 4-phase bKash demo payment dialog (wallet → OTP → confirm&PIN → processing → success) with internal state machine + framer-motion AnimatePresence step slides (180ms, direction-aware slide/fade).
+- Header: pink brand strip (#E2136E→#d10a62 gradient), white 'bKash' logotype (black 'b' + extrabold 'Kash') + 'Payment' label, back arrow (steps 2/3), custom close X (disabled while locked), 3-segment progress bar + 'Step x of 3'; body on semantic card bg (dark-safe), rounded-2xl overflow-hidden max-w-sm p-0.
+- Step 1 wallet: tel input, digits-only state, auto-format '01811 234 567', /^01[3-9]\d{8}$/ validation w/ inline role=alert error (blur or 11-digits), helper 'Demo: any valid BD number works', Continue disabled until valid.
+- Step 2 OTP: dashed amber demo box 'Demo OTP: 12345 (in production this arrives by SMS)' + MessageSquare, 5 single-digit boxes (auto-advance, backspace-back, paste fills across), wrong code → inline error + framer-motion shake (useAnimationControls), 'Resend code' text button with 30s countdown (resets on click and on step re-entry), Verify disabled until 5 digits.
+- Step 3 confirm&PIN: recap card (Merchant MediPlus / wallet / big bold fmtBDT amount), 4-digit password-masked PIN input ('Demo PIN: any 4 digits'), big pink h-12 'Confirm & Pay {fmtBDT(total)}' button.
+- Processing ~1.6s: pink Loader2 + rotating status lines ('Contacting bKash…' → 'Authorizing payment…', aria-live); Success: CheckCircle2 size-16 spring scale-in, 'Payment successful', random 10-char base62 txn id (Bk+8), amount/wallet recap, 'Placing your order…', auto onPaid() after 950ms (closes dialog FIRST, then parent placeOrder() → no double-dialog overlap).
+- A11y: Radix dialog semantics + sr-only Title/Description, aria-labels on all icon buttons & OTP boxes, Escape/interact-outside blocked while locked (processing/success), onFocusOutside always prevented (step transitions unmount focused element — Radix would otherwise auto-abort the payment), flow state resets on reopen via render-phase prop-adjustment pattern (lint-clean, no set-state-in-effect).
+- CheckoutView integration: BKASH_DEMO + canPlace → 'Pay {fmtBDT(total)} with bKash' opens dialog (order NOT placed yet); onPaid → existing placeOrder() unchanged; COD label 'Place order' direct placement; 'Placing order…' loading state kept.
+- Payment section polish: bKash option subtitle → 'Pay instantly with your bKash wallet (demo)' + pink 'bKash' brand badge (bg-[#E2136E] text-white text-[10px] font-bold px-1.5 py-0.5); both COD/bKash cards harmonized to border-primary bg-primary/5 ring-1 ring-primary selected style + transition-all + hover:border-primary/40; heading row gets tiny 'Cash'/'bKash' brand chips; order summary Place button now has ShieldCheck size-3.5 lock note 'SSL encrypted · Demo payments — no real money moves' (text-xs muted, centered); 390px verified no horizontal overflow.
+
+Work Log (Verification results):
+- ESLint src/components/store/{BkashPayDialog,CheckoutView}.tsx: 0 problems. tsc --noEmit src/**: clean. (Note: bunx eslint src/components/store still reports 2 pre-existing react-hooks/set-state-in-effect errors in HomeView.tsx — owned by another agent, not touched.)
+- agent-browser E2E (customer@medplus.com): invalid wallet '12345' rejected w/ inline error; '01811234567' auto-formats '01811 234 567'; wrong OTP 99999 → shake + 'Invalid verification code' alert; 12345 → PIN step shows ৳95 recap; Confirm & Pay → 'Contacting bKash…' → success → auto-close → order success dialog MP-100012; order detail shows bKash (Demo) + PAID, status Confirmed. COD: label reverts to 'Place order', direct placement → MP-100013 (COD, PENDING payment, Confirmed).
+- Dark mode dialog screenshots (steps 1+2): pink header, legible, no glitches (VLM-verified). Mobile 390px: no H-overflow on checkout, wallet & PIN steps. agent-browser errors: empty; dev.log: no errors/warnings.
+- Found+fixed during E2E: Radix Dialog auto-closes when focus escapes during step transitions (AnimatePresence unmounts focused node) — fixed via onFocusOutside preventDefault + focus handoff timed after exit (280ms).
+
+Stage Summary:
+- bKash demo payments now feel like the real app (number → OTP → PIN → processing → success) while the backend still marks Payment PAID with BKASH-DEMO-<ts> transaction ids via the unchanged placeOrder() POST. Orders created during testing (customer@medplus.com): MP-100012 (bKash PAID, ৳95, Vitamin C 500mg Effervescent ×1) and MP-100013 (COD, ৳95, same item) — safe to delete if demo data cleanup is desired.
+
+---
+Task ID: 6-c
+Agent: frontend-styling-expert
+Task: Admin coupons CRUD UI + home recommended section + deals countdown
+
+Work Log:
+- NEW src/components/admin/AdminCoupons.tsx (only file created; matches AdminCategories/AdminMedicines patterns): refresh icon button (spins while fetching) + 'New coupon' primary button toolbar; 4 summary stat cards — Active (emerald, sub-text 'N inactive'), Expired (red, expiresAt < now regardless of isActive), Redemptions (Σ usedCount, teal), Discount given (Σ discountAmount via fmtBDT, amber); table in Card with max-h-[60vh] overflow-auto scrollbar-thin, min-w-[720px], STICKY header (thead sticky top-0 bg-card + hairline shadow), 9 columns: Code (mono bold uppercase), Discount chip (PERCENT → 'N% off' emerald / FIXED → '৳N off' teal), Min order (fmtBDT, '—' when 0), Cap (PERCENT-only maxDiscount or '—'), Expires (fmtDate, 'Never' when null, red 'Expired' mini-badge when past), Used ('N redemptions'), Given (fmtBDT), Active Switch (OPTIMISTIC update via update-coupon {isActive}, revert on error, per-row disabled), Actions (Edit Pencil / Delete Trash2 icon buttons, aria-labels everywhere); skeleton table (header + 4 rows) on first load, error card with Retry button, empty state (Ticket icon + 'No coupons yet' + Create CTA); expired rows muted via opacity-60.
+- Shared create/edit CouponDialog: code input (toUpperCase live, maxLength 20, mono, placeholder SAVE20), type Select (Percentage off / Fixed amount), value number input with visual % / ৳ prefix, minAmount (default 0), maxDiscount shown ONLY for PERCENT (placeholder 'No cap', hint text), expiresAt date input (min=today, optional), isActive Switch edit-only; client validation mirrors server (code ≥3 chars, value > 0, PERCENT ≤ 90, minAmount ≥ 0, maxDiscount > 0 when set); server 400s surfaced via toast.error(err.message) (api helper), dialog stays open; submit shows Loader2 spinner, disabled while pending; titles 'New coupon'/'Edit coupon'.
+- Delete flow: AlertDialog confirm with code-specific copy → delete-coupon → row removed locally + toast 'Coupon ZAZA20 deleted'.
+- AdminDashboard.tsx: 'coupons' added to AdminTab union + NAV (Ticket icon, after categories) + TITLES ('Coupons' / 'Create discount campaigns and track redemptions') + {activeTab === 'coupons' && <AdminCoupons />} render.
+- HomeView.tsx: (a) Deals of the week header now has a LIVE countdown to next Sunday 23:59:59 (nextSundayEnd handles today-is-Sunday before/after 23:59 and week rollover via ref retarget) — 4 tiles Days/Hours/Min/Sec with ':' separators, mono tabular-nums font-bold values on bg-primary/10, compact on mobile (min-w-11/12, text-sm/base), ticks via setInterval 1s with cleanup, initial SSR-safe '--' placeholder then values, tiles aria-hidden + sr-only 'Deals end in …' sentence; (b) NEW 'Recommended for you' section AFTER 'Top rated by customers' — Sparkles icon (text-primary) + subtitle 'Picked from the categories you order most' + outline 'View all' button (resetFilters + setView('catalog')); fetches /api/medicines?recommended=true&limit=4 keyed on user?.id with AbortController; loading state DERIVED from userId key comparison (recState/recErrorFor carry the userId they belong to — no sync setState in effect, passes react-hooks/set-state-in-effect); 4-card MedicineCard grid (grid-cols-2 lg:grid-cols-4) with deal-style skeletons while loading; section renders NOTHING for guests, on error, or when array is empty; (c) category card image hover upgraded to group-hover:scale-105 (was scale-[1.03], overflow-hidden wrapper already present).
+
+Verification (all PASS):
+- bunx eslint on my 3 files → 0 problems; bunx tsc --noEmit → 0 errors under src/ (2 eslint errors exist in src/components/store/BkashPayDialog.tsx — parallel agent's file, not mine; only tsc noise is pre-existing skills/ scaffolding).
+- Browser (agent-browser, isolated session after detecting the default session was shared with the parallel agent): admin login → Coupons tab renders seeded SAVE10 (10% off, min ৳300, cap ৳200, 1 redemption, ৳200 given) / FIRST50 / HEALTH15 with correct stats (Active 3/0 inactive, Expired 0, Redemptions 1, ৳200); created ZAZA20 typed lowercase → stored uppercase PERCENT 20 min 500 → appears; duplicate SAVE10 create → toast 'A coupon with this code already exists' (server 400 surfaced); PERCENT 95 → inline 'Percentage discount cannot exceed 90%'; toggle off → optimistic unchecked + toast, server isActive=false confirmed via curl; edit value 20→25 → row '25% off' + server v=25; toggle on → checked + toast, server active=true; delete → AlertDialog → row gone + toast, final state = 3 seeded coupons only.
+- Customer login → home shows 'Recommended for you' after 'Top rated by customers' with 4 cards (Crepe Bandage, Bisocor 5mg, Sodium Bicarbonate BP, Seclo 20mg — zero overlap with order history, per 6-a endpoint) + Sparkles header + outline View all; guest (storage cleared) → section absent; countdown verified ticking (…30Sec → …28Sec over 2s, '03Days:03Hours' matches Thursday→Sunday) + sr-only text correct.
+- Dark mode + 390px viewport: home overflowX = 0, recommended section fits; admin coupons table scrolls INSIDE max-h-[60vh] overflow-auto wrapper (wrapper 324px, table 720px, page overflowX = 0); VLM screenshot review: no glitches/overlap, columns aligned, coherent dark palette (screenshots: /tmp/admin-coupons-final.png, /tmp/customer-dark.png, /tmp/admin-coupons-390-dark.png, /tmp/customer-recommended-sec.png). agent-browser errors empty; dev.log tail clean (coupon queries 200s, no 500s).
+- nextSundayEnd edge cases unit-checked in node: Sun before/after 23:59:59, Mon 00:00:01 → next Sunday +7d, Sat → +1d (all SUN-OK).
+
+Stage Summary:
+- Coupons are now fully manageable in the admin panel (create/edit/toggle/delete + usage analytics) against 6-a's endpoint, and the storefront has a personalized recommended rail for signed-in users plus a ticking weekly deals countdown. API contract needed NO adjustments — every shape/error message matched 6-a's final implementation (create returns 201 {coupon}, duplicate-code P2002 message, percent ≤ 90, expiry min-today). One session-hygiene note for parallel agents: agent-browser default session was concurrently mutated by another agent (login flips, a bKash dialog opening mid-flow) — use --session <name> for isolation. Deviations (minor): recommended grid uses grid-cols-2 lg:grid-cols-4 (top-rated section is a 2-col list layout, so 'same classes' taken as visual parity for 4 MedicineCards); category hover scale tightened to the requested scale-105.
+
+---
+Task ID: 6 (Round 6 COMPLETE)
+Agent: main (Z.ai Code) + subagents 6-a/6-b/6-c
+Task: Round 6 — QA pass, coupon management, bKash payment simulation, recommended-for-you, styling detail pass
+
+Work Log (Assessment & QA):
+- Full agent-browser sweep (customer/admin/pharmacist/delivery): home, catalog, cart, coupon SAVE10 (−৳200), COD checkout → MP-100011 OK; all 4 dashboards render. Verdict: stable → feature round. One cosmetic issue fixed (see 6-a).
+
+Work Log (6-a backend — general-purpose):
+- Admin coupon CRUD: GET /api/admin?resource=coupons ({coupons:[{...coupon, usedCount, discountAmount}]}, one order.groupBy w/ _count+_sum.discount over non-cancelled orders); PUT actions create-coupon / update-coupon / delete-coupon with validator (code ^[A-Z0-9_-]{1,20}$ auto-uppercase, PERCENT 1-90 / FIXED > 0, minAmount ≥ 0, maxDiscount PERCENT-only > 0, expiresAt not past, P2002 → 'A coupon with this code already exists'). Public POST /api/coupons validate flow untouched.
+- Medicines ?recommended=true&limit=N: optional-auth; user order history → ordered medicineIds + their categoryIds → ACTIVE meds in those categories excluding ordered, else top-rated fallback; response shape identical to list.
+- Demo-data polish: generated realistic Rx photo (public/images/rx-sample.png via z-ai CLI, JPEG→PNG), scripts/fix-rx-images.ts repointed the 2 ugly test prescriptions (MP-100009/MP-100010). Verified in pharmacist UI.
+
+Work Log (6-b frontend — bKash payment simulation):
+- NEW BkashPayDialog.tsx: 4-step state machine (wallet number w/ auto-format + /^01[3-9]\d{8}$/ validation → OTP 5-boxes w/ auto-advance/paste/30s resend countdown, demo code 12345, shake on wrong → PIN step w/ amount recap → processing ~1.6s w/ rotating status → success w/ random txn id, auto onPaid after ~950ms). Pink #E2136E gradient header, 3-seg progress, back arrows, Escape/outside-click blocked while locked, Radix focus-handoff fix (onFocusOutside preventDefault), dark-mode + a11y (sr-only title/desc, aria-labels).
+- CheckoutView: BKASH_DEMO now opens dialog first ('Pay ৳X with bKash'), onPaid → existing placeOrder (backend still marks PAID + BKASH-DEMO-txn); COD unchanged; bKash radio gets pink brand badge + new subtitle; SSL trust note under Place order.
+
+Work Log (6-c frontend — coupons UI + home):
+- NEW AdminCoupons.tsx + AdminDashboard 'coupons' tab (Ticket icon): 4 stat cards (Active/Expired/Redemptions/Discount given), sticky-header table (code mono, %/৳ off chips, min, cap, expiry + Expired badge, used, given, optimistic Active Switch, edit dialog, delete w/ confirm), shared create/edit Dialog (client validation mirrors server, toast errors), skeletons/empty/retry.
+- HomeView: live deals countdown to Sunday 23:59:59 (D/H/M/S mono tiles, 1s tick, SSR-safe); NEW 'Recommended for you' section (Sparkles header, personalized via ?recommended=true, guest/error/empty → hidden); category hover zoom tightened to scale-105.
+
+Work Log (main-agent styling detail pass):
+- Footer: newsletter band (gradient, MailCheck icon, email validation, spinner, success toast) above the 4-col grid.
+- OrdersView detail: pink bKash brand chip next to payment method for BKASH_DEMO orders.
+- Admin stats: +activeCoupons (isActive count) & +couponRedemptions (non-cancelled orders w/ couponCode); AdminOverview 8th 'Active Coupons' rose StatCard (hint 'N redemptions total'); grid 2/3/4-col → even 4×2 on desktop; skeleton 7→8.
+
+Work Log (Verification):
+- bun run lint → 0 problems repo-wide; tsc --noEmit → 0 errors in src/**. agent-browser errors → none; dev.log clean.
+- E2E browser: bKash flow walked end-to-end (invalid number rejected → OTP wrong-then-right → PIN ৳95 → processing → success → order dialog); payment PAID + Confirmed verified via /api/orders; COD still works.
+- Coupons: created MONSOON25 (25%, min 800, cap 400) via UI → server-verified; duplicate rejected w/ toast; deleted → 3 seeded remain. Admin overview: Active Coupons 3 / 1 redemption.
+- Recommended verified customer (4 items, zero overlap w/ history) + guest (hidden section). Rx images now realistic in pharmacist queue.
+- Dark mode + 390px viewport spot-checks pass (no horizontal overflow; bkash dialog + footer newsletter legible in dark).
+- Demo data: kept MP-100011 (COD w/ SAVE10) + MP-100012 (bKash PAID) as payment-variety demos; deleted duplicate test orders MP-100013 (×2, stock restored). Final orders: 10 (MP-100002..MP-100012).
+
+Stage Summary:
+- Round 6 COMPLETE. New capabilities: full coupon marketing CRUD w/ redemption analytics, realistic bKash wallet payment simulation (number→OTP→PIN→success), personalized recommendations, live deals countdown, newsletter signup, coupon stat card, bKash brand chips, realistic Rx demo images.
+- Risks/notes: bKash dialog OTP/PIN are fixed demo values (12345 / any 4 digits) by design; recommended endpoint does 3-4 lightweight queries per call (fine at demo scale); newsletter is client-side demo only (no storage).
+- Next-round ideas: delivery staff performance report in admin, product Q&A, multi-image gallery, stock restock PO suggestions, coupon usage per-order invoice line, customer order-notes field.

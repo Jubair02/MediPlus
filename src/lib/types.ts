@@ -170,6 +170,8 @@ export interface AdminStats {
   recentOrders: Order[]
   totalReviews?: number
   avgRating?: number | null
+  activeCoupons?: number
+  couponRedemptions?: number
 }
 
 export interface PharmacistStats {

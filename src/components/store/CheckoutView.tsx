@@ -11,6 +11,7 @@ import {
   LogIn,
   MapPin,
   Plus,
+  ShieldCheck,
   ShoppingBag,
   Smartphone,
   Tag,
@@ -40,6 +41,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import AddressFormDialog from '@/components/store/AddressFormDialog'
+import BkashPayDialog from '@/components/store/BkashPayDialog'
 import { cn } from '@/lib/utils'
 
 const FREE_DELIVERY_THRESHOLD = 2000
@@ -70,6 +72,7 @@ export default function CheckoutView() {
   const [payment, setPayment] = useState<PaymentMethod>('COD')
   const [placing, setPlacing] = useState(false)
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null)
+  const [bkashOpen, setBkashOpen] = useState(false)
 
   // ---------- initial load ----------
   useEffect(() => {
@@ -424,7 +427,17 @@ export default function CheckoutView() {
 
           {/* 3. Payment */}
           <Card className="gap-4 p-5 shadow-sm">
-            <h2 className="font-semibold">Payment method</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold">Payment method</h2>
+              <div className="flex items-center gap-1.5" aria-hidden="true">
+                <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">
+                  Cash
+                </span>
+                <span className="rounded-md bg-[#E2136E] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  bKash
+                </span>
+              </div>
+            </div>
             <RadioGroup
               value={payment}
               onValueChange={(v) => setPayment(v as PaymentMethod)}
@@ -432,8 +445,10 @@ export default function CheckoutView() {
             >
               <div
                 className={cn(
-                  'flex items-start gap-3 rounded-xl border p-4 transition-colors',
-                  payment === 'COD' ? 'border-primary bg-primary/5' : 'shadow-sm'
+                  'flex items-start gap-3 rounded-xl border p-4 transition-all',
+                  payment === 'COD'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'shadow-sm hover:border-primary/40'
                 )}
               >
                 <RadioGroupItem value="COD" id="pay-cod" className="mt-0.5" />
@@ -449,18 +464,23 @@ export default function CheckoutView() {
               </div>
               <div
                 className={cn(
-                  'flex items-start gap-3 rounded-xl border p-4 transition-colors',
-                  payment === 'BKASH_DEMO' ? 'border-primary bg-primary/5' : 'shadow-sm'
+                  'flex items-start gap-3 rounded-xl border p-4 transition-all',
+                  payment === 'BKASH_DEMO'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'shadow-sm hover:border-primary/40'
                 )}
               >
                 <RadioGroupItem value="BKASH_DEMO" id="pay-bkash" className="mt-0.5" />
                 <label htmlFor="pay-bkash" className="flex-1 cursor-pointer">
-                  <span className="flex items-center gap-2 text-sm font-medium">
+                  <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
                     <Smartphone className="size-4 text-primary" aria-hidden="true" />
                     bKash (Demo)
+                    <span className="rounded bg-[#E2136E] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                      bKash
+                    </span>
                   </span>
                   <span className="mt-0.5 block text-sm text-muted-foreground">
-                    Instant demo payment — auto-marked as paid
+                    Pay instantly with your bKash wallet (demo)
                   </span>
                 </label>
               </div>
@@ -569,11 +589,25 @@ export default function CheckoutView() {
           <Button
             className="mt-5 h-11 w-full rounded-xl"
             disabled={!canPlace}
-            onClick={() => void placeOrder()}
+            onClick={() => {
+              if (payment === 'BKASH_DEMO') {
+                setBkashOpen(true)
+              } else {
+                void placeOrder()
+              }
+            }}
           >
             {placing && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
-            {placing ? 'Placing order…' : 'Place order'}
+            {placing
+              ? 'Placing order…'
+              : payment === 'BKASH_DEMO'
+                ? `Pay ${fmtBDT(total)} with bKash`
+                : 'Place order'}
           </Button>
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+            <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
+            SSL encrypted · Demo payments — no real money moves
+          </p>
         </Card>
       </div>
 
@@ -582,6 +616,14 @@ export default function CheckoutView() {
         open={addressDialogOpen}
         onOpenChange={setAddressDialogOpen}
         onSaved={addressSaved}
+      />
+
+      {/* bKash demo payment dialog — onPaid fires after it closes, then placeOrder() runs */}
+      <BkashPayDialog
+        open={bkashOpen}
+        onOpenChange={setBkashOpen}
+        amount={total}
+        onPaid={() => void placeOrder()}
       />
 
       {/* Success dialog */}

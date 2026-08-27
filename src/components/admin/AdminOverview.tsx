@@ -22,6 +22,7 @@ import {
   FileCheck,
   MessageSquareHeart,
   ShoppingBag,
+  Ticket,
   Users,
   type LucideIcon,
 } from 'lucide-react'
@@ -103,8 +104,8 @@ function StatCard({ icon: Icon, bgClass, iconClass, label, value, hint }: StatCa
 function OverviewSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        {[...Array(7)].map((_, i) => (
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+        {[...Array(8)].map((_, i) => (
           <Skeleton key={i} className="h-32 w-full rounded-xl" />
         ))}
       </div>
@@ -165,7 +166,7 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
         <StatCard
           icon={Users}
           bgClass="bg-emerald-100"
@@ -225,6 +226,14 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
               ? `★ ${stats.avgRating.toFixed(1)} average rating`
               : 'No reviews yet'
           }
+        />
+        <StatCard
+          icon={Ticket}
+          bgClass="bg-rose-100"
+          iconClass="text-rose-600"
+          label="Active Coupons"
+          value={String(stats.activeCoupons ?? 0)}
+          hint={`${stats.couponRedemptions ?? 0} redemptions total`}
         />
       </div>
 

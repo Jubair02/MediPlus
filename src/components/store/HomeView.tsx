@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   BadgeCheck,
@@ -8,6 +8,7 @@ import {
   FileCheck,
   FileText,
   ShieldCheck,
+  Sparkles,
   Star,
   Truck,
   UploadCloud,
@@ -36,6 +37,52 @@ const rxSteps = [
   { icon: BadgeCheck, title: 'Confirmed & delivered', desc: 'Order processed and shipped' },
 ]
 
+/** End of the next upcoming Sunday (23:59:59.999) — today counts if Sunday hasn't ended yet */
+function nextSundayEnd(from: Date): Date {
+  const end = new Date(from)
+  end.setHours(23, 59, 59, 999)
+  const daysUntilSunday = (7 - from.getDay()) % 7
+  if (daysUntilSunday === 0 && from.getTime() <= end.getTime()) return end
+  end.setDate(end.getDate() + (daysUntilSunday === 0 ? 7 : daysUntilSunday))
+  return end
+}
+
+function useDealsCountdown() {
+  const [remaining, setRemaining] = useState<number | null>(null)
+  const targetRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const compute = () => nextSundayEnd(new Date()).getTime()
+    if (targetRef.current === null) targetRef.current = compute()
+    const tick = () => {
+      let target = targetRef.current ?? compute()
+      if (target - Date.now() <= 0) {
+        target = compute() // week rolled over — target next Sunday
+        targetRef.current = target
+      }
+      setRemaining(Math.max(0, target - Date.now()))
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  return remaining
+}
+
+function CountdownTile({ label, value }: { label: string; value: number | null }) {
+  return (
+    <span className="flex min-w-11 flex-col items-center rounded-lg bg-primary/10 px-1.5 py-1 sm:min-w-12 sm:px-2">
+      <span className="font-mono text-sm font-bold leading-none tabular-nums text-primary sm:text-base">
+        {value === null ? '--' : String(value).padStart(2, '0')}
+      </span>
+      <span className="mt-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground sm:text-[10px]">
+        {label}
+      </span>
+    </span>
+  )
+}
+
 export default function HomeView() {
   const user = useAppStore((s) => s.user)
   const setView = useAppStore((s) => s.setView)
@@ -47,6 +94,13 @@ export default function HomeView() {
   const [categories, setCategories] = useState<Category[] | null>(null)
   const [deals, setDeals] = useState<Medicine[] | null>(null)
   const [topRated, setTopRated] = useState<Medicine[] | null>(null)
+  // Results carry the userId they were fetched for — `loading` is DERIVED by comparing
+  // keys so skeletons show on user switch without sync setState inside the effect.
+  const [recState, setRecState] = useState<{ userId: string; medicines: Medicine[] } | null>(null)
+  const [recErrorFor, setRecErrorFor] = useState<string | null>(null)
+  const countdown = useDealsCountdown()
+
+  const userId = user?.id ?? null
 
   useEffect(() => {
     const ac = new AbortController()
@@ -62,6 +116,21 @@ export default function HomeView() {
     return () => ac.abort()
   }, [])
 
+  // Personalized recommendations — re-fetched whenever the signed-in user changes; guests see nothing
+  useEffect(() => {
+    if (!userId) return
+    const ac = new AbortController()
+    api<{ medicines: Medicine[] }>('/api/medicines?recommended=true&limit=4', { signal: ac.signal })
+      .then((d) => {
+        if (ac.signal.aborted) return
+        setRecState({ userId, medicines: d.medicines })
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setRecErrorFor(userId)
+      })
+    return () => ac.abort()
+  }, [userId])
+
   const shopCategory = (c: Category) => {
     setFilters({ category: c.id, page: 1 })
     setView('catalog')
@@ -76,6 +145,20 @@ export default function HomeView() {
     if (user) setView('prescriptions')
     else setAuthOpen(true)
   }
+
+  const cdDays = countdown !== null ? Math.floor(countdown / 86_400_000) : null
+  const cdHours = countdown !== null ? Math.floor(countdown / 3_600_000) % 24 : null
+  const cdMins = countdown !== null ? Math.floor(countdown / 60_000) % 60 : null
+  const cdSecs = countdown !== null ? Math.floor(countdown / 1_000) % 60 : null
+  const cdTiles = [
+    { label: 'Days', value: cdDays },
+    { label: 'Hours', value: cdHours },
+    { label: 'Min', value: cdMins },
+    { label: 'Sec', value: cdSecs },
+  ]
+
+  const recommended = recState?.userId === userId ? recState.medicines : null
+  const recFailed = recErrorFor !== null && recErrorFor === userId
 
   return (
     <div className="mx-auto max-w-7xl px-4 pb-16 pt-6 lg:px-6">
@@ -198,7 +281,7 @@ export default function HomeView() {
                 <MedImage
                   src={c.image ?? `/images/cat-${c.slug}.png`}
                   alt={c.name}
-                  className="aspect-[5/3] w-full transition-transform duration-300 group-hover:scale-[1.03]"
+                  className="aspect-[5/3] w-full transition-transform duration-300 group-hover:scale-105"
                 />
                 <div className="p-3">
                   <p className="line-clamp-1 text-sm font-semibold">{c.name}</p>
@@ -223,6 +306,21 @@ export default function HomeView() {
           <div>
             <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Deals of the week</h2>
             <p className="text-sm text-muted-foreground">Save big on featured medicines</p>
+            <div className="mt-2 flex items-center gap-1 sm:gap-1.5" aria-hidden="true">
+              {cdTiles.map((t, i) => (
+                <span key={t.label} className="flex items-center gap-1 sm:gap-1.5">
+                  {i > 0 && (
+                    <span className="font-mono text-sm font-bold text-muted-foreground">:</span>
+                  )}
+                  <CountdownTile label={t.label} value={t.value} />
+                </span>
+              ))}
+            </div>
+            <span className="sr-only">
+              {countdown === null
+                ? 'Deals end in'
+                : `Deals end in ${cdDays} days ${cdHours} hours ${cdMins} minutes ${cdSecs} seconds`}
+            </span>
           </div>
           <Button variant="link" className="h-11 px-2" onClick={viewAllDeals}>
             View all
@@ -326,6 +424,55 @@ export default function HomeView() {
               </button>
             ))}
           </div>
+        </motion.section>
+      )}
+
+      {/* ---------- Recommended for you (signed-in only, silent when empty/failed) ---------- */}
+      {user && !recFailed && (recommended === null || recommended.length > 0) && (
+        <motion.section
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.2 }}
+          className="mt-12"
+        >
+          <div className="mb-4 flex items-end justify-between gap-2">
+            <div>
+              <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight sm:text-2xl">
+                <Sparkles className="size-5 shrink-0 text-primary" aria-hidden="true" />
+                Recommended for you
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Picked from the categories you order most
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="h-11 shrink-0 whitespace-nowrap rounded-xl"
+              onClick={() => {
+                resetFilters()
+                setView('catalog')
+              }}
+            >
+              View all
+            </Button>
+          </div>
+          {recommended === null ? (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <Skeleton className="aspect-square rounded-xl" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-1/2" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+              {recommended.map((m) => (
+                <MedicineCard key={m.id} medicine={m} onView={setDetailMedicine} />
+              ))}
+            </div>
+          )}
         </motion.section>
       )}
 

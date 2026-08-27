@@ -479,6 +479,11 @@ export default function OrdersView() {
                     Payment & delivery
                   </p>
                   <p className="flex items-center gap-2">
+                    {detail.paymentMethod === 'BKASH_DEMO' && (
+                      <span className="rounded bg-[#E2136E] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                        bKash
+                      </span>
+                    )}
                     {methodLabel[detail.paymentMethod] ?? detail.paymentMethod}
                     <Badge className={cn('rounded-md', paymentStatusBadge[detail.paymentStatus])}>
                       {detail.paymentStatus}
