@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  name          String?
+  password      String?
+  phone         String?
+  role          String         @default("CUSTOMER") // CUSTOMER | PHARMACIST | ADMIN | DELIVERY
+  status        String         @default("ACTIVE") // ACTIVE | INACTIVE
+  addresses     Address[]
+  cartItems     CartItem[]
+  orders        Order[]        @relation("OrderCustomer")
+  prescriptions Prescription[]
+  notifications Notification[]
+  deliveries    Order[]        @relation("DeliveryStaff")
+  reviewsDone   Prescription[] @relation("ReviewedBy")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String   @default("Home")
+  recipient String
+  phone     String
+  line1     String
+  area      String?
+  city      String
+  postcode  String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Category {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  slug        String     @unique
+  description String?
+  image       String?
+  medicines   Medicine[]
+  createdAt   DateTime   @default(now())
+}
+
+model Medicine {
+  id                   String      @id @default(cuid())
+  name                 String
+  genericName          String?
+  brand                String?
+  description          String?
+  categoryId           String?
+  category             Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  price                Float
+  discountPrice        Float?
+  stock                Int         @default(0)
+  unit                 String      @default("piece") // piece | strip | bottle | box | tube
+  image                String?
+  requiresPrescription Boolean     @default(false)
+  expiryDate           DateTime?
+  status               String      @default("ACTIVE") // ACTIVE | INACTIVE
+  manufacturer         String?
+  cartItems            CartItem[]
+  orderItems           OrderItem[]
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+}
+
+model CartItem {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  quantity   Int      @default(1)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, medicineId])
+}
+
+model Prescription {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  image        String
+  note         String?
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  reviewNote   String?
+  reviewedById String?
+  reviewedBy   User?     @relation("ReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  order        Order?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  orderNo         String        @unique
+  userId          String
+  user            User          @relation("OrderCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  items           OrderItem[]
+  addressJson     String
+  subtotal        Float
+  discount        Float         @default(0)
+  deliveryFee     Float         @default(0)
+  total           Float
+  couponCode      String?
+  paymentMethod   String        @default("COD") // COD | BKASH_DEMO
+  paymentStatus   String        @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
+  status          String        @default("PENDING") // PENDING | PRESCRIPTION_REVIEW | CONFIRMED | PROCESSING | OUT_FOR_DELIVERY | DELIVERED | CANCELLED | FAILED
+  prescriptionId  String?       @unique
+  prescription    Prescription? @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+  deliveryStaffId String?
+  deliveryStaff   User?         @relation("DeliveryStaff", fields: [deliveryStaffId], references: [id], onDelete: SetNull)
+  statusNote      String?
+  payment         Payment?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model OrderItem {
+  id                   String    @id @default(cuid())
+  orderId              String
+  order                Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  medicineId           String?
+  medicine             Medicine? @relation(fields: [medicineId], references: [id], onDelete: SetNull)
+  name                 String
+  price                Float
+  quantity             Int
+  image                String?
+  requiresPrescription Boolean   @default(false)
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method        String
+  status        String   @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
+  amount        Float
+  transactionId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Coupon {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  type        String // PERCENT | FIXED
+  value       Float
+  minAmount   Float     @default(0)
+  maxDiscount Float?
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
