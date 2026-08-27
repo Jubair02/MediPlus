@@ -1,15 +1,16 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { FileWarning, LogIn, Minus, Plus, ShoppingBag, ShoppingCart, Trash2 } from 'lucide-react'
+import { CheckCircle2, FileWarning, LogIn, Minus, Plus, ShoppingBag, ShoppingCart, Truck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
-import { effectivePrice, fmtBDT } from '@/lib/format'
+import { effectivePrice, fmtBDT, FREE_DELIVERY_THRESHOLD } from '@/lib/format'
 import type { CartItem } from '@/lib/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { MedImage } from '@/components/store/MedicineCard'
@@ -222,7 +223,31 @@ export default function CartView() {
             <span className="text-muted-foreground">Subtotal</span>
             <span className="font-semibold">{fmtBDT(subtotal)}</span>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
+
+          {/* Free delivery progress */}
+          {subtotal >= FREE_DELIVERY_THRESHOLD ? (
+            <p className="mt-3 flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+              <CheckCircle2 className="size-3.5 shrink-0" aria-hidden="true" />
+              You've unlocked FREE delivery
+            </p>
+          ) : (
+            <div className="mt-3 rounded-lg border border-dashed p-3">
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Truck className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+                <span>
+                  Add <span className="font-semibold text-primary">{fmtBDT(FREE_DELIVERY_THRESHOLD - subtotal)}</span> more for{' '}
+                  <span className="font-medium text-foreground">FREE delivery</span>
+                </span>
+              </p>
+              <Progress
+                value={Math.min(100, (subtotal / FREE_DELIVERY_THRESHOLD) * 100)}
+                className="mt-2 h-1.5"
+                aria-label={`Progress towards free delivery: ${Math.round((subtotal / FREE_DELIVERY_THRESHOLD) * 100)}%`}
+              />
+            </div>
+          )}
+
+          <p className="mt-2 text-xs text-muted-foreground">
             Delivery fee is calculated at checkout.
           </p>
 

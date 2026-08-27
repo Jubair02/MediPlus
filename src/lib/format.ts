@@ -1,4 +1,5 @@
 export const DELIVERY_FEE = 60
+export const FREE_DELIVERY_THRESHOLD = 2000
 
 export function fmtBDT(amount: number): string {
   return `৳${amount.toLocaleString('en-BD', { maximumFractionDigits: 2 })}`

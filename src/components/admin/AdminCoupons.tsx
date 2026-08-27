@@ -527,7 +527,7 @@ export default function AdminCoupons() {
           <CardContent className="px-4">
             <div className="max-h-[60vh] overflow-auto scrollbar-thin">
               <Table className="min-w-[720px]">
-                <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_hsl(var(--border))]">
+                <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Code</TableHead>
                     <TableHead>Discount</TableHead>

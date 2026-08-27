@@ -410,3 +410,130 @@ Stage Summary:
 - Round 6 COMPLETE. New capabilities: full coupon marketing CRUD w/ redemption analytics, realistic bKash wallet payment simulation (number→OTP→PIN→success), personalized recommendations, live deals countdown, newsletter signup, coupon stat card, bKash brand chips, realistic Rx demo images.
 - Risks/notes: bKash dialog OTP/PIN are fixed demo values (12345 / any 4 digits) by design; recommended endpoint does 3-4 lightweight queries per call (fine at demo scale); newsletter is client-side demo only (no storage).
 - Next-round ideas: delivery staff performance report in admin, product Q&A, multi-image gallery, stock restock PO suggestions, coupon usage per-order invoice line, customer order-notes field.
+
+---
+Task ID: 7 (QA round, in progress)
+Agent: main (Z.ai Code)
+Task: Status assessment + light agent-browser QA before Round 7
+
+Work Log (QA results — PASS):
+- Guest home renders clean (hero, categories, deals, top-rated, footer newsletter), title correct, zero page errors.
+- Search UX tested: type 'napa' → submit → catalog '1 medicine found' works, but NO autocomplete suggestions → improvement target for 7-b.
+- Delivery performance data exists only implicitly (Order.deliveryStaffId + status; NO separate Delivery model, only createdAt/updatedAt timestamps) → report spec must use per-status counts + createdAt→updatedAt proxy for completion time.
+
+Assessment: STABLE → Round 7 feature round: (a) backend delivery-performance report + CSV, (b) header search autocomplete, (c) admin Reports delivery section; main-agent styling: cart free-delivery progress + expiry freshness badge in detail modal.
+
+---
+Task ID: 7-a
+Agent: general-purpose (backend)
+Task: Delivery performance report API + CSV export
+
+Work Log:
+- src/app/api/admin/route.ts only (owner file, additive changes; no schema/lib changes, dev server NOT restarted):
+  - NEW module-level `async function deliveryPerformance()` (mirrors reportData() pattern) → { staff: [...] }. Base rows: db.user.findMany(role 'DELIVERY', select id/name/email/phone, name asc). Per-staff metrics computed in JS from ONE db.order.findMany over orders where deliveryStaffId IN staffIds (select deliveryStaffId/status/paymentMethod/total/createdAt/updatedAt — no N+1; skipped entirely when no staff). Fields: assigned = orders with staff + status != CANCELLED; active = OUT_FOR_DELIVERY; delivered = DELIVERED; failed = FAILED; deliveredValue = round2(Σ total of DELIVERED); codCollected = round2(Σ total of DELIVERED where paymentMethod 'COD'); avgCompletionHours = round1(mean(updatedAt-createdAt) of DELIVERED in hours) or null when no delivered; lastDeliveryAt = max updatedAt among DELIVERED as ISO, else null. Zero-order staff included with 0s/nulls (acc map pre-seeded per staff). Sorted delivered desc, then name asc (null-safe).
+  - GET ?resource=delivery-performance (ADMIN) → Response.json(await deliveryPerformance()).
+  - GET ?resource=export-delivery (ADMIN) → { filename: 'delivery-YYYYMMDD.csv', csv } reusing the module-level csvDate/csvRow helpers (same pattern as export-orders). Header: name,email,phone,assigned,active,delivered,failed,deliveredValue,codCollected,avgCompletionHours,lastDeliveryAt. Numbers plain (deliveredValue/codCollected as-is via round2 values); avgCompletionHours '' when null; lastDeliveryAt ISO or '' when null. Same deliveryPerformance() data source as the JSON resource.
+  - GET doc-comment updated to list all resources: stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|export-orders|export-medicines|export-users|export-report|export-delivery. All existing branches untouched.
+
+Verification (all PASS):
+- bunx eslint src/app/api → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples/ + skills/ noise).
+- curl E2E (admin@medplus.com token): GET ?resource=delivery-performance → 200, 2 staff rows. Cross-checked against direct Prisma query: delivery@medplus.com (Jamal Uddin) = MP-100002 OUT_FOR_DELIVERY COD ৳282 + MP-100006 DELIVERED COD ৳285 (0.10h) → assigned 2, active 1, delivered 1, failed 0, deliveredValue 285, codCollected 285, avgCompletionHours 0.1, lastDeliveryAt 2026-08-27T17:33:05.526Z — exact match; delivery2@medplus.com (Sohel Rana) = MP-100004 DELIVERED BKASH_DEMO ৳160 (24h) → codCollected 0 (bKash excluded) ✓. Sort: delivered desc then name asc (Jamal > Sohel tie on 1 delivered).
+- Zero-order staff: created temp DELIVERY user via PUT create-staff → appears as 3rd row {assigned:0, active:0, delivered:0, failed:0, deliveredValue:0, codCollected:0, avgCompletionHours:null, lastDeliveryAt:null} in JSON and CSV, sorted last; temp user then deleted via script (0 related rows confirmed first); re-verified 2 rows.
+- GET ?resource=export-delivery → 200, filename delivery-20260827.csv (csvDate format YYYYMMDD); CSV header + every row verified programmatically identical to the JSON staff payload ('' substitutions for null avgCompletionHours/lastDeliveryAt).
+- Non-admin: customer@medplus.com token → 403 {"error":"Requires role: ADMIN"} on BOTH new resources. Unknown resource → 400 'Unknown resource'; regression spot-checks: stats/reports/staff/export-orders shapes untouched → 200.
+- dev.log tail: clean (prisma:query + 200 lines only, no errors/500s). Demo data state unchanged: 10 orders, 2 DELIVERY users, 3 coupons.
+
+Stage Summary (API contract for frontend agent 7-c):
+- GET /api/admin?resource=delivery-performance (ADMIN; requireRole 403 otherwise) → { staff: [{ id, name: string|null, email, phone: string|null, assigned, active, delivered, failed, deliveredValue, codCollected, avgCompletionHours: number|null, lastDeliveryAt: string|null }] }
+  - assigned/active/delivered/failed: integers (assigned excludes CANCELLED; active=OUT_FOR_DELIVERY; failed=FAILED; delivered=DELIVERED).
+  - deliveredValue/codCollected: numbers rounded to 2dp (BDT, no currency symbol).
+  - avgCompletionHours: number rounded to 1dp, or null when staff has no DELIVERED orders.
+  - lastDeliveryAt: ISO 8601 string of latest DELIVERED order updatedAt, or null.
+  - Rows: every user with role 'DELIVERY' (zero-order staff included with 0s/nulls); sorted delivered desc, then name asc.
+- GET /api/admin?resource=export-delivery (ADMIN) → { filename: 'delivery-YYYYMMDD.csv', csv } — csv = header + one row per staff (identical data/order to delivery-performance): name,email,phone,assigned,active,delivered,failed,deliveredValue,codCollected,avgCompletionHours,lastDeliveryAt; numbers plain (2dp where relevant), null avgCompletionHours/lastDeliveryAt → ''. Frontend should trigger a client-side download from {filename, csv} exactly like export-orders.
+- Note: report intentionally reflects only users with role 'DELIVERY' (any orders assigned to non-DELIVERY-role user ids are out of scope per spec).
+
+---
+Task ID: 7-b
+Agent: frontend-styling-expert
+Task: Header search autocomplete (desktop + mobile)
+
+Work Log:
+- Rewrote SearchForm in src/components/store/Header.tsx (ONLY file touched) into a full combobox autocomplete used by BOTH the desktop header and the mobile Sheet menu (same component, per-instance useId for aria ids; sheet instance gets onAction={() => setMobileOpen(false)} so picks/view-all also dismiss the sheet and the product modal is never trapped behind it).
+- Fetch pipeline: min 2 chars → 250ms debounce → GET /api/medicines?search=<q>&limit=6 via api() with per-request AbortController; stale responses ignored (aborted-signal guard in then/catch); cleanup aborts on unmount/next keystroke/close; ALL state updates live inside the timer/promise callbacks (zero sync setState in effect bodies → passes react-hooks/set-state-in-effect). Effect re-runs on focus too, so re-selecting the input re-shows suggestions; blur cancels in-flight requests.
+- Dropdown panel: absolute inset-x-0 top-full mt-2 z-50 Card-style div (bg-card border rounded-xl shadow-lg), framer-motion fade+slide 130ms via AnimatePresence, options wrapper max-h-80 overflow-y-auto scrollbar-thin; onMouseDown preventDefault on panel keeps input focus through option clicks; document-level mousedown listener closes on outside click; error → silent close (no toast).
+- Option rows (motion.button, min-h-11, whileTap scale-[0.99], hover+active bg-primary/5): MedImage size-10 rounded-md thumb (reused from MedicineCard, 404-safe), name line-clamp/truncate with case-insensitive <mark className="bg-primary/20 text-foreground rounded-sm px-0.5"> highlight, sub-line brand-or-genericName (truncate) + fmtBDT(effectivePrice) in text-primary + amber size-3 Star + rating.toFixed(1) when ratingCount>0 + red Rx mini-badge (bg-red-500/10 text-red-600 dark:text-red-400) when requiresPrescription.
+- States: 3 skeleton rows (Skeleton thumb + two text bars) while loading; no-results state with SearchX icon + 'No matches for "xyz" — try another spelling'; footer row 'View all results for "xyz"' (min-h-11, ArrowRight) → setFilters({search: q, page: 1}) + setView('catalog') + close. Picking an option → setDetailMedicine(m) + close (NO catalog navigation); plain Enter with no active option still submits the original catalog search form; empty submit untouched.
+- Keyboard (aria-activedescendant pattern): input role="combobox" aria-autocomplete="list" aria-expanded aria-controls aria-activedescendant; listbox role="listbox" id=<useId>, options role="option" id=<useId>-opt-<i> aria-selected; ↑/↓ wrap, Home/End, Enter opens ACTIVE option, hover syncs active index; Escape closes panel, second Escape blurs.
+- Escape-in-Sheet fix (found in E2E): Radix DismissableLayer listens for Escape on document with capture:true, so a bubble-phase React preventDefault can't stop the Sheet dismissing — while the panel is open a window-level CAPTURE keydown listener intercepts Escape, stopPropagation+preventDefault, closes only the panel; second Escape falls through (blur, and Sheet closes as usual).
+- Styling detail: semantic tokens throughout (bg-card/border/muted-foreground/primary) — dark mode verified via computed styles; no blue/indigo; no horizontal overflow at 390px (documentElement.scrollWidth ≤ 390, also 1280); cart/wishlist/notifications/account/sticky header untouched and re-verified (notifications popover still opens).
+
+Work Log (Verification results — all PASS):
+- bunx eslint src/components/store/Header.tsx → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples//skills// noise).
+- agent-browser (--session r7b, isolated): GUEST — 'nap' → dropdown after debounce: Napa Extra 500mg+65mg, mark 'Nap' highlighted, Beximco, ৳25, ★4.7, image thumb present; 'zzz' → 'No matches for "zzz"'; 'napa' ↓↓Enter → detail modal opens (single-result wrap-around verified); Escape closes modal then blurs; 'View all results for "napa"' → catalog '1 medicine found' with search applied (input shows napa); empty submit → full catalog 27 medicines, nothing breaks; outside click (logo) closes dropdown; mouse pick of Seclo 20mg → modal + dropdown closed + STILL ON HOME (no catalog navigation). CUSTOMER (customer@medplus.com) — 'vitamin' → 3 rows (Vitamin C ৳35 ★4.0 / Maxpro Vitamin D3 ৳162 ★4.0 / Neuro-B ৳100 ★5.0); ↓↓ → aria-activedescendant opt-1 → Enter → Maxpro Vitamin D3 modal; 'seclo' row shows red Rx mini-badge.
+- Mobile 390×844: hamburger sheet → search dropdown renders INSIDE sheet, geometry-verified fully within sheet bounds (panel 16..303×158..372 vs sheet 0..320×844) and VLM PASS in dark + light; scrollWidth ≤ 390 (no h-overflow); Escape closes only the dropdown (sheet stays), second Escape dismisses sheet; keyboard pick in sheet closes sheet AND opens product modal (onAction wiring).
+- Dark mode: dropdown computed panelBg = dark card token, border white/12, mark bg-primary/20, z-50 — VLM PASS (desktop + mobile sheet). Light mode: VLM PASS (green mark highlight, card border+shadow).
+- agent-browser errors → empty; console → no errors/warnings; dev.log → no 500s/errors (only expected prisma query logs from ?search= calls).
+- Screenshots: /tmp/r7b-guest-nap.png, /tmp/r7b-rx-row.png, /tmp/r7b-customer-vitamin.png, /tmp/r7b-dark-dropdown2.png, /tmp/r7b-light-dropdown2.png, /tmp/r7b-mobile-sheet-dark.png, /tmp/r7b-mobile-sheet-light.png, /tmp/r7b-mobile-final-390.png, /tmp/r7b-guest-modal.png.
+- Session note: dev server was down when I started; started it with `bun run dev` (tee dev.log) — left running.
+
+Stage Summary:
+- Header search (desktop + mobile sheet) is now a polished debounced autocomplete: suggestions with image/brand/price/rating/Rx-badge and match highlighting, full combobox a11y, keyboard pick opens the product modal, footer jumps to catalog search, skeleton/no-results/error states, dark-mode-safe, 390px-safe. Two non-obvious fixes worth remembering: (1) Radix layers listen for Escape in document CAPTURE phase — intercept on window capture if an inner widget must consume it; (2) re-running the debounce effect on focus is the cheap way to re-show suggestions after a pick. Deviations: none functional; only Header.tsx touched (SearchForm rewrite + one onAction prop on the Sheet usage).
+
+---
+Task ID: 7-c
+Agent: frontend-styling-expert
+Task: Admin Reports delivery-performance section + export
+
+Work Log:
+- State note when I started: src/components/admin/AdminReports.tsx already contained an uncommitted, spec-shaped delivery-performance implementation (a prior 7-c attempt evidently died before verification/worklog). I audited every line against the task spec + 7-a's live contract, applied one real fix, then ran the FULL mandatory verification suite fresh (nothing was trusted unverified).
+- ONE code fix (my only edit): sticky delivery table header used `shadow-[0_1px_0_0_hsl(var(--border))]` — invalid here because globals.css defines `--border` as a raw oklch() color (Tailwind 4 theme), so hsl(oklch(...)) never rendered. Changed to `shadow-[0_1px_0_0_var(--border)]`; computed style now shows the hairline `lab(89.2 …) 0 1px 0 0` under the pinned header. ⚠️ Heads-up for main agent: AdminCoupons.tsx line 530 (6-c's file, NOT mine) has the identical broken `hsl(var(--border))` pattern.
+- Final section shape (all in AdminReports.tsx, rendered BELOW the existing charts/tables as its own block, space-y-4/6 rhythm): header row (Truck icon text-primary + 'Delivery performance' + subtitle 'How each delivery partner is doing' + outline 'Export CSV' w/ Download icon → Loader2 while pending, disabled when staff null/empty); team summary strip = 4 StatChips computed via useMemo from staff[] — Total delivered (Σ delivered, emerald PackageCheck), Active on the road (Σ active, teal Bike), COD collected (Σ codCollected, fmtBDT, amber HandCoins), Team size (staff.length, primary Users); staff table in own Card → max-h-[60vh] overflow-auto scrollbar-thin wrapper, min-w-[820px], aria-label, sticky thead (top-0 z-10 bg-card + border hairline): Staff (Avatar initial + name ?? email + truncated email), Assigned, Active (teal chip when >0), Delivered (emerald bold when has orders), Failed (red when >0), Success rate (delivered/assigned % — '—' when assigned=0; Progress h-1.5 w-16 + % label, fill = theme primary emerald oklch(0.55 0.13 168) ✓), COD collected (fmtBDT), Avg completion (X.Xh w/ title 'Avg hours from order placed to delivered', '—' when null), Last delivery (fmtDateTime / 'Never'). Zero-order rows: all numbers shown, row muted via text-muted-foreground. Numeric cells whitespace-nowrap.
+- States: DeliverySkeleton (header bars + button + 4 chip skeletons + table w/ 3 rows) while staffLoading && !staff; error Card (Truck + message + RefreshCw Retry); empty Card (Truck + 'No delivery staff yet'). Fetch: loadDelivery useCallback → api('/api/admin?resource=delivery-performance', {signal}) with per-mount AbortController in useEffect (AbortError swallowed, no setState), runs alongside existing load(); export → GET ?resource=export-delivery → {filename,csv} → downloadCsv → toast.success('Delivery report exported') / toast.error on failure, own staffExportPending spinner.
+- Session quirks worth knowing: (1) fresh `--session r7c` came up ALREADY logged in as admin@medplus.com (named sessions share profile localStorage — verified identity via GET /api/auth before trusting it); (2) default viewport in this env is 390×844, so early 'desktop' shots had to be retaken after `set viewport 1280 800`.
+
+Verification (all PASS):
+- bunx eslint src/components/admin → 0 problems; bunx tsc --noEmit → 0 errors in src/** (pre-existing examples//skills// noise only).
+- curl contract cross-check (admin token): ?resource=delivery-performance → 200, 3 staff rows, sorted delivered desc then name — Jamal Uddin delivery@medplus.com = assigned 2, active 1, delivered 1, failed 0, deliveredValue 285, codCollected 285, avgCompletionHours 0.1, lastDeliveryAt 2026-08-27T17:33:05.526Z (EXACT match to task brief 2/1/1 COD ৳285); Sohel Rana delivery2 = COD ৳0 (bKash order excluded) ✓; delivery3@medplus.com (Rakib Hossain) = zero-order row {all 0s, avg null, lastDeliveryAt null} — NOTE: this 3rd DELIVERY user pre-existed my run (7-a deleted its temp user; someone re-added a persistent delivery3 — I touched no data) and conveniently demos the zero-order row. ?resource=export-delivery → 200, delivery-20260827.csv, header + 3 rows, empty strings for null avg/lastDelivery — matches JSON 1:1.
+- agent-browser (--session r7c): Reports tab renders 'Delivery performance' with live data — Jamal row 2/1/1, 50% success (w-16/h-1.5 bar, indicator 64px, computed fill lab(49.5,-45.7,10) = emerald primary), ৳285, 0.1h, '27 Aug, 17:33'; Sohel 1/0/1 100% ৳0 24h; Rakib row muted (computed color lab(42.3…) gray vs Jamal lab(4.6…) near-black) with '—'/'Never'. Export CSV click → network log `GET /api/admin?resource=export-delivery 200` + toast listitem 'Delivery report exported'. Error state E2E: network route --abort on delivery-performance → Reports tab shows error card 'Failed to fetch' + Retry; after unroute + Retry click → table re-renders Jamal row (recovery ✓). Empty state code-verified only (no live no-staff scenario without mutating demo data).
+- Sticky header: computed position sticky + hairline shadow present (vertical pin not visually exercisable — 3 rows don't overflow 60vh wrapper; CSS verified).
+- 390×844 (light + dark): page documentElement.scrollWidth = 390 exactly (no h-overflow) in both themes; table wrapper 322px wide (x 34..356) with inner scrollWidth 964 → scrolls INSIDE wrapper; VLM on 390 dark: 2×2 stat cards readable, bordered box + h-scrollbar, no spill/overlap/contrast issues. Desktop 1280 dark VLM: header + truck icon + subtitle + outline Export CSV ✓, stat cards 2/1/৳285/3 ✓, all 3 rows + columns + green success bars ✓, Rakib visibly muted ✓, emerald/teal palette only — NO blue/indigo, no overlap/cut-off. Screenshots: /tmp/r7c-delivery-desktop-dark3.png, /tmp/r7c-delivery-390-dark.png, /tmp/r7c-delivery-light.png.
+- agent-browser errors → empty (checked after screenshots AND after route-abort tests); reload leaves clean light state; dev.log → 0 errors/500s, tail is pure prisma:query + 200s.
+
+Stage Summary:
+- Admin Reports now has a full 'Delivery performance' section (summary strip + staff table + CSV export) wired to 7-a's delivery-performance/export-delivery resources. NO contract mismatches: every field/shape/sort/null behavior matched 7-a's documented contract exactly (zero-order rows included w/ 0s/nulls, avgCompletionHours 1dp, lastDeliveryAt ISO → fmtDateTime, CSV identical to JSON). One cosmetics-adjacent fix shipped (hsl(var(--border)) → var(--border)) + same known bug flagged in AdminCoupons.tsx for the owner. Data state: 3 DELIVERY users incl. persistent zero-order delivery3@medplus.com (pre-existing, left untouched — good live demo of the muted row). Deviations from spec: none functional; only additions beyond spec were Retry/empty-card microcopy and the % label beside the success-rate bar.
+
+---
+Task ID: 7 (Round 7 COMPLETE)
+Agent: main (Z.ai Code) + subagents 7-a/7-b/7-c
+Task: Round 7 — QA pass, delivery performance report, header search autocomplete, cart free-delivery progress, expiry freshness chip
+
+Work Log (Assessment & QA):
+- Guest home + search sweep: app healthy, zero page errors; search had NO autocomplete → improvement target. Verdict: stable → feature round.
+
+Work Log (7-a backend — general-purpose):
+- src/app/api/admin/route.ts: module-level deliveryPerformance() (users role DELIVERY + ONE order.findMany grouped in JS, no N+1); GET ?resource=delivery-performance → {staff:[{id,name,email,phone,assigned(non-cancelled),active(OUT_FOR_DELIVERY),delivered,failed,deliveredValue,codCollected(COD+DELIVERED only),avgCompletionHours(updatedAt-createdAt proxy,1dp|null),lastDeliveryAt}]} sorted delivered desc; GET ?resource=export-delivery → {filename:'delivery-YYYYMMDD.csv',csv} via existing csvRow helpers. Verified: Jamal 2/1/1/৳285/0.1h matches DB; Sohel bKash order correctly excluded from COD; zero-order staff row with nulls; customer token → 403; CSV identical to JSON.
+
+Work Log (7-b frontend — header search autocomplete):
+- Header.tsx SearchForm rewritten as combobox (desktop + mobile Sheet): 250ms debounce → /api/medicines?search&q limit 6 (AbortController, stale ignored); dropdown w/ MedImage thumb, name w/ case-insensitive <mark> highlight, brand+price+★+Rx badge; keyboard ↑↓ Home/End wrap, Enter opens active option via setDetailMedicine, Escape closes (capture-phase fix for Radix Sheet conflict); states: 3-row skeleton / SearchX no-match / 'View all results' footer → catalog; silent error close; outside-mousedown close; a11y roles (combobox/listbox/option/aria-activedescendant).
+
+Work Log (7-c frontend — admin delivery report):
+- AdminReports.tsx: new 'Delivery performance' section — header w/ Export CSV (export-delivery → downloadCsv + toast), 4 team chips (Σdelivered/Σactive/COD ৳285/team size), staff table (min-w-[820px], sticky header hairline FIXED to var(--border) — see bug note, Avatar+name+email, teal Active chip, emerald Delivered, red Failed, success-% with emerald Progress bar, COD, avg X.Xh w/ tooltip, fmtDateTime/'Never'), zero-order rows muted; skeleton/error+Retry/empty states. Also fixed same broken hsl(var(--border)) shadow in AdminCoupons.tsx:530 (main-agent applied).
+
+Work Log (main-agent styling detail pass):
+- CartView: FREE-delivery progress block — 'Add ৳X more for FREE delivery' w/ Truck icon + Progress bar, or emerald "You've unlocked FREE delivery" CheckCircle2 state; FREE_DELIVERY_THRESHOLD (2000) now exported from format.ts.
+- MedicineDetailModal: expiry freshness chip next to Expiry date — emerald 'N months left' (≥6mo), amber (3–6mo), red 'Expires soon'/'Expired' (<3mo), w/ title tooltips.
+
+Work Log (Bugs found & fixed this round):
+- PHANTOM BUILD ERROR: interrupted first 7-c attempt left 'TruckOff' (non-existent lucide export) referenced by a stale Turbopack module cache — persisted across page reloads w/ old console entries; resolved via the canonical restart procedure (kill next dev+next-server, rm -rf .next, bun run dev) then fresh navigation → 0 console errors. Lesson repeated: after agent interruptions mid-edit, do a full .next clear before trusting HMR.
+- AdminCoupons sticky-header hairline never rendered (hsl(var(--border)) invalid under Tailwind-4 oklch tokens) → var(--border).
+
+Work Log (Verification):
+- bun run lint → 0 problems repo-wide; tsc --noEmit → 0 errors in src/**; fresh navigation console → 0 errors; dev.log clean after restart.
+- Browser E2E: search 'nap' → Napa row w/ highlighted fragment + price + ★; ↓+Enter opened detail modal; cart progress 'Add ৳1,965 more' @2%; expiry chip '18 months left' emerald on Napa; admin Reports delivery section (Jamal 2/1/1/50%/৳285/0.1h vs curl match, Rakib zero-row muted); Export CSV 200 + toast; mobile 390 scrollWidth=390; dark mode reports+storefront clean.
+- Dev server: was found DOWN at round start (left over from parallel-agent session) — restarted; later full .next clear restart performed for the cache issue. Health 200 confirmed.
+
+Stage Summary:
+- Round 7 COMPLETE. New: per-staff delivery performance report w/ COD collection + CSV export, header autocomplete (desktop+mobile), free-delivery progress nudge in cart, expiry freshness transparency chips. Demo data: delivery3@medplus.com (Rakib Hossain, zero-order) intentionally kept — demos the muted zero-row.
+- Risks/notes: avgCompletionHours uses updatedAt (any order mutation skews it) — fine for demo, document as known proxy; search autocomplete shares the public search endpoint (no extra backend).
+- Next-round ideas: product Q&A, multi-image gallery (schema change), pharmacist restock PO suggestions, coupon line on printable invoice, customer order-notes at checkout, delivery staff mobile-optimized task view.

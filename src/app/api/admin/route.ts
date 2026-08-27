@@ -209,7 +209,73 @@ async function reportData(days: number) {
   return { salesByDay, categorySales, topMedicines, lowStock }
 }
 
-/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports */
+/** Shared data source for the delivery performance view and its CSV export (same shape as GET ?resource=delivery-performance). */
+async function deliveryPerformance() {
+  const staff = await db.user.findMany({
+    where: { role: 'DELIVERY' },
+    select: { id: true, name: true, email: true, phone: true },
+    orderBy: { name: 'asc' },
+  })
+  const staffIds = staff.map((s) => s.id)
+  const orders = staffIds.length
+    ? await db.order.findMany({
+        where: { deliveryStaffId: { in: staffIds } },
+        select: { deliveryStaffId: true, status: true, paymentMethod: true, total: true, createdAt: true, updatedAt: true },
+      })
+    : []
+
+  const acc = new Map<string, {
+    assigned: number
+    active: number
+    delivered: number
+    failed: number
+    deliveredValue: number
+    codCollected: number
+    completionMs: number
+    lastDeliveryAt: Date | null
+  }>()
+  for (const s of staff) {
+    acc.set(s.id, { assigned: 0, active: 0, delivered: 0, failed: 0, deliveredValue: 0, codCollected: 0, completionMs: 0, lastDeliveryAt: null })
+  }
+  for (const o of orders) {
+    const entry = o.deliveryStaffId ? acc.get(o.deliveryStaffId) : undefined
+    if (!entry) continue
+    if (o.status !== 'CANCELLED') entry.assigned += 1
+    if (o.status === 'OUT_FOR_DELIVERY') entry.active += 1
+    if (o.status === 'FAILED') entry.failed += 1
+    if (o.status === 'DELIVERED') {
+      entry.delivered += 1
+      entry.deliveredValue = round2(entry.deliveredValue + o.total)
+      if (o.paymentMethod === 'COD') entry.codCollected = round2(entry.codCollected + o.total)
+      entry.completionMs += o.updatedAt.getTime() - o.createdAt.getTime()
+      if (!entry.lastDeliveryAt || o.updatedAt > entry.lastDeliveryAt) entry.lastDeliveryAt = o.updatedAt
+    }
+  }
+
+  return {
+    staff: staff
+      .map((s) => {
+        const e = acc.get(s.id)
+        return {
+          id: s.id,
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+          assigned: e?.assigned ?? 0,
+          active: e?.active ?? 0,
+          delivered: e?.delivered ?? 0,
+          failed: e?.failed ?? 0,
+          deliveredValue: e?.deliveredValue ?? 0,
+          codCollected: e?.codCollected ?? 0,
+          avgCompletionHours: e && e.delivered > 0 ? round1(e.completionMs / e.delivered / 3_600_000) : null,
+          lastDeliveryAt: e?.lastDeliveryAt ? e.lastDeliveryAt.toISOString() : null,
+        }
+      })
+      .sort((a, b) => b.delivered - a.delivered || (a.name ?? '').localeCompare(b.name ?? '')),
+  }
+}
+
+/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|export-orders|export-medicines|export-users|export-report|export-delivery */
 export async function GET(request: Request) {
   try {
     const user = await requireRole(request, ['ADMIN'])
@@ -527,6 +593,31 @@ export async function GET(request: Request) {
       lines.push('', 'Low stock', csvRow(['name', 'stock', 'price']))
       for (const m of lowStock) lines.push(csvRow([m.name, m.stock, m.discountPrice ?? m.price]))
       return Response.json({ filename: `report-${csvDate(new Date())}.csv`, csv: lines.join('\n') })
+    }
+
+    if (resource === 'delivery-performance') {
+      return Response.json(await deliveryPerformance())
+    }
+
+    if (resource === 'export-delivery') {
+      const { staff } = await deliveryPerformance()
+      const header = ['name', 'email', 'phone', 'assigned', 'active', 'delivered', 'failed', 'deliveredValue', 'codCollected', 'avgCompletionHours', 'lastDeliveryAt']
+      const rows = staff.map((s) =>
+        csvRow([
+          s.name ?? '',
+          s.email,
+          s.phone ?? '',
+          s.assigned,
+          s.active,
+          s.delivered,
+          s.failed,
+          s.deliveredValue,
+          s.codCollected,
+          s.avgCompletionHours ?? '',
+          s.lastDeliveryAt ?? '',
+        ])
+      )
+      return Response.json({ filename: `delivery-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
     }
 
     return badRequest('Unknown resource')

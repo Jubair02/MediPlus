@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
+  ArrowRight,
   Bell,
   FileText,
   Heart,
@@ -15,17 +17,21 @@ import {
   Package,
   Pill,
   Search,
+  SearchX,
   ShoppingCart,
+  Star,
   Sun,
   UserRound,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAppStore, type View } from '@/lib/store'
-import { fmtBDT, fmtDateTime } from '@/lib/format'
-import type { AuthUser, NotificationItem, Role } from '@/lib/types'
+import { effectivePrice, fmtBDT, fmtDateTime } from '@/lib/format'
+import type { AuthUser, Medicine, NotificationItem, Role } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { MedImage } from '@/components/store/MedicineCard'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Sheet,
@@ -110,28 +116,309 @@ function NavLinks({
   )
 }
 
+/** Case-insensitive <mark> highlight of the query inside a medicine name. */
+function highlightName(name: string, query: string) {
+  const q = query.trim()
+  if (!q) return name
+  const idx = name.toLowerCase().indexOf(q.toLowerCase())
+  if (idx < 0) return name
+  return (
+    <>
+      {name.slice(0, idx)}
+      <mark className="rounded-sm bg-primary/20 px-0.5 text-foreground">
+        {name.slice(idx, idx + q.length)}
+      </mark>
+      {name.slice(idx + q.length)}
+    </>
+  )
+}
+
 function SearchForm({
   search,
   onSearchChange,
   onSubmit,
+  onAction,
 }: {
   search: string
   onSearchChange: (v: string) => void
   onSubmit: (e: React.FormEvent) => void
+  /** Called after an option is picked or "view all" — closes the mobile Sheet. */
+  onAction?: () => void
 }) {
+  const setFilters = useAppStore((s) => s.setFilters)
+  const setView = useAppStore((s) => s.setView)
+  const setDetailMedicine = useAppStore((s) => s.setDetailMedicine)
+
+  const [open, setOpen] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [results, setResults] = useState<Medicine[]>([])
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState(-1)
+
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const acRef = useRef<AbortController | null>(null)
+  const listId = useId()
+  const optId = (i: number) => `${listId}-opt-${i}`
+
+  const showPanel = open && focused
+
+  const closeDropdown = useCallback(() => {
+    setOpen(false)
+    setActive(-1)
+    setLoading(false)
+    acRef.current?.abort()
+    acRef.current = null
+  }, [])
+
+  // Debounced suggestion fetch (250ms), re-run on focus so re-selecting the
+  // input re-shows suggestions. All state updates happen asynchronously
+  // inside the timer/promise callbacks — never synchronously in the effect body.
+  useEffect(() => {
+    const q = search.trim()
+    const ac = new AbortController()
+    acRef.current = ac
+    const t = setTimeout(() => {
+      if (ac.signal.aborted) return
+      if (q.length < 2) {
+        setResults([])
+        setQuery('')
+        setActive(-1)
+        setOpen(false)
+        setLoading(false)
+        return
+      }
+      setLoading(true)
+      api<{ medicines: Medicine[] }>(
+        `/api/medicines?search=${encodeURIComponent(q)}&limit=6`,
+        { signal: ac.signal }
+      )
+        .then((d) => {
+          if (ac.signal.aborted) return // ignore stale responses
+          setResults(d.medicines)
+          setQuery(q)
+          setActive(-1)
+          setLoading(false)
+          setOpen(true)
+        })
+        .catch(() => {
+          if (ac.signal.aborted) return
+          // Network/server error → fail silently, no toast spam
+          setResults([])
+          setQuery('')
+          setOpen(false)
+          setLoading(false)
+        })
+    }, 250)
+    return () => {
+      clearTimeout(t)
+      ac.abort() // cancel on unmount / next keystroke / close
+      if (acRef.current === ac) acRef.current = null
+    }
+  }, [search, focused])
+
+  // Close when clicking outside the search wrapper
+  useEffect(() => {
+    if (!showPanel) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) closeDropdown()
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [showPanel, closeDropdown])
+
+  // Escape while the panel is open must close ONLY the panel. Radix layers
+  // (mobile Sheet) listen on document in the CAPTURE phase, so a bubble-phase
+  // React handler is too late — intercept on window capture instead and stop
+  // the event before any Radix dismiss logic runs.
+  useEffect(() => {
+    if (!showPanel) return
+    const onCaptureKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        closeDropdown()
+      }
+    }
+    window.addEventListener('keydown', onCaptureKey, true)
+    return () => window.removeEventListener('keydown', onCaptureKey, true)
+  }, [showPanel, closeDropdown])
+
+  const pickOption = (m: Medicine) => {
+    setDetailMedicine(m) // opens the product modal — no catalog navigation
+    closeDropdown()
+    onAction?.()
+  }
+
+  const viewAll = () => {
+    setFilters({ search: query, page: 1 })
+    setView('catalog')
+    closeDropdown()
+    onAction?.()
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    closeDropdown()
+    onSubmit(e) // existing catalog-search behavior
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      // Panel-open Escape is handled by the window capture listener above;
+      // reaching here means the panel is already closed → blur (second Escape).
+      inputRef.current?.blur()
+      return
+    }
+    if (!showPanel || results.length === 0) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const n = results.length
+      setActive((i) =>
+        i < 0
+          ? e.key === 'ArrowDown'
+            ? 0
+            : n - 1
+          : e.key === 'ArrowDown'
+            ? (i + 1) % n
+            : (i - 1 + n) % n
+      )
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      setActive(0)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      setActive(results.length - 1)
+    } else if (e.key === 'Enter' && active >= 0 && active < results.length) {
+      e.preventDefault() // open the ACTIVE option; plain Enter still submits the form
+      pickOption(results[active])
+    }
+  }
+
   return (
-    <form onSubmit={onSubmit} role="search" className="flex w-full items-center gap-2">
-      <Input
-        value={search}
-        onChange={(e) => onSearchChange(e.target.value)}
-        placeholder="Search medicines, brands…"
-        aria-label="Search medicines"
-        className="h-11 flex-1 rounded-xl"
-      />
-      <Button type="submit" size="icon" aria-label="Search" className="size-11 shrink-0 rounded-xl">
-        <Search className="size-4" aria-hidden="true" />
-      </Button>
-    </form>
+    <div ref={wrapRef} className="relative w-full">
+      <form onSubmit={handleSubmit} role="search" className="flex w-full items-center gap-2">
+        <Input
+          ref={inputRef}
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={handleKeyDown}
+          placeholder="Search medicines, brands…"
+          aria-label="Search medicines"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={showPanel}
+          aria-controls={listId}
+          aria-activedescendant={showPanel && active >= 0 ? optId(active) : undefined}
+          autoComplete="off"
+          className="h-11 flex-1 rounded-xl"
+        />
+        <Button type="submit" size="icon" aria-label="Search" className="size-11 shrink-0 rounded-xl">
+          <Search className="size-4" aria-hidden="true" />
+        </Button>
+      </form>
+
+      <AnimatePresence>
+        {showPanel && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.13, ease: 'easeOut' }}
+            onMouseDown={(e) => e.preventDefault() /* keep input focus on option click */}
+            className="absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-xl border bg-card shadow-lg"
+          >
+            {loading ? (
+              <div className="space-y-1 p-2" aria-hidden="true">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-2.5 px-2 py-1.5">
+                    <Skeleton className="size-10 shrink-0 rounded-md" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-3.5 w-3/5" />
+                      <Skeleton className="h-3 w-2/5" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : results.length === 0 ? (
+              <div className="flex flex-col items-center gap-1.5 px-4 py-6 text-center">
+                <SearchX className="size-5 text-muted-foreground/70" aria-hidden="true" />
+                <p className="text-sm text-muted-foreground">
+                  No matches for{' '}
+                  <span className="font-medium text-foreground">&ldquo;{query}&rdquo;</span> — try
+                  another spelling
+                </p>
+              </div>
+            ) : (
+              <>
+                <div
+                  id={listId}
+                  role="listbox"
+                  aria-label="Search suggestions"
+                  className="max-h-80 overflow-y-auto p-1.5 scrollbar-thin"
+                >
+                  {results.map((m, i) => (
+                    <motion.button
+                      key={m.id}
+                      type="button"
+                      role="option"
+                      id={optId(i)}
+                      aria-selected={i === active}
+                      whileTap={{ scale: 0.99 }}
+                      onMouseEnter={() => setActive(i)}
+                      onClick={() => pickOption(m)}
+                      className={cn(
+                        'flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-primary/5',
+                        i === active && 'bg-primary/5'
+                      )}
+                    >
+                      <MedImage src={m.image} alt="" className="size-10 shrink-0 rounded-md" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium leading-tight">
+                          {highlightName(m.name, query)}
+                        </p>
+                        <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                          {(m.brand || m.genericName) && (
+                            <span className="min-w-0 truncate">{m.brand || m.genericName}</span>
+                          )}
+                          <span className="shrink-0 font-semibold text-primary">
+                            {fmtBDT(effectivePrice(m))}
+                          </span>
+                          {(m.ratingCount ?? 0) > 0 && m.rating != null && (
+                            <span className="flex shrink-0 items-center gap-0.5 text-amber-500 dark:text-amber-400">
+                              <Star
+                                className="size-3 fill-amber-400 text-amber-400"
+                                aria-hidden="true"
+                              />
+                              {m.rating.toFixed(1)}
+                            </span>
+                          )}
+                          {m.requiresPrescription && (
+                            <span className="shrink-0 rounded bg-red-500/10 px-1 py-px text-[10px] font-bold text-red-600 dark:text-red-400">
+                              Rx
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={viewAll}
+                  className="flex min-h-11 w-full items-center justify-center gap-1.5 border-t text-xs text-muted-foreground transition-colors hover:bg-primary/5 hover:text-primary"
+                >
+                  View all results for &ldquo;{query}&rdquo;
+                  <ArrowRight className="size-3.5" aria-hidden="true" />
+                </button>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -233,7 +520,12 @@ export default function Header() {
               <SheetDescription>Your online pharmacy</SheetDescription>
             </SheetHeader>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-6 scrollbar-thin">
-              <SearchForm search={search} onSearchChange={setSearch} onSubmit={submitSearch} />
+              <SearchForm
+                search={search}
+                onSearchChange={setSearch}
+                onSubmit={submitSearch}
+                onAction={() => setMobileOpen(false)}
+              />
               <Separator />
               <nav className="flex flex-col gap-1" aria-label="Mobile navigation">
                 <NavLinks user={user} view={view} go={go} stacked />

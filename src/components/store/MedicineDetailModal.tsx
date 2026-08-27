@@ -44,6 +44,22 @@ function DetailBody({ medicine: m }: { medicine: Medicine }) {
   const out = m.stock <= 0
   const maxQty = Math.max(1, m.stock)
 
+  // Freshness chip: reassure customers about shelf life (emerald ≥ 6 months, amber 3–6, red < 3)
+  let expiryChip: { label: string; className: string; title: string } | null = null
+  if (m.expiryDate) {
+    const days = Math.ceil((new Date(m.expiryDate).getTime() - Date.now()) / 86_400_000)
+    const months = Math.max(0, Math.round(days / 30))
+    if (days < 0) {
+      expiryChip = { label: 'Expired', className: 'bg-red-100 text-red-700', title: 'This batch has expired' }
+    } else if (days < 90) {
+      expiryChip = { label: 'Expires soon', className: 'bg-red-100 text-red-700', title: 'Less than 3 months shelf life left' }
+    } else if (days < 180) {
+      expiryChip = { label: `${months} months left`, className: 'bg-amber-100 text-amber-700', title: 'Short-dated batch — discounted freshness' }
+    } else {
+      expiryChip = { label: `${months} months left`, className: 'bg-emerald-100 text-emerald-700', title: 'Plenty of shelf life' }
+    }
+  }
+
   const changeQty = (delta: number) => {
     setQty((q) => Math.min(Math.max(1, q + delta), maxQty))
   }
@@ -120,7 +136,17 @@ function DetailBody({ medicine: m }: { medicine: Medicine }) {
               <CalendarClock className="size-4" aria-hidden="true" />
               Expiry
             </span>
-            <span className="font-medium">{fmtDate(m.expiryDate)}</span>
+            <span className="flex items-center gap-1.5">
+              <span className="font-medium">{fmtDate(m.expiryDate)}</span>
+              {expiryChip && (
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${expiryChip.className}`}
+                  title={expiryChip.title}
+                >
+                  {expiryChip.label}
+                </span>
+              )}
+            </span>
           </div>
         </div>
 
