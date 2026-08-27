@@ -116,18 +116,21 @@ export default function CartView() {
   // ---------- empty ----------
   if (items.length === 0) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
-        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
-          <ShoppingBag className="size-8 text-primary" aria-hidden="true" />
-        </span>
-        <h1 className="mt-4 text-xl font-bold">Your cart is empty</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Browse medicines and add them to your cart to get started.
-        </p>
-        <Button className="mt-6 h-11 rounded-xl" onClick={() => setView('catalog')}>
-          <ShoppingCart className="size-4" aria-hidden="true" />
-          Browse medicines
-        </Button>
+      <div className="mx-auto w-full max-w-md px-4 py-16">
+        {/* Dashed empty-state card — same pattern as the Q&A empty state */}
+        <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed p-8 text-center">
+          <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
+            <ShoppingBag className="size-5 text-primary" aria-hidden="true" />
+          </span>
+          <h1 className="mt-1 text-lg font-bold">Your cart is empty</h1>
+          <p className="text-sm text-muted-foreground">
+            Browse medicines and add them to your cart to get started.
+          </p>
+          <Button className="mt-4 h-11 rounded-xl" onClick={() => setView('catalog')}>
+            <ShoppingCart className="size-4" aria-hidden="true" />
+            Browse medicines
+          </Button>
+        </div>
       </div>
     )
   }
@@ -162,7 +165,7 @@ export default function CartView() {
                   {med.genericName && (
                     <p className="line-clamp-1 text-xs text-muted-foreground">{med.genericName}</p>
                   )}
-                  <p className="mt-0.5 text-sm">
+                  <p className="mt-0.5 text-sm tabular-nums">
                     <span className="font-semibold text-primary">{fmtBDT(unit)}</span>{' '}
                     <span className="text-xs text-muted-foreground">/ {med.unit}</span>
                   </p>
@@ -196,7 +199,7 @@ export default function CartView() {
                         <Plus className="size-3.5" aria-hidden="true" />
                       </Button>
                     </div>
-                    <p className="ml-auto text-sm font-semibold">
+                    <p className="ml-auto text-sm font-semibold tabular-nums">
                       {fmtBDT(unit * item.quantity)}
                     </p>
                     <Button
@@ -219,7 +222,7 @@ export default function CartView() {
         <Card className="sticky top-28 gap-0 p-5 shadow-sm">
           <h2 className="font-semibold">Order summary</h2>
           <Separator className="my-4" />
-          <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center justify-between text-sm tabular-nums">
             <span className="text-muted-foreground">Subtotal</span>
             <span className="font-semibold">{fmtBDT(subtotal)}</span>
           </div>
@@ -234,7 +237,7 @@ export default function CartView() {
             <div className="mt-3 rounded-lg border border-dashed p-3">
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Truck className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-                <span>
+                <span className="tabular-nums">
                   Add <span className="font-semibold text-primary">{fmtBDT(FREE_DELIVERY_THRESHOLD - subtotal)}</span> more for{' '}
                   <span className="font-medium text-foreground">FREE delivery</span>
                 </span>

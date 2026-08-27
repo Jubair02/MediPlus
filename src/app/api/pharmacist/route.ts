@@ -35,6 +35,7 @@ interface QuestionRow {
   medicine: { id: string; name: string; image: string | null }
   user: { name: string | null; email: string }
   answeredBy: { name: string | null } | null
+  _count: { helpfulVotes: number }
 }
 
 function questionToJson(q: QuestionRow) {
@@ -51,6 +52,7 @@ function questionToJson(q: QuestionRow) {
     askedByName: q.user.name ?? 'Customer',
     askedByEmail: q.user.email,
     answerByName: q.answer ? q.answeredBy?.name ?? 'Pharmacist' : null,
+    helpfulCount: q._count.helpfulVotes,
   }
 }
 
@@ -58,6 +60,7 @@ const questionInclude = {
   medicine: { select: { id: true, name: true, image: true } },
   user: { select: { name: true, email: true } },
   answeredBy: { select: { name: true } },
+  _count: { select: { helpfulVotes: true } },
 } satisfies Prisma.QuestionInclude
 
 /** Low-stock ACTIVE medicines with 30-day sales velocity → reorder suggestions. */

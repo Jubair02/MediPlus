@@ -239,17 +239,20 @@ export default function CheckoutView() {
   // ---------- empty cart ----------
   if (!cartItems || cartItems.length === 0) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
-        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
-          <ShoppingBag className="size-8 text-primary" aria-hidden="true" />
-        </span>
-        <h1 className="mt-4 text-xl font-bold">Nothing to check out</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Your cart is empty — add some medicines first.
-        </p>
-        <Button className="mt-6 h-11 rounded-xl" onClick={() => setView('catalog')}>
-          Browse medicines
-        </Button>
+      <div className="mx-auto w-full max-w-md px-4 py-16">
+        {/* Dashed empty-state card — same pattern as the cart / Q&A empty states */}
+        <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed p-8 text-center">
+          <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
+            <ShoppingBag className="size-5 text-primary" aria-hidden="true" />
+          </span>
+          <h1 className="mt-1 text-lg font-bold">Nothing to check out</h1>
+          <p className="text-sm text-muted-foreground">
+            Your cart is empty — add some medicines first.
+          </p>
+          <Button className="mt-4 h-11 rounded-xl" onClick={() => setView('catalog')}>
+            Browse medicines
+          </Button>
+        </div>
       </div>
     )
   }
@@ -553,7 +556,7 @@ export default function CheckoutView() {
                   <span className="line-clamp-1">{i.medicine.name}</span>
                   <span className="text-xs text-muted-foreground">× {i.quantity}</span>
                 </span>
-                <span className="shrink-0 font-medium">
+                <span className="shrink-0 font-medium tabular-nums">
                   {fmtBDT(effectivePrice(i.medicine) * i.quantity)}
                 </span>
               </li>
@@ -599,7 +602,7 @@ export default function CheckoutView() {
             </div>
           )}
 
-          <div className="mt-4 space-y-2 text-sm">
+          <div className="mt-4 space-y-2 text-sm tabular-nums">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Subtotal</span>
               <span className="font-medium">{fmtBDT(subtotal)}</span>

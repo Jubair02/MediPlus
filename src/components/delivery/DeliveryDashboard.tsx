@@ -4,11 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Bike,
   CheckCircle2,
+  ChevronDown,
   Clock,
+  HandCoins,
   Loader2,
   MapPin,
   PackageOpen,
   Phone,
+  Route,
   StickyNote,
   Truck,
   UserRound,
@@ -18,6 +21,7 @@ import { motion } from 'framer-motion'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
+import { cn } from '@/lib/utils'
 import { fmtBDT, fmtDate, fmtDateTime } from '@/lib/format'
 import { ORDER_STATUS_LABELS, type Order, type OrderStatus } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
@@ -81,6 +85,155 @@ function fullAddress(o: Order): string {
   return `${a.line1}${a.area ? `, ${a.area}` : ''}, ${a.city}${a.postcode ? ` - ${a.postcode}` : ''}`
 }
 
+// ---------- Today's route plan (client-side grouping of active tasks) ----------
+
+interface RouteStop {
+  order: Order
+  codCollect: number
+}
+
+interface RouteGroup {
+  area: string
+  stops: RouteStop[]
+  collect: number
+}
+
+function codToCollect(o: Order): number {
+  return o.paymentMethod === 'COD' && o.paymentStatus !== 'PAID' ? o.total : 0
+}
+
+const COLLECT_CHIP =
+  'border-amber-300 bg-amber-100 text-amber-800 tabular-nums dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-400'
+const PAID_CHIP =
+  'border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400'
+
+function RoutePlanPanel({ groups }: { groups: RouteGroup[] }) {
+  // null = untouched → first group expanded by default
+  const [openAreas, setOpenAreas] = useState<Set<string> | null>(null)
+  const firstArea = groups[0]?.area ?? ''
+
+  const isOpen = (area: string) => (openAreas === null ? area === firstArea : openAreas.has(area))
+
+  function toggle(area: string) {
+    setOpenAreas((prev) => {
+      const next = new Set(prev ?? (firstArea ? [firstArea] : []))
+      if (next.has(area)) next.delete(area)
+      else next.add(area)
+      return next
+    })
+  }
+
+  const totalStops = groups.reduce((n, g) => n + g.stops.length, 0)
+  const totalCollect = groups.reduce((sum, g) => sum + g.collect, 0)
+
+  return (
+    <Card className="gap-3 p-4">
+      {/* Panel header */}
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+            <Route className="h-5 w-5 text-primary" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Today&apos;s route plan</p>
+            <p className="truncate text-xs text-muted-foreground">
+              Active stops grouped by area — plan your loop
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant="secondary" className="tabular-nums">
+            {totalStops} {totalStops === 1 ? 'stop' : 'stops'}
+          </Badge>
+          <Badge variant="outline" className={cn('gap-1', totalCollect > 0 ? COLLECT_CHIP : PAID_CHIP)}>
+            <HandCoins className="h-3.5 w-3.5" aria-hidden="true" />
+            {totalCollect > 0 ? `Collect ${fmtBDT(totalCollect)}` : 'No COD'}
+          </Badge>
+        </div>
+      </div>
+
+      {/* Area groups */}
+      <div className="space-y-2">
+        {groups.map((g) => {
+          const open = isOpen(g.area)
+          return (
+            <div key={g.area} className="overflow-hidden rounded-xl border">
+              <button
+                type="button"
+                onClick={() => toggle(g.area)}
+                aria-expanded={open}
+                className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-xl p-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+              >
+                <MapPin className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                <span className="min-w-0 truncate text-sm font-semibold">{g.area}</span>
+                <Badge variant="secondary" className="shrink-0 tabular-nums">
+                  {g.stops.length} {g.stops.length === 1 ? 'stop' : 'stops'}
+                </Badge>
+                {g.collect > 0 ? (
+                  <Badge variant="outline" className={cn('gap-1', COLLECT_CHIP)}>
+                    <HandCoins className="h-3 w-3" aria-hidden="true" />
+                    {fmtBDT(g.collect)}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className={PAID_CHIP}>No COD</Badge>
+                )}
+                <ChevronDown
+                  className={cn(
+                    'ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200',
+                    open && 'rotate-180'
+                  )}
+                  aria-hidden="true"
+                />
+              </button>
+              {open && (
+                <ul className="border-t px-3 py-1">
+                  {g.stops.map(({ order: o, codCollect }) => (
+                    <li
+                      key={o.id}
+                      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b py-2 last:border-b-0"
+                    >
+                      <span className="shrink-0 font-mono text-xs font-semibold">{o.orderNo}</span>
+                      {codCollect > 0 ? (
+                        <Badge variant="outline" className={COLLECT_CHIP}>
+                          Collect {fmtBDT(codCollect)}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className={PAID_CHIP}>Paid</Badge>
+                      )}
+                      <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                        {o.items?.length ?? 0} {(o.items?.length ?? 0) === 1 ? 'item' : 'items'}
+                      </span>
+                      <span className="min-w-0 flex-1 basis-32 truncate text-xs text-muted-foreground">
+                        {o.address?.recipient ?? o.user?.name ?? '—'}
+                        {o.address?.phone ? ` · ${o.address.phone}` : ''}
+                      </span>
+                      {o.address?.phone && (
+                        <Button
+                          asChild
+                          variant="outline"
+                          size="sm"
+                          className="ml-auto h-7 shrink-0 px-2 text-xs focus-visible:ring-primary/30"
+                        >
+                          <a
+                            href={`tel:${o.address.phone}`}
+                            aria-label={`Call ${o.address.recipient ?? 'customer'} about ${o.orderNo}`}
+                          >
+                            <Phone className="h-3 w-3" /> Call
+                          </a>
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
 export default function DeliveryDashboard() {
   const user = useAppStore((s) => s.user)
   const setAuthOpen = useAppStore((s) => s.setAuthOpen)
@@ -116,6 +269,25 @@ export default function DeliveryDashboard() {
     }),
     [active, history]
   )
+
+  // Route plan: group active orders by area, most stops first, then area name
+  const routeGroups = useMemo<RouteGroup[]>(() => {
+    const byArea = new Map<string, RouteGroup>()
+    for (const t of active) {
+      const area = t.address?.area || t.address?.city || 'Unknown area'
+      const codCollect = codToCollect(t)
+      const existing = byArea.get(area)
+      if (existing) {
+        existing.stops.push({ order: t, codCollect })
+        existing.collect += codCollect
+      } else {
+        byArea.set(area, { area, stops: [{ order: t, codCollect }], collect: codCollect })
+      }
+    }
+    return [...byArea.values()].sort(
+      (a, b) => b.stops.length - a.stops.length || a.area.localeCompare(b.area)
+    )
+  }, [active])
 
   const greeting = useMemo(() => {
     const h = new Date().getHours()
@@ -219,10 +391,14 @@ export default function DeliveryDashboard() {
         {/* Active orders */}
         <TabsContent value="active" className="mt-4">
           <motion.div
+            className="space-y-4"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
           >
+            {/* Today's route plan (derived from active tasks) */}
+            {!loading && routeGroups.length > 0 && <RoutePlanPanel groups={routeGroups} />}
+
             {loading ? (
               <div className="grid gap-4 md:grid-cols-2 [&>*]:min-w-0">
                 {[...Array(2)].map((_, i) => (

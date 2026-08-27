@@ -23,6 +23,16 @@ function sortQA<T extends { status: string; answeredAt: Date | null; createdAt: 
   return b.createdAt.getTime() - a.createdAt.getTime()
 }
 
+/** questionId → vote count, plus the caller's voted ids (empty when no valid token). */
+async function voteData(questionIds: string[], userId?: string) {
+  const counts = await db.helpfulVote.groupBy({ by: ['questionId'], where: { questionId: { in: questionIds } }, _count: { _all: true } })
+  const countByQuestion = new Map(counts.map((c) => [c.questionId, c._count._all]))
+  const mine = userId
+    ? await db.helpfulVote.findMany({ where: { userId, questionId: { in: questionIds } }, select: { questionId: true } })
+    : []
+  return { countByQuestion, votedIds: new Set(mine.map((v) => v.questionId)) }
+}
+
 /**
  * GET /api/questions?medicineId=<id>  → public Q&A for a medicine (ANSWERED for everyone + caller's own PENDING when a valid token is sent)
  * GET /api/questions?mine=1           → all of the caller's own questions (newest first)
@@ -40,9 +50,14 @@ export async function GET(request: Request) {
           medicine: { select: { id: true, name: true } },
           user: { select: { name: true } },
           answeredBy: { select: { name: true } },
+          _count: { select: { helpfulVotes: true } },
         },
         orderBy: { createdAt: 'desc' },
       })
+      const { countByQuestion, votedIds } = await voteData(
+        questions.map((q) => q.id),
+        user.id
+      )
       return Response.json({
         questions: questions.map((q) => ({
           id: q.id,
@@ -55,6 +70,8 @@ export async function GET(request: Request) {
           medicineName: q.medicine.name,
           askedByName: askedName(q.user.name),
           answerByName: q.answer ? answerName(q.answeredBy?.name ?? null) : null,
+          helpfulCount: countByQuestion.get(q.id) ?? 0,
+          hasVoted: votedIds.has(q.id),
         })),
       })
     }
@@ -72,9 +89,14 @@ export async function GET(request: Request) {
       include: {
         user: { select: { name: true } },
         answeredBy: { select: { name: true } },
+        _count: { select: { helpfulVotes: true } },
       },
     })
     questions.sort(sortQA)
+    const { countByQuestion, votedIds } = await voteData(
+      questions.map((q) => q.id),
+      user?.id
+    )
     return Response.json({
       questions: questions.slice(0, PUBLIC_LIMIT).map((q) => ({
         id: q.id,
@@ -85,6 +107,8 @@ export async function GET(request: Request) {
         answeredAt: q.answeredAt,
         askedByName: askedName(q.user.name),
         answerByName: q.answer ? answerName(q.answeredBy?.name ?? null) : null,
+        helpfulCount: countByQuestion.get(q.id) ?? 0,
+        hasVoted: votedIds.has(q.id),
       })),
     })
   } catch (e) {
@@ -130,6 +154,8 @@ export async function POST(request: Request) {
           answeredAt: created.answeredAt,
           askedByName: askedName(created.user.name),
           answerByName: created.answer ? answerName(created.answeredBy?.name ?? null) : null,
+          helpfulCount: 0,
+          hasVoted: false,
         },
       },
       { status: 201 }

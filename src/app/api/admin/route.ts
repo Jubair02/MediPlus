@@ -21,6 +21,9 @@ import {
 import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
 
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
+const PAYMENT_STATUSES = ['PENDING', 'PAID', 'FAILED', 'REFUNDED']
+const PAYMENT_METHODS = ['COD', 'BKASH_DEMO']
+const PAYMENTS_PAGE_SIZE = 20
 const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
 const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
 
@@ -275,7 +278,72 @@ async function deliveryPerformance() {
   }
 }
 
-/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|export-orders|export-medicines|export-users|export-report|export-delivery */
+/** One ledger row per order (newest first): payment info + customer from the user relation. */
+interface PaymentLedgerRow {
+  orderId: string
+  orderNo: string
+  customerName: string
+  customerEmail: string
+  method: string
+  status: string
+  amount: number
+  orderStatus: string
+  transactionId: string | null
+  paymentId: string | null
+  createdAt: Date
+}
+
+async function paymentsLedger(): Promise<PaymentLedgerRow[]> {
+  const orders = await db.order.findMany({
+    include: { payment: true, user: { select: { id: true, name: true, email: true } } },
+    orderBy: { createdAt: 'desc' },
+  })
+  return orders.map((o) => ({
+    orderId: o.id,
+    orderNo: o.orderNo,
+    customerName: o.user?.name ?? 'Customer',
+    customerEmail: o.user?.email ?? '',
+    method: o.paymentMethod,
+    status: o.paymentStatus,
+    amount: round2(o.total),
+    orderStatus: o.status,
+    transactionId: o.payment?.transactionId ?? null,
+    paymentId: o.payment?.id ?? null,
+    createdAt: o.createdAt,
+  }))
+}
+
+/** Invalid method/status values are ignored (same convention as the orders resource). */
+function filterPayments(rows: PaymentLedgerRow[], method: string | null, status: string | null): PaymentLedgerRow[] {
+  return rows.filter(
+    (r) =>
+      (!method || !PAYMENT_METHODS.includes(method) || r.method === method) &&
+      (!status || !PAYMENT_STATUSES.includes(status) || r.status === status)
+  )
+}
+
+/** Global KPIs — always computed over ALL orders, independent of the method/status filters. */
+function paymentsSummary(rows: PaymentLedgerRow[]) {
+  let totalCollected = 0
+  let codPending = 0
+  let bkashTotal = 0
+  let refunded = 0
+  for (const r of rows) {
+    if (r.status === 'PAID') totalCollected += r.amount
+    if (r.method === 'COD' && r.status === 'PENDING' && !['CANCELLED', 'FAILED'].includes(r.orderStatus)) codPending += r.amount
+    if (r.method === 'BKASH_DEMO' && r.status === 'PAID') bkashTotal += r.amount
+    if (r.status === 'REFUNDED') refunded += r.amount
+  }
+  return {
+    totalCollected: round2(totalCollected),
+    codPending: round2(codPending),
+    bkashTotal: round2(bkashTotal),
+    refunded: round2(refunded),
+    totalCount: rows.length,
+  }
+}
+
+/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|payments|payments-export|export-orders|export-medicines|export-users|export-report|export-delivery */
 export async function GET(request: Request) {
   try {
     const user = await requireRole(request, ['ADMIN'])
@@ -595,6 +663,39 @@ export async function GET(request: Request) {
       return Response.json({ filename: `report-${csvDate(new Date())}.csv`, csv: lines.join('\n') })
     }
 
+    if (resource === 'payments') {
+      const all = await paymentsLedger()
+      const filtered = filterPayments(all, sp.get('method'), sp.get('status'))
+      const total = filtered.length
+      const totalPages = Math.max(1, Math.ceil(total / PAYMENTS_PAGE_SIZE))
+      const page = Math.min(Math.max(1, numOr(sp.get('page'), 1)), totalPages)
+      return Response.json({
+        rows: filtered.slice((page - 1) * PAYMENTS_PAGE_SIZE, page * PAYMENTS_PAGE_SIZE),
+        summary: paymentsSummary(all),
+        page,
+        totalPages,
+        total,
+      })
+    }
+
+    if (resource === 'payments-export') {
+      const filtered = filterPayments(await paymentsLedger(), sp.get('method'), sp.get('status'))
+      const header = ['Order No', 'Customer', 'Method', 'Status', 'Amount', 'Order Status', 'Transaction ID', 'Date']
+      const rows = filtered.map((r) =>
+        csvRow([
+          r.orderNo,
+          r.customerName,
+          r.method,
+          r.status,
+          r.amount,
+          r.orderStatus,
+          r.transactionId ?? '',
+          r.createdAt.toISOString(),
+        ])
+      )
+      return Response.json({ filename: `payments-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+    }
+
     if (resource === 'delivery-performance') {
       return Response.json(await deliveryPerformance())
     }
@@ -632,6 +733,7 @@ export async function GET(request: Request) {
  *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...}
  *  {action:'create-category'|'update-category'|'delete-category', ...}
  *  {action:'update-order', id, status?, deliveryStaffId?}
+ *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED}
  *  {action:'create-staff', data:{name,email,password,phone?,role}}
  *  {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}}
  *  {action:'update-coupon', id, coupon:{...partial coupon fields}}
@@ -904,6 +1006,24 @@ export async function PUT(request: Request) {
       }
 
       const full = await db.order.findUnique({ where: { id: updated.id }, include: orderInclude })
+      if (!full) return notFound('Order not found')
+      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+    }
+
+    // ---- payments ----
+    if (action === 'payment-status') {
+      const orderId = optStr(body.orderId)
+      const status = optStr(body.status)
+      if (!orderId) return badRequest('Order id is required')
+      if (!status || !PAYMENT_STATUSES.includes(status)) return badRequest('Invalid payment status')
+      const existing = await db.order.findUnique({ where: { id: orderId }, select: { id: true } })
+      if (!existing) return notFound('Order not found')
+      await db.$transaction(async (tx) => {
+        await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } })
+        const payment = await tx.payment.findUnique({ where: { orderId } })
+        if (payment) await tx.payment.update({ where: { id: payment.id }, data: { status } })
+      })
+      const full = await db.order.findUnique({ where: { id: orderId }, include: orderInclude })
       if (!full) return notFound('Order not found')
       return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
     }

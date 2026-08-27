@@ -15,6 +15,7 @@ import {
   Plus,
   ShoppingCart,
   Tags,
+  ThumbsUp,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
@@ -60,6 +61,84 @@ function timeAgo(iso: string): string {
   if (mo < 12) return `${mo} month${mo === 1 ? '' : 's'} ago`
   const y = Math.floor(mo / 12)
   return `${y} year${y === 1 ? '' : 's'} ago`
+}
+
+/**
+ * Shimmer sweep layered inside a Skeleton (framer-motion — no global keyframes
+ * needed). Pairs with the skeleton's own animate-pulse for a polished loader.
+ */
+function Shimmer() {
+  return (
+    <span
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]"
+      aria-hidden="true"
+    >
+      <motion.span
+        className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/50 to-transparent dark:via-white/10"
+        animate={{ x: ['-150%', '300%'] }}
+        transition={{ duration: 1.3, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.4 }}
+      />
+    </span>
+  )
+}
+
+/**
+ * Helpful vote toggle on an ANSWERED Q&A bubble. Render is fully derived from
+ * the question row (optimistically updated by the parent); `busy` is the
+ * per-question in-flight flag so only the clicked button spins.
+ */
+function HelpfulButton({
+  question,
+  busy,
+  onToggle,
+}: {
+  question: MedicineQA
+  busy: boolean
+  onToggle: () => void
+}) {
+  const voted = question.hasVoted ?? false
+  const count = question.helpfulCount ?? 0
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      aria-pressed={voted}
+      aria-label={voted ? 'Remove helpful vote' : 'Mark this answer helpful'}
+      title={
+        voted
+          ? 'You marked this answer helpful — click to remove your vote'
+          : 'Was this answer helpful? Mark it helpful'
+      }
+      onClick={onToggle}
+      className={cn(
+        'mt-2 h-7 gap-1.5 rounded-xl px-2.5 text-xs active:scale-95',
+        voted
+          ? // `!` needed: the outline variant's dark:bg-input/30 & dark:border-input
+            // would otherwise win the cascade over these in dark mode
+            'border-primary/30! bg-primary/10! text-primary! hover:bg-primary/15! hover:text-primary!'
+          : 'text-muted-foreground'
+      )}
+    >
+      {busy ? (
+        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+      ) : (
+        <ThumbsUp className={cn('size-3.5', voted && 'fill-primary')} aria-hidden="true" />
+      )}
+      Helpful
+      {count > 0 && (
+        <span
+          className={cn(
+            'rounded-full px-1.5 text-[10px] font-semibold tabular-nums',
+            voted ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+          )}
+        >
+          {count}
+        </span>
+      )}
+    </Button>
+  )
 }
 
 /** Inner body — keyed by medicine id so qty/adding state resets per product */
@@ -129,9 +208,9 @@ function DetailBody({ medicine: m }: { medicine: Medicine }) {
           </p>
         )}
 
-        <p className="mt-3 text-2xl font-extrabold text-primary">{fmtBDT(price)}</p>
+        <p className="mt-3 text-2xl font-extrabold tabular-nums text-primary">{fmtBDT(price)}</p>
         {price < m.price && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm tabular-nums text-muted-foreground">
             <span className="line-through">{fmtBDT(m.price)}</span>{' '}
             <span className="font-medium text-red-600">save {fmtBDT(m.price - price)}</span>
           </p>
@@ -225,7 +304,7 @@ function DetailBody({ medicine: m }: { medicine: Medicine }) {
           </div>
           <div className="text-right">
             <p className="text-xs text-muted-foreground">Subtotal</p>
-            <p className="text-lg font-bold">{fmtBDT(price * (out ? 0 : qty))}</p>
+            <p className="text-lg font-bold tabular-nums">{fmtBDT(price * (out ? 0 : qty))}</p>
           </div>
         </div>
 
@@ -256,6 +335,8 @@ function QASection({ medicineId }: { medicineId: string }) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  // Per-question in-flight id — only the clicked Helpful button spins/disables
+  const [votingId, setVotingId] = useState<string | null>(null)
 
   // Auth OPTIONAL on this GET — sending the token also surfaces own PENDING rows
   useEffect(() => {
@@ -311,6 +392,53 @@ function QASection({ medicineId }: { medicineId: string }) {
     setComposerOpen((o) => !o)
   }
 
+  /** Optimistic helpful-vote toggle; guests get the AuthModal, never a request */
+  const toggleHelpful = async (q: MedicineQA) => {
+    if (!user) {
+      setAuthOpen(true)
+      return
+    }
+    if (votingId) return // one vote request at a time keeps rollback predictable
+    const snapshot = questions
+    const nextVoted = !(q.hasVoted ?? false)
+    setQuestions((list) =>
+      (list ?? []).map((row) =>
+        row.id === q.id
+          ? {
+              ...row,
+              hasVoted: nextVoted,
+              helpfulCount: Math.max(0, (row.helpfulCount ?? 0) + (nextVoted ? 1 : -1)),
+            }
+          : row
+      )
+    )
+    setVotingId(q.id)
+    try {
+      const d = await api<{ questionId: string; helpfulCount: number; voted: boolean }>(
+        '/api/questions/helpful',
+        { method: 'POST', body: { questionId: q.id } }
+      )
+      // Reconcile with server truth
+      setQuestions((list) =>
+        (list ?? []).map((row) =>
+          row.id === d.questionId ? { ...row, helpfulCount: d.helpfulCount, hasVoted: d.voted } : row
+        )
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to record your vote'
+      if (/no longer accepting|only answered/i.test(message)) {
+        // 400 — question was likely reverted to pending; refetch for fresh state
+        toast.error('This question is no longer accepting votes')
+        setReloadKey((k) => k + 1)
+      } else {
+        toast.error(message)
+        setQuestions(snapshot) // rollback the optimistic toggle
+      }
+    } finally {
+      setVotingId(null)
+    }
+  }
+
   return (
     <section aria-label="Questions and answers" className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -335,17 +463,27 @@ function QASection({ medicineId }: { medicineId: string }) {
       </div>
 
       {loading ? (
-        /* 2 gray bubble rows while fetching */
+        /* 2 gray bubble rows while fetching (pulse + shimmer sweep) */
         <div className="space-y-3" aria-hidden="true">
           {[0, 1].map((i) => (
             <div key={i} className="space-y-2">
               <div className="flex items-start gap-2.5">
-                <Skeleton className="size-7 shrink-0 rounded-lg" />
-                <Skeleton className={cn('flex-1 rounded-xl', i === 0 ? 'h-9' : 'h-7')} />
+                <Skeleton className="relative size-7 shrink-0 overflow-hidden rounded-lg">
+                  <Shimmer />
+                </Skeleton>
+                <Skeleton
+                  className={cn('relative flex-1 overflow-hidden rounded-xl', i === 0 ? 'h-9' : 'h-7')}
+                >
+                  <Shimmer />
+                </Skeleton>
               </div>
               <div className="flex items-start gap-2.5 pl-9">
-                <Skeleton className="size-7 shrink-0 rounded-lg" />
-                <Skeleton className="h-12 flex-1 rounded-xl" />
+                <Skeleton className="relative size-7 shrink-0 overflow-hidden rounded-lg">
+                  <Shimmer />
+                </Skeleton>
+                <Skeleton className="relative h-12 flex-1 overflow-hidden rounded-xl">
+                  <Shimmer />
+                </Skeleton>
               </div>
             </div>
           ))}
@@ -425,7 +563,7 @@ function QASection({ medicineId }: { medicineId: string }) {
                       </p>
                     </div>
                   </div>
-                  {/* Answer row — indented, pharmacist chip */}
+                  {/* Answer row — indented, pharmacist chip, helpful votes */}
                   {q.answer && (
                     <div className="flex items-start gap-2.5 pl-9">
                       <span
@@ -434,12 +572,26 @@ function QASection({ medicineId }: { medicineId: string }) {
                       >
                         A
                       </span>
-                      <div className="min-w-0 flex-1 rounded-xl rounded-tl-sm border bg-card/60 p-3">
+                      <div
+                        role="group"
+                        aria-label={
+                          `Answer from ${q.answerByName ?? 'Pharmacist'}` +
+                          ((q.helpfulCount ?? 0) > 0
+                            ? `, marked helpful by ${q.helpfulCount} ${q.helpfulCount === 1 ? 'person' : 'people'}`
+                            : '')
+                        }
+                        className="min-w-0 flex-1 rounded-xl rounded-tl-sm border bg-card/60 p-3"
+                      >
                         <p className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary">
                           <BadgeCheck className="size-3.5" aria-hidden="true" />
                           {q.answerByName ?? 'Pharmacist'}
                         </p>
                         <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{q.answer}</p>
+                        <HelpfulButton
+                          question={q}
+                          busy={votingId === q.id}
+                          onToggle={() => void toggleHelpful(q)}
+                        />
                       </div>
                     </div>
                   )}

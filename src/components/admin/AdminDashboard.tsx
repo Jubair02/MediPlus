@@ -11,6 +11,7 @@ import {
   ShoppingBag,
   Ticket,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 import { useAppStore } from '@/lib/store'
@@ -18,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import AdminOverview from './AdminOverview'
 import AdminOrders from './AdminOrders'
+import AdminPayments from './AdminPayments'
 import AdminMedicines from './AdminMedicines'
 import AdminCategories from './AdminCategories'
 import AdminCoupons from './AdminCoupons'
@@ -28,6 +30,7 @@ import AdminReports from './AdminReports'
 type AdminTab =
   | 'overview'
   | 'orders'
+  | 'payments'
   | 'medicines'
   | 'categories'
   | 'coupons'
@@ -38,6 +41,7 @@ type AdminTab =
 const NAV: { id: AdminTab; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
+  { id: 'payments', label: 'Payments', icon: Wallet },
   { id: 'medicines', label: 'Medicines', icon: Pill },
   { id: 'categories', label: 'Categories', icon: FolderTree },
   { id: 'coupons', label: 'Coupons', icon: Ticket },
@@ -49,6 +53,7 @@ const NAV: { id: AdminTab; label: string; icon: LucideIcon }[] = [
 const TITLES: Record<AdminTab, { title: string; subtitle: string }> = {
   overview: { title: 'Overview', subtitle: 'Store health at a glance' },
   orders: { title: 'Orders', subtitle: 'Confirm, assign delivery staff and track every order' },
+  payments: { title: 'Payments', subtitle: 'Track collections, bKash receipts and refunds' },
   medicines: { title: 'Medicines', subtitle: 'Manage the catalog, pricing and stock levels' },
   categories: { title: 'Categories', subtitle: 'Organize the catalog into departments' },
   coupons: { title: 'Coupons', subtitle: 'Create discount campaigns and track redemptions' },
@@ -144,6 +149,7 @@ export default function AdminDashboard() {
         >
           {activeTab === 'overview' && <AdminOverview onViewAllOrders={() => setActiveTab('orders')} />}
           {activeTab === 'orders' && <AdminOrders />}
+          {activeTab === 'payments' && <AdminPayments />}
           {activeTab === 'medicines' && <AdminMedicines />}
           {activeTab === 'categories' && <AdminCategories />}
           {activeTab === 'coupons' && <AdminCoupons />}

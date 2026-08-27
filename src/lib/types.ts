@@ -209,6 +209,10 @@ export interface MedicineQA {
   answeredAt: string | null
   askedByName: string
   answerByName: string | null
+  /** Round 9: number of helpful votes (answered rows only; 0 for pending) */
+  helpfulCount?: number
+  /** Round 9: whether the caller has voted (only true when a valid token is sent) */
+  hasVoted?: boolean
 }
 
 /** GET /api/questions?mine=1 — own questions incl. medicine name (all statuses) */
@@ -231,6 +235,8 @@ export interface PharmacistQuestion {
   askedByName: string
   askedByEmail: string
   answerByName: string | null
+  /** Round 9: number of helpful votes on this question (0 while pending) */
+  helpfulCount?: number
 }
 
 export interface QuestionCounts {
@@ -254,6 +260,32 @@ export interface RestockSuggestion {
   daysLeft: number | null
   suggestedQty: number
   estValue: number
+}
+
+// ---------- Payments ledger (Round 9) ----------
+
+/** GET /api/admin?resource=payments — one row per order (payment view) */
+export interface AdminPaymentRow {
+  orderId: string
+  orderNo: string
+  customerName: string
+  customerEmail: string
+  method: 'COD' | 'BKASH_DEMO'
+  status: PaymentStatus
+  amount: number
+  orderStatus: OrderStatus
+  transactionId: string | null
+  paymentId: string | null
+  createdAt: string
+}
+
+/** Summary block accompanying the payments ledger */
+export interface AdminPaymentsSummary {
+  totalCollected: number
+  codPending: number
+  bkashTotal: number
+  refunded: number
+  totalCount: number
 }
 
 export const ORDER_STATUS_FLOW: OrderStatus[] = [

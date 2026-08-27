@@ -9,6 +9,7 @@ import {
   Pencil,
   RefreshCw,
   RotateCcw,
+  ThumbsUp,
   X,
   XCircle,
 } from 'lucide-react'
@@ -36,6 +37,9 @@ import MedImage from './MedImage'
 
 const ANSWER_MIN = 2
 const ANSWER_MAX = 1000
+
+/** Round 9: helpful votes ride along on pharmacist question rows (9-a backend). */
+type HelpfulQuestion = PharmacistQuestion & { helpfulCount?: number }
 
 const FILTERS: {
   key: QuestionStatus
@@ -105,7 +109,7 @@ interface PharmacistQAProps {
 
 export default function PharmacistQA({ onCountsChanged }: PharmacistQAProps) {
   const [status, setStatus] = useState<QuestionStatus>('PENDING')
-  const [list, setList] = useState<PharmacistQuestion[]>([])
+  const [list, setList] = useState<HelpfulQuestion[]>([])
   const [counts, setCounts] = useState<QuestionCounts | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -126,7 +130,7 @@ export default function PharmacistQA({ onCountsChanged }: PharmacistQAProps) {
       setError(null)
     }
     try {
-      const d = await api<{ questions: PharmacistQuestion[]; counts: QuestionCounts }>(
+      const d = await api<{ questions: HelpfulQuestion[]; counts: QuestionCounts }>(
         `/api/pharmacist?resource=questions&status=${filter}`
       )
       setList(d.questions)
@@ -297,6 +301,7 @@ export default function PharmacistQA({ onCountsChanged }: PharmacistQAProps) {
           {list.map((q) => {
             const isEditing = editingId === q.id
             const isSaving = savingId === q.id
+            const helpful = q.helpfulCount ?? 0
             return (
               <Card key={q.id} className="gap-0 p-0 transition-shadow hover:shadow-sm">
                 <CardContent className="space-y-3 p-4">
@@ -310,14 +315,26 @@ export default function PharmacistQA({ onCountsChanged }: PharmacistQAProps) {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center justify-between gap-x-2">
                         <p className="truncate text-sm font-medium">{q.medicineName}</p>
-                        {q.status === 'REJECTED' && (
-                          <Badge
-                            variant="outline"
-                            className="border-gray-300 bg-gray-100 text-gray-600"
-                          >
-                            Rejected
-                          </Badge>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {q.status === 'ANSWERED' && helpful > 0 && (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                              title={`${helpful} customers found this helpful`}
+                              aria-label={`${helpful} customers found this helpful`}
+                            >
+                              <ThumbsUp className="h-3 w-3" aria-hidden="true" />
+                              <span className="tabular-nums">{helpful}</span>
+                            </span>
+                          )}
+                          {q.status === 'REJECTED' && (
+                            <Badge
+                              variant="outline"
+                              className="border-gray-300 bg-gray-100 text-gray-600"
+                            >
+                              Rejected
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       <p
                         className="text-xs text-muted-foreground"

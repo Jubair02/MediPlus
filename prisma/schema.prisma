@@ -26,6 +26,7 @@ model User {
   reviews       Review[]
   questions     Question[]
   answeredQuestions Question[] @relation("QuestionAnswerer")
+  helpfulVotesGiven HelpfulVote[]
   stockMovements StockMovement[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -213,10 +214,23 @@ model Question {
   status       String    @default("PENDING") // PENDING | ANSWERED | REJECTED
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+  helpfulVotes HelpfulVote[]
 
   @@index([medicineId])
   @@index([userId])
   @@index([status, createdAt])
+}
+
+model HelpfulVote {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([questionId, userId])
+  @@index([questionId])
 }
 
 model StockMovement {

@@ -146,7 +146,7 @@ export default function MedicineCard({
           onView(medicine)
         }
       }}
-      className="group relative cursor-pointer gap-0 overflow-hidden py-0 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative cursor-pointer gap-0 overflow-hidden py-0 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2"
     >
       {/* Image area */}
       <div className="relative aspect-square w-full overflow-hidden rounded-t-xl">
@@ -211,7 +211,7 @@ export default function MedicineCard({
         </div>
 
         <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 tabular-nums">
             <span className="text-base font-bold text-primary">{fmtBDT(price)}</span>
             {pct > 0 && (
               <span className="text-xs text-muted-foreground line-through">{fmtBDT(medicine.price)}</span>
