@@ -39,6 +39,8 @@ export interface Medicine {
   expiryDate?: string | null
   status: 'ACTIVE' | 'INACTIVE'
   createdAt?: string
+  rating?: number | null
+  ratingCount?: number
 }
 
 export interface CartItem {
@@ -61,6 +63,32 @@ export interface Prescription {
   createdAt: string
   user?: { id: string; name: string | null; email: string; phone?: string | null } | null
   orderNo?: string | null
+  orderId?: string | null
+}
+
+export interface Review {
+  id: string
+  rating: number
+  comment?: string | null
+  createdAt: string
+  user?: { id: string; name: string | null } | null
+  verified?: boolean
+}
+
+export interface ReviewSummary {
+  avg: number
+  count: number
+  distribution: { rating: number; count: number }[]
+}
+
+export interface StockMovementItem {
+  id: string
+  delta: number
+  reason: string
+  note?: string | null
+  createdAt: string
+  medicine?: { id: string; name: string; image?: string | null; unit?: string } | null
+  user?: { id: string; name: string | null } | null
 }
 
 export interface Address {
@@ -140,6 +168,8 @@ export interface AdminStats {
   topSelling: { name: string; qty: number; revenue: number }[]
   lowStock: Medicine[]
   recentOrders: Order[]
+  totalReviews?: number
+  avgRating?: number | null
 }
 
 export interface PharmacistStats {

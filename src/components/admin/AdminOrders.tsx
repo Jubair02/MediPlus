@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  Download,
   Loader2,
   Mail,
   MapPin,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { downloadCsv } from '@/lib/download'
 import { fmtBDT, fmtDateTime } from '@/lib/format'
 import {
   ORDER_STATUS_LABELS,
@@ -96,6 +98,7 @@ export default function AdminOrders() {
   const [editStatus, setEditStatus] = useState<OrderStatus>('PENDING')
   const [editStaff, setEditStaff] = useState('NONE')
   const [savePending, setSavePending] = useState(false)
+  const [exportPending, setExportPending] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -128,6 +131,21 @@ export default function AdminOrders() {
   }, [orders, search, statusFilter])
 
   const selected = useMemo(() => orders.find((o) => o.id === selectedId) ?? null, [orders, selectedId])
+
+  async function exportCsv() {
+    setExportPending(true)
+    try {
+      const d = await api<{ filename: string; csv: string }>('/api/admin?resource=export-orders')
+      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+        throw new Error('Export unavailable')
+      downloadCsv(d.filename, d.csv)
+      toast.success('Orders exported')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to export orders')
+    } finally {
+      setExportPending(false)
+    }
+  }
 
   function openDialog(order: Order) {
     setSelectedId(order.id)
@@ -182,6 +200,16 @@ export default function AdminOrders() {
             placeholder="Search order no or customer"
             className="pl-8"
           />
+        </div>
+        <div className="sm:ml-auto">
+          <Button variant="outline" onClick={() => void exportCsv()} disabled={exportPending}>
+            {exportPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Export CSV
+          </Button>
         </div>
       </div>
 

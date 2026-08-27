@@ -1,8 +1,21 @@
 'use client'
 
-import { AlertTriangle, CalendarClock, CheckCircle2, FileCheck, Pill, RefreshCw, XCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { formatDistanceToNow } from 'date-fns'
+import {
+  AlertTriangle,
+  ArrowRight,
+  CalendarClock,
+  CheckCircle2,
+  FileCheck,
+  History,
+  Pill,
+  RefreshCw,
+  XCircle,
+} from 'lucide-react'
+import { api } from '@/lib/api'
 import { fmtBDT, fmtDate } from '@/lib/format'
-import type { PharmacistStats } from '@/lib/types'
+import type { PharmacistStats, StockMovementItem } from '@/lib/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,7 +26,28 @@ interface PharmacistOverviewProps {
   stats: PharmacistStats | null
   loading: boolean
   onGoToPrescriptions: () => void
+  onOpenStockLog: () => void
   onRefresh: () => void
+}
+
+function formatDelta(delta: number): string {
+  if (delta > 0) return `+${delta}`
+  if (delta < 0) return `−${Math.abs(delta)}`
+  return '0'
+}
+
+function DeltaBadge({ delta }: { delta: number }) {
+  const tone =
+    delta > 0
+      ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+      : delta < 0
+        ? 'bg-red-100 text-red-700 border-red-300'
+        : 'bg-gray-100 text-gray-600 border-gray-300'
+  return (
+    <Badge variant="outline" className={`border font-mono ${tone}`}>
+      {formatDelta(delta)}
+    </Badge>
+  )
 }
 
 interface StatCardProps {
@@ -44,8 +78,26 @@ export default function PharmacistOverview({
   stats,
   loading,
   onGoToPrescriptions,
+  onOpenStockLog,
   onRefresh,
 }: PharmacistOverviewProps) {
+  // Recent stock movements (graceful: failures render the empty state)
+  const [recent, setRecent] = useState<StockMovementItem[] | null>(null)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    api<{ movements: StockMovementItem[] }>('/api/pharmacist?resource=movements&take=6', {
+      signal: ctrl.signal,
+    })
+      .then((d) => {
+        if (!ctrl.signal.aborted) setRecent(d.movements ?? [])
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setRecent([])
+      })
+    return () => ctrl.abort()
+  }, [])
+
   if (loading && !stats) {
     return (
       <div className="space-y-4">
@@ -223,6 +275,52 @@ export default function PharmacistOverview({
                   </li>
                 )
               })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Recent stock activity */}
+      <Card className="p-4">
+        <CardHeader className="flex flex-row items-center justify-between p-0 pb-3">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <History className="h-4 w-4 text-teal-600" /> Recent stock activity
+            </CardTitle>
+            <CardDescription>The latest stock changes across the catalog</CardDescription>
+          </div>
+          <Button variant="link" size="sm" className="h-auto p-0" onClick={onOpenStockLog}>
+            View full log <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </CardHeader>
+        <CardContent className="p-0">
+          {recent === null ? (
+            <div className="space-y-2">
+              {[...Array(3)].map((_, i) => (
+                <Skeleton key={i} className="h-11 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : recent.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              No stock activity yet — movements appear here as orders and edits change stock.
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {recent.map((m) => (
+                <li
+                  key={m.id}
+                  className="flex items-center gap-3 rounded-lg border p-2.5 transition-colors hover:bg-accent/50"
+                >
+                  <DeltaBadge delta={m.delta} />
+                  <p className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {m.medicine?.name ?? 'Unknown medicine'}
+                  </p>
+                  <span className="max-w-36 shrink-0 truncate text-xs text-muted-foreground">
+                    {formatDistanceToNow(new Date(m.createdAt), { addSuffix: true })}
+                  </span>
+                </li>
+              ))}
             </ul>
           )}
         </CardContent>

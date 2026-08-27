@@ -24,6 +24,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { MedImage, addToCart } from '@/components/store/MedicineCard'
+import ReviewsSection from '@/components/store/ReviewsSection'
 import { cn } from '@/lib/utils'
 
 const stockToneClass: Record<string, string> = {
@@ -200,6 +201,10 @@ export default function MedicineDetailModal() {
           <DialogDescription>Medicine details</DialogDescription>
         </DialogHeader>
         <DetailBody key={medicine.id} medicine={medicine} />
+        {/* Ratings & reviews — full width under the detail body */}
+        <div className="mt-4 border-t px-4 pb-6 pt-4 sm:px-6">
+          <ReviewsSection medicineId={medicine.id} />
+        </div>
       </DialogContent>
     </Dialog>
   )

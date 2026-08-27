@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Loader2, PackageSearch, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { Download, Loader2, PackageSearch, Pencil, Plus, Search, Star, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { downloadCsv } from '@/lib/download'
 import { effectivePrice, fmtBDT, fmtDate } from '@/lib/format'
 import type { Category, Medicine } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
@@ -381,6 +382,7 @@ export default function AdminMedicines() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deletePending, setDeletePending] = useState(false)
   const [rowPending, setRowPending] = useState<string | null>(null)
+  const [exportPending, setExportPending] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -443,6 +445,21 @@ export default function AdminMedicines() {
     }
   }
 
+  async function exportCsv() {
+    setExportPending(true)
+    try {
+      const d = await api<{ filename: string; csv: string }>('/api/admin?resource=export-medicines')
+      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+        throw new Error('Export unavailable')
+      downloadCsv(d.filename, d.csv)
+      toast.success('Medicines exported')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to export medicines')
+    } finally {
+      setExportPending(false)
+    }
+  }
+
   const deleteTarget = meds.find((m) => m.id === deleteId) ?? null
 
   return (
@@ -458,7 +475,15 @@ export default function AdminMedicines() {
             className="pl-8"
           />
         </div>
-        <div className="sm:ml-auto">
+        <div className="flex flex-wrap gap-2 sm:ml-auto">
+          <Button variant="outline" onClick={() => void exportCsv()} disabled={exportPending}>
+            {exportPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Export CSV
+          </Button>
           <Button
             onClick={() => {
               setEditing(null)
@@ -474,12 +499,13 @@ export default function AdminMedicines() {
       <Card className="gap-0 py-4">
         <CardContent className="px-4">
           <div className="overflow-x-auto scrollbar-thin">
-            <Table className="min-w-[860px]">
+            <Table className="min-w-[920px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Medicine</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead className="text-right">Price</TableHead>
+                  <TableHead>Rating</TableHead>
                   <TableHead className="text-center">Stock</TableHead>
                   <TableHead className="text-center">Rx</TableHead>
                   <TableHead className="text-center">Active</TableHead>
@@ -491,14 +517,14 @@ export default function AdminMedicines() {
                 {loading ? (
                   [...Array(6)].map((_, i) => (
                     <TableRow key={`sk-${i}`}>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={9}>
                         <Skeleton className="h-10 w-full" />
                       </TableCell>
                     </TableRow>
                   ))
                 ) : filtered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={9}>
                       <div className="flex flex-col items-center gap-2 py-10 text-center">
                         <PackageSearch className="h-8 w-8 text-muted-foreground/50" />
                         <p className="text-sm text-muted-foreground">No medicines found.</p>
@@ -533,6 +559,17 @@ export default function AdminMedicines() {
                               {fmtBDT(m.price)}
                             </span>
                           ) : null}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {m.rating != null && (m.ratingCount ?? 0) > 0 ? (
+                            <span className="inline-flex items-center gap-1 text-sm">
+                              <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                              <span className="font-medium">{m.rating.toFixed(1)}</span>
+                              <span className="text-xs text-muted-foreground">· {m.ratingCount}</span>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           <StockChip stock={m.stock} />
@@ -570,6 +607,7 @@ export default function AdminMedicines() {
                                 setEditing(m)
                                 setDialogOpen(true)
                               }}
+                              title={`Edit ${m.name}`}
                               aria-label={`Edit ${m.name}`}
                             >
                               <Pencil className="h-3.5 w-3.5" />
@@ -579,6 +617,7 @@ export default function AdminMedicines() {
                               size="icon"
                               className="h-8 w-8 text-red-600 hover:bg-red-50 hover:text-red-700"
                               onClick={() => setDeleteId(m.id)}
+                              title={`Delete ${m.name}`}
                               aria-label={`Delete ${m.name}`}
                             >
                               <Trash2 className="h-3.5 w-3.5" />

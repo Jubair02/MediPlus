@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Loader2, Search, Users as UsersIcon } from 'lucide-react'
+import { Download, Loader2, Search, Users as UsersIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { downloadCsv } from '@/lib/download'
 import { useAppStore } from '@/lib/store'
 import { fmtDate } from '@/lib/format'
 import type { AuthUser, Role } from '@/lib/types'
@@ -44,6 +45,7 @@ export default function AdminUsers() {
   const [roleFilter, setRoleFilter] = useState('ALL')
   const [pendingRole, setPendingRole] = useState<{ user: AuthUser; role: Role } | null>(null)
   const [rowPending, setRowPending] = useState<string | null>(null)
+  const [exportPending, setExportPending] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -72,6 +74,21 @@ export default function AdminUsers() {
 
   function isSelf(u: AuthUser): boolean {
     return u.id === me?.id || u.email === me?.email
+  }
+
+  async function exportCsv() {
+    setExportPending(true)
+    try {
+      const d = await api<{ filename: string; csv: string }>('/api/admin?resource=export-users')
+      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+        throw new Error('Export unavailable')
+      downloadCsv(d.filename, d.csv)
+      toast.success('Users exported')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to export users')
+    } finally {
+      setExportPending(false)
+    }
   }
 
   async function applyRole(change: { user: AuthUser; role: Role }) {
@@ -136,6 +153,16 @@ export default function AdminUsers() {
             placeholder="Search name, email or phone"
             className="pl-8"
           />
+        </div>
+        <div className="sm:ml-auto">
+          <Button variant="outline" onClick={() => void exportCsv()} disabled={exportPending}>
+            {exportPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Export CSV
+          </Button>
         </div>
       </div>
 

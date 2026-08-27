@@ -23,6 +23,8 @@ model User {
   notifications Notification[]
   deliveries    Order[]        @relation("DeliveryStaff")
   reviewsDone   Prescription[] @relation("ReviewedBy")
+  reviews       Review[]
+  stockMovements StockMovement[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 }
@@ -72,6 +74,8 @@ model Medicine {
   cartItems            CartItem[]
   wishlistItems        WishlistItem[]
   orderItems           OrderItem[]
+  reviews              Review[]
+  stockMovements       StockMovement[]
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
 }
@@ -174,6 +178,36 @@ model Coupon {
   isActive    Boolean   @default(true)
   expiresAt   DateTime?
   createdAt   DateTime  @default(now())
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  rating     Int // 1-5
+  comment    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, medicineId])
+  @@index([medicineId])
+}
+
+model StockMovement {
+  id         String   @id @default(cuid())
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  delta      Int // positive = restock, negative = deduction
+  reason     String // ORDER_CONFIRM | ORDER_CANCEL | MANUAL_EDIT | RX_APPROVE | SEED
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([medicineId])
+  @@index([createdAt])
 }
 
 model Notification {

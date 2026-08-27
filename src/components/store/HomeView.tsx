@@ -8,6 +8,7 @@ import {
   FileCheck,
   FileText,
   ShieldCheck,
+  Star,
   Truck,
   UploadCloud,
 } from 'lucide-react'
@@ -45,6 +46,7 @@ export default function HomeView() {
 
   const [categories, setCategories] = useState<Category[] | null>(null)
   const [deals, setDeals] = useState<Medicine[] | null>(null)
+  const [topRated, setTopRated] = useState<Medicine[] | null>(null)
 
   useEffect(() => {
     const ac = new AbortController()
@@ -53,6 +55,9 @@ export default function HomeView() {
       .catch(() => {})
     api<{ medicines: Medicine[] }>('/api/medicines?featured=true&limit=8', { signal: ac.signal })
       .then((d) => setDeals(d.medicines.slice(0, 8)))
+      .catch(() => {})
+    api<{ medicines: Medicine[] }>('/api/medicines?sort=rating&limit=4', { signal: ac.signal })
+      .then((d) => setTopRated(d.medicines.filter((m) => (m.ratingCount ?? 0) > 0).slice(0, 4)))
       .catch(() => {})
     return () => ac.abort()
   }, [])
@@ -245,6 +250,84 @@ export default function HomeView() {
           </div>
         )}
       </motion.section>
+
+      {/* ---------- Top rated ---------- */}
+      {topRated !== null && topRated.length > 0 && (
+        <motion.section
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.18 }}
+          className="mt-12"
+        >
+          <div className="mb-4 flex items-end justify-between">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight sm:text-2xl">
+                Top rated by customers
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Real reviews from verified MediPlus orders
+              </p>
+            </div>
+            <Button
+              variant="link"
+              className="h-11 whitespace-nowrap px-2"
+              onClick={() => {
+                resetFilters()
+                setFilters({ sort: 'rating', page: 1 })
+                setView('catalog')
+              }}
+            >
+              Browse top rated
+            </Button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:gap-4">
+            {topRated.map((m, i) => (
+              <button
+                key={m.id}
+                onClick={() => setDetailMedicine(m)}
+                className="group flex items-center gap-4 rounded-2xl border bg-card p-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-4"
+                aria-label={`View ${m.name}`}
+              >
+                <span className="relative shrink-0">
+                  <MedImage
+                    src={m.image}
+                    alt={m.name}
+                    className="size-16 rounded-xl border sm:size-20"
+                  />
+                  <span className="absolute -left-1.5 -top-1.5 flex size-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground shadow">
+                    {i + 1}
+                  </span>
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold sm:text-base">
+                    {m.name}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {[m.brand, m.genericName].filter(Boolean).join(' · ') || m.category?.name}
+                  </span>
+                  <span className="mt-1 flex items-center gap-1.5">
+                    <Star className="size-3.5 fill-amber-400 text-amber-400" aria-hidden="true" />
+                    <span className="text-sm font-bold">{(m.rating ?? 0).toFixed(1)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      ({m.ratingCount} review{m.ratingCount === 1 ? '' : 's'})
+                    </span>
+                  </span>
+                </span>
+                <span className="hidden shrink-0 text-right sm:block">
+                  <span className="block text-base font-bold text-primary">
+                    {fmtBDT(m.discountPrice ?? m.price)}
+                  </span>
+                  {m.discountPrice != null && (
+                    <span className="block text-xs text-muted-foreground line-through">
+                      {fmtBDT(m.price)}
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </motion.section>
+      )}
 
       {/* ---------- Prescription banner ---------- */}
       <motion.section

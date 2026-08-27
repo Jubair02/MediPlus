@@ -1,0 +1,632 @@
+     1→import { db } from '@/lib/db'
+     2→import { requireRole, badRequest, notFound, serverError, hashPassword } from '@/lib/auth'
+     3→import {
+     4→  readJson,
+     5→  optStr,
+     6→  numOr,
+     7→  round2,
+     8→  publicUser,
+     9→  buildMedicineData,
+    10→  parseCategoryInput,
+    11→  slugify,
+    12→  orderInclude,
+    13→  parseOrder,
+    14→  notify,
+    15→  addressFromJson,
+    16→  escapeCsv,
+    17→  recordStockMovements,
+    18→  type StockMovementEntry,
+    19→} from '../_lib'
+    20→import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
+    21→
+    22→const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
+    23→const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
+    24→const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
+    25→
+    26→function dayKey(d: Date): string {
+    27→  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+    28→}
+    29→
+    30→function csvDate(d: Date): string {
+    31→  const m = String(d.getMonth() + 1).padStart(2, '0')
+    32→  const day = String(d.getDate()).padStart(2, '0')
+    33→  return `${d.getFullYear()}${m}${day}`
+    34→}
+    35→
+    36→function round1(n: number): number {
+    37→  return Math.round(n * 10) / 10
+    38→}
+    39→
+    40→function csvRow(values: unknown[]): string {
+    41→  return values.map(escapeCsv).join(',')
+    42→}
+    43→
+    44→/** Shared data source for the reports view and the export-report CSV (same shape as GET ?resource=reports). */
+    45→async function reportData(days: number) {
+    46→  const notCancelled = { not: 'CANCELLED' }
+    47→  const start = new Date()
+    48→  start.setHours(0, 0, 0, 0)
+    49→  start.setDate(start.getDate() - (days - 1))
+    50→
+    51→  const [orders, orderItems, lowStock] = await Promise.all([
+    52→    db.order.findMany({
+    53→      where: { status: notCancelled, createdAt: { gte: start } },
+    54→      select: { createdAt: true, total: true },
+    55→    }),
+    56→    db.orderItem.findMany({
+    57→      where: { order: { status: notCancelled } },
+    58→      select: { name: true, price: true, quantity: true, medicine: { select: { category: { select: { name: true } } } } },
+    59→    }),
+    60→    db.medicine.findMany({
+    61→      where: { status: 'ACTIVE', stock: { lte: 10 } },
+    62→      include: { category: true },
+    63→      orderBy: { stock: 'asc' },
+    64→      take: 10,
+    65→    }),
+    66→  ])
+    67→
+    68→  const byDay = new Map<string, { revenue: number; orders: number }>()
+    69→  for (let i = 0; i < days; i++) {
+    70→    const d = new Date(start)
+    71→    d.setDate(start.getDate() + i)
+    72→    byDay.set(dayKey(d), { revenue: 0, orders: 0 })
+    73→  }
+    74→  for (const o of orders) {
+    75→    const entry = byDay.get(dayKey(o.createdAt))
+    76→    if (entry) {
+    77→      entry.revenue = round2(entry.revenue + o.total)
+    78→      entry.orders += 1
+    79→    }
+    80→  }
+    81→  const salesByDay = Array.from(byDay.entries()).map(([key, v]) => {
+    82→    const [y, m, d] = key.split('-').map(Number)
+    83→    const date = new Date(y, m - 1, d)
+    84→    return {
+    85→      date: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+    86→      revenue: v.revenue,
+    87→      orders: v.orders,
+    88→    }
+    89→  })
+    90→
+    91→  const catMap = new Map<string, { qty: number; revenue: number }>()
+    92→  const medMap = new Map<string, { qty: number; revenue: number }>()
+    93→  for (const it of orderItems) {
+    94→    const revenue = round2(it.price * it.quantity)
+    95→    const catName = it.medicine?.category?.name ?? 'Uncategorized'
+    96→    const cat = catMap.get(catName) ?? { qty: 0, revenue: 0 }
+    97→    cat.qty += it.quantity
+    98→    cat.revenue = round2(cat.revenue + revenue)
+    99→    catMap.set(catName, cat)
+   100→    const med = medMap.get(it.name) ?? { qty: 0, revenue: 0 }
+   101→    med.qty += it.quantity
+   102→    med.revenue = round2(med.revenue + revenue)
+   103→    medMap.set(it.name, med)
+   104→  }
+   105→  const categorySales = Array.from(catMap.entries())
+   106→    .map(([category, v]) => ({ category, qty: v.qty, revenue: v.revenue }))
+   107→    .sort((a, b) => b.revenue - a.revenue)
+   108→  const topMedicines = Array.from(medMap.entries())
+   109→    .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
+   110→    .sort((a, b) => b.qty - a.qty)
+   111→    .slice(0, 5)
+   112→
+   113→  return { salesByDay, categorySales, topMedicines, lowStock }
+   114→}
+   115→
+   116→/** GET /api/admin?resource=stats|users|medicines|categories|orders|staff|reports */
+   117→export async function GET(request: Request) {
+   118→  try {
+   119→    const user = await requireRole(request, ['ADMIN'])
+   120→    if (user instanceof Response) return user
+   121→    const sp = new URL(request.url).searchParams
+   122→    const resource = sp.get('resource') || 'stats'
+   123→
+   124→    if (resource === 'stats') {
+   125→      const notCancelled = { not: 'CANCELLED' }
+   126→      const todayStart = new Date()
+   127→      todayStart.setHours(0, 0, 0, 0)
+   128→      const weekStart = new Date(todayStart)
+   129→      weekStart.setDate(weekStart.getDate() - 6)
+   130→
+   131→      const [
+   132→        totalUsers,
+   133→        totalOrders,
+   134→        revenueAgg,
+   135→        pendingOrders,
+   136→        lowStockCount,
+   137→        pendingPrescriptions,
+   138→        totalMedicines,
+   139→        weekOrders,
+   140→        statusGroups,
+   141→        orderItems,
+   142→        lowStock,
+   143→        recentOrdersRaw,
+   144→        totalReviews,
+   145→        reviewAgg,
+   146→      ] = await Promise.all([
+   147→        db.user.count({ where: { role: 'CUSTOMER' } }),
+   148→        db.order.count({ where: { status: notCancelled } }),
+   149→        db.order.aggregate({ _sum: { total: true }, where: { status: notCancelled } }),
+   150→        db.order.count({ where: { status: { in: ['PENDING', 'PRESCRIPTION_REVIEW'] } } }),
+   151→        db.medicine.count({ where: { status: 'ACTIVE', stock: { lte: 10 } } }),
+   152→        db.prescription.count({ where: { status: 'PENDING' } }),
+   153→        db.medicine.count(),
+   154→        db.order.findMany({ where: { status: notCancelled, createdAt: { gte: weekStart } }, select: { createdAt: true, total: true } }),
+   155→        db.order.groupBy({ by: ['status'], _count: { _all: true } }),
+   156→        db.orderItem.findMany({
+   157→          where: { order: { status: notCancelled } },
+   158→          select: { name: true, price: true, quantity: true },
+   159→        }),
+   160→        db.medicine.findMany({
+   161→          where: { status: 'ACTIVE', stock: { lte: 10 } },
+   162→          include: { category: true },
+   163→          orderBy: { stock: 'asc' },
+   164→          take: 10,
+   165→        }),
+   166→        db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'desc' }, take: 8 }),
+   167→        db.review.count(),
+   168→        db.review.aggregate({ _avg: { rating: true } }),
+   169→      ])
+   170→
+   171→      // revenue by day (last 7 days)
+   172→      const byDay = new Map<string, { revenue: number; orders: number }>()
+   173→      for (let i = 0; i < 7; i++) {
+   174→        const d = new Date(weekStart)
+   175→        d.setDate(weekStart.getDate() + i)
+   176→        byDay.set(dayKey(d), { revenue: 0, orders: 0 })
+   177→      }
+   178→      for (const o of weekOrders) {
+   179→        const entry = byDay.get(dayKey(o.createdAt))
+   180→        if (entry) {
+   181→          entry.revenue = round2(entry.revenue + o.total)
+   182→          entry.orders += 1
+   183→        }
+   184→      }
+   185→      const revenueByDay = Array.from(byDay.entries()).map(([key, v]) => {
+   186→        const [y, m, d] = key.split('-').map(Number)
+   187→        const date = new Date(y, m - 1, d)
+   188→        return { date: `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${d}`, revenue: v.revenue, orders: v.orders }
+   189→      })
+   190→
+   191→      // top selling (top 5 by qty)
+   192→      const salesMap = new Map<string, { qty: number; revenue: number }>()
+   193→      for (const it of orderItems) {
+   194→        const entry = salesMap.get(it.name) ?? { qty: 0, revenue: 0 }
+   195→        entry.qty += it.quantity
+   196→        entry.revenue = round2(entry.revenue + it.price * it.quantity)
+   197→        salesMap.set(it.name, entry)
+   198→      }
+   199→      const topSelling = Array.from(salesMap.entries())
+   200→        .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
+   201→        .sort((a, b) => b.qty - a.qty)
+   202→        .slice(0, 5)
+   203→
+   204→      return Response.json({
+   205→        stats: {
+   206→          totalUsers,
+   207→          totalOrders,
+   208→          totalRevenue: round2(revenueAgg._sum.total ?? 0),
+   209→          pendingOrders,
+   210→          lowStockCount,
+   211→          pendingPrescriptions,
+   212→          totalMedicines,
+   213→          revenueByDay,
+   214→          statusCounts: statusGroups.map((g) => ({ status: g.status, count: g._count._all })),
+   215→          topSelling,
+   216→          lowStock,
+   217→          recentOrders: recentOrdersRaw.map((o) => parseOrder(o, { prescriptionImage: true })),
+   218→          totalReviews,
+   219→          avgRating: reviewAgg._avg.rating == null ? null : round1(reviewAgg._avg.rating),
+   220→        },
+   221→      })
+   222→    }
+   223→
+   224→    if (resource === 'users') {
+   225→      const search = sp.get('search')?.trim()
+   226→      const role = sp.get('role')
+   227→      const where: { OR?: object[]; role?: string } = {}
+   228→      if (search) where.OR = [{ name: { contains: search } }, { email: { contains: search } }]
+   229→      if (role && ROLES.includes(role)) where.role = role
+   230→      const users = await db.user.findMany({ where, select: USER_SELECT, orderBy: { createdAt: 'desc' } })
+   231→      return Response.json({ users })
+   232→    }
+   233→
+   234→    if (resource === 'medicines') {
+   235→      const search = sp.get('search')?.trim()
+   236→      const medicines = await db.medicine.findMany({
+   237→        where: search
+   238→          ? {
+   239→              OR: [
+   240→                { name: { contains: search } },
+   241→                { genericName: { contains: search } },
+   242→                { brand: { contains: search } },
+   243→              ],
+   244→            }
+   245→          : {},
+   246→        include: { category: true },
+   247→        orderBy: { createdAt: 'desc' },
+   248→      })
+   249→      return Response.json({ medicines })
+   250→    }
+   251→
+   252→    if (resource === 'categories') {
+   253→      const categories = await db.category.findMany({
+   254→        orderBy: { name: 'asc' },
+   255→        include: { _count: { select: { medicines: { where: { status: 'ACTIVE' } } } } },
+   256→      })
+   257→      return Response.json({
+   258→        categories: categories.map((c) => ({
+   259→          id: c.id,
+   260→          name: c.name,
+   261→          slug: c.slug,
+   262→          description: c.description,
+   263→          image: c.image,
+   264→          medicineCount: c._count.medicines,
+   265→        })),
+   266→      })
+   267→    }
+   268→
+   269→    if (resource === 'orders') {
+   270→      const status = sp.get('status')
+   271→      const search = sp.get('search')?.trim()
+   272→      const where: { status?: string; OR?: object[] } = {}
+   273→      if (status && ORDER_STATUSES.includes(status)) where.status = status
+   274→      if (search) {
+   275→        where.OR = [
+   276→          { orderNo: { contains: search } },
+   277→          { user: { is: { name: { contains: search } } } },
+   278→          { user: { is: { email: { contains: search } } } },
+   279→        ]
+   280→      }
+   281→      const orders = await db.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' } })
+   282→      return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+   283→    }
+   284→
+   285→    if (resource === 'staff') {
+   286→      const [pharmacists, deliveryStaff] = await Promise.all([
+   287→        db.user.findMany({ where: { role: 'PHARMACIST' }, select: USER_SELECT, orderBy: { createdAt: 'asc' } }),
+   288→        db.user.findMany({ where: { role: 'DELIVERY' }, select: USER_SELECT, orderBy: { createdAt: 'asc' } }),
+   289→      ])
+   290→      return Response.json({ pharmacists, deliveryStaff })
+   291→    }
+   292→
+   293→    if (resource === 'reports') {
+   294→      const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
+   295→      return Response.json(await reportData(days))
+   296→    }
+   297→
+   298→    if (resource === 'export-orders') {
+   299→      const orders = await db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'asc' } })
+   300→      const header = ['orderNo', 'createdAt', 'customer', 'email', 'city', 'items', 'subtotal', 'discount', 'deliveryFee', 'total', 'paymentMethod', 'paymentStatus', 'status']
+   301→      const rows = orders.map((o) =>
+   302→        csvRow([
+   303→          o.orderNo,
+   304→          o.createdAt.toISOString(),
+   305→          o.user?.name ?? '',
+   306→          o.user?.email ?? '',
+   307→          addressFromJson(o.addressJson).city,
+   308→          o.items.map((it) => `${it.quantity}x ${it.name}`).join('; '),
+   309→          round2(o.subtotal),
+   310→          round2(o.discount),
+   311→          round2(o.deliveryFee),
+   312→          round2(o.total),
+   313→          o.paymentMethod,
+   314→          o.paymentStatus,
+   315→          o.status,
+   316→        ])
+   317→      )
+   318→      return Response.json({ filename: `orders-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   319→    }
+   320→
+   321→    if (resource === 'export-medicines') {
+   322→      const [medicines, grouped] = await Promise.all([
+   323→        db.medicine.findMany({ include: { category: true }, orderBy: { name: 'asc' } }),
+   324→        db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
+   325→      ])
+   326→      const ratingByMed = new Map(grouped.map((g) => [g.medicineId, g]))
+   327→      const header = ['name', 'genericName', 'brand', 'category', 'price', 'discountPrice', 'effectivePrice', 'stock', 'unit', 'requiresPrescription', 'status', 'expiryDate', 'rating', 'ratingCount']
+   328→      const rows = medicines.map((m) => {
+   329→        const g = ratingByMed.get(m.id)
+   330→        return csvRow([
+   331→          m.name,
+   332→          m.genericName ?? '',
+   333→          m.brand ?? '',
+   334→          m.category?.name ?? '',
+   335→          m.price,
+   336→          m.discountPrice ?? '',
+   337→          m.discountPrice ?? m.price,
+   338→          m.stock,
+   339→          m.unit,
+   340→          m.requiresPrescription ? 'YES' : 'NO',
+   341→          m.status,
+   342→          m.expiryDate ? m.expiryDate.toISOString().slice(0, 10) : '',
+   343→          g?._avg.rating != null ? round1(g._avg.rating) : '',
+   344→          g?._count._all ?? 0,
+   345→        ])
+   346→      })
+   347→      return Response.json({ filename: `medicines-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   348→    }
+   349→
+   350→    if (resource === 'export-users') {
+   351→      const users = await db.user.findMany({
+   352→        select: { ...USER_SELECT, _count: { select: { orders: true } } },
+   353→        orderBy: { createdAt: 'asc' },
+   354→      })
+   355→      const header = ['name', 'email', 'phone', 'role', 'status', 'createdAt', 'ordersCount']
+   356→      const rows = users.map((u) =>
+   357→        csvRow([
+   358→          u.name ?? '',
+   359→          u.email,
+   360→          u.phone ?? '',
+   361→          u.role,
+   362→          u.status,
+   363→          u.createdAt.toISOString(),
+   364→          u._count.orders,
+   365→        ])
+   366→      )
+   367→      return Response.json({ filename: `users-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   368→    }
+   369→
+   370→    if (resource === 'export-report') {
+   371→      const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
+   372→      const { salesByDay, categorySales, topMedicines, lowStock } = await reportData(days)
+   373→      const lines: string[] = []
+   374→      lines.push('Sales by day', csvRow(['date', 'orders', 'revenue']))
+   375→      for (const s of salesByDay) lines.push(csvRow([s.date, s.orders, s.revenue]))
+   376→      lines.push('', 'Sales by category', csvRow(['category', 'qty', 'revenue']))
+   377→      for (const c of categorySales) lines.push(csvRow([c.category, c.qty, c.revenue]))
+   378→      lines.push('', 'Top medicines', csvRow(['name', 'qty', 'revenue']))
+   379→      for (const t of topMedicines) lines.push(csvRow([t.name, t.qty, t.revenue]))
+   380→      lines.push('', 'Low stock', csvRow(['name', 'stock', 'price']))
+   381→      for (const m of lowStock) lines.push(csvRow([m.name, m.stock, m.discountPrice ?? m.price]))
+   382→      return Response.json({ filename: `report-${csvDate(new Date())}.csv`, csv: lines.join('\n') })
+   383→    }
+   384→
+   385→    return badRequest('Unknown resource')
+   386→  } catch (e) {
+   387→    return serverError(e)
+   388→  }
+   389→}
+   390→
+   391→/**
+   392→ * PUT /api/admin
+   393→ *  {action:'update-user', id, status?, role?}
+   394→ *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...}
+   395→ *  {action:'create-category'|'update-category'|'delete-category', ...}
+   396→ *  {action:'update-order', id, status?, deliveryStaffId?}
+   397→ *  {action:'create-staff', data:{name,email,password,phone?,role}}
+   398→ */
+   399→export async function PUT(request: Request) {
+   400→  try {
+   401→    const user = await requireRole(request, ['ADMIN'])
+   402→    if (user instanceof Response) return user
+   403→    const body = await readJson(request)
+   404→    if (!body) return badRequest('Invalid request body')
+   405→    const action = optStr(body.action)
+   406→
+   407→    // ---- users ----
+   408→    if (action === 'update-user') {
+   409→      const id = optStr(body.id)
+   410→      if (!id) return badRequest('User id is required')
+   411→      const target = await db.user.findUnique({ where: { id } })
+   412→      if (!target) return notFound('User not found')
+   413→      const status = optStr(body.status)
+   414→      const role = optStr(body.role)
+   415→      if (status && status !== 'ACTIVE' && status !== 'INACTIVE') return badRequest('Status must be ACTIVE or INACTIVE')
+   416→      if (role && !ROLES.includes(role)) return badRequest('Invalid role')
+   417→      if (target.id === user.id) {
+   418→        if (role && role !== target.role) return badRequest('You cannot change your own role')
+   419→        if (status && status !== target.status) return badRequest('You cannot deactivate your own account')
+   420→      }
+   421→      const updated = await db.user.update({
+   422→        where: { id },
+   423→        data: {
+   424→          ...(status ? { status } : {}),
+   425→          ...(role ? { role } : {}),
+   426→        },
+   427→      })
+   428→      return Response.json({ user: publicUser(updated) })
+   429→    }
+   430→
+   431→    if (action === 'create-staff') {
+   432→      const data = (typeof body.data === 'object' && body.data !== null ? body.data : {}) as Record<string, unknown>
+   433→      const name = optStr(data.name)?.trim()
+   434→      const email = optStr(data.email)?.trim().toLowerCase()
+   435→      const password = optStr(data.password)
+   436→      const phone = optStr(data.phone)?.trim()
+   437→      const role = optStr(data.role)
+   438→      if (!name) return badRequest('Name is required')
+   439→      if (!email) return badRequest('Email is required')
+   440→      if (!password || password.length < 6) return badRequest('Password must be at least 6 characters')
+   441→      if (role !== 'PHARMACIST' && role !== 'DELIVERY') return badRequest('Role must be PHARMACIST or DELIVERY')
+   442→      const existing = await db.user.findUnique({ where: { email } })
+   443→      if (existing) return badRequest('An account with this email already exists')
+   444→      const created = await db.user.create({
+   445→        data: { name, email, password: hashPassword(password), phone: phone || null, role, status: 'ACTIVE' },
+   446→      })
+   447→      return Response.json({ user: publicUser(created) }, { status: 201 })
+   448→    }
+   449→
+   450→    // ---- medicines ----
+   451→    if (action === 'create-medicine') {
+   452→      const parsed = await buildMedicineData(body.data, 'create')
+   453→      if ('error' in parsed) return badRequest(parsed.error)
+   454→      const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+   455→      if (medicine.stock > 0) {
+   456→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
+   457→      }
+   458→      return Response.json({ medicine }, { status: 201 })
+   459→    }
+   460→
+   461→    if (action === 'update-medicine') {
+   462→      const id = optStr(body.id)
+   463→      if (!id) return badRequest('Medicine id is required')
+   464→      const existing = await db.medicine.findUnique({ where: { id } })
+   465→      if (!existing) return notFound('Medicine not found')
+   466→      const parsed = await buildMedicineData(body.data, 'update')
+   467→      if ('error' in parsed) return badRequest(parsed.error)
+   468→      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
+   469→      const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+   470→      if (newStock !== undefined && newStock !== existing.stock) {
+   471→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+   472→      }
+   473→      return Response.json({ medicine })
+   474→    }
+   475→
+   476→    if (action === 'delete-medicine') {
+   477→      const id = optStr(body.id)
+   478→      if (!id) return badRequest('Medicine id is required')
+   479→      const existing = await db.medicine.findUnique({ where: { id } })
+   480→      if (!existing) return notFound('Medicine not found')
+   481→      await db.medicine.update({ where: { id }, data: { status: 'INACTIVE' } })
+   482→      await db.cartItem.deleteMany({ where: { medicineId: id } })
+   483→      return Response.json({ ok: true })
+   484→    }
+   485→
+   486→    // ---- categories ----
+   487→    if (action === 'create-category') {
+   488→      const parsed = parseCategoryInput(body.data, 'create')
+   489→      if ('error' in parsed) return badRequest(parsed.error)
+   490→      const name = parsed.data.name as string
+   491→      const existing = await db.category.findFirst({ where: { name } })
+   492→      if (existing) return badRequest('A category with this name already exists')
+   493→      let slug = slugify(name)
+   494→      const slugTaken = await db.category.findUnique({ where: { slug } })
+   495→      if (slugTaken) slug = `${slug}-${Date.now().toString(36)}`
+   496→      const category = await db.category.create({ data: { name, slug, description: parsed.data.description ?? null } })
+   497→      return Response.json({ category }, { status: 201 })
+   498→    }
+   499→
+   500→    if (action === 'update-category') {
+   501→      const id = optStr(body.id)
+   502→      if (!id) return badRequest('Category id is required')
+   503→      const existing = await db.category.findUnique({ where: { id } })
+   504→      if (!existing) return notFound('Category not found')
+   505→      const parsed = parseCategoryInput(body.data, 'update')
+   506→      if ('error' in parsed) return badRequest(parsed.error)
+   507→      const name = parsed.data.name ?? existing.name
+   508→      if (parsed.data.name) {
+   509→        const clash = await db.category.findFirst({ where: { name: parsed.data.name, NOT: { id } } })
+   510→        if (clash) return badRequest('A category with this name already exists')
+   511→      }
+   512→      const category = await db.category.update({
+   513→        where: { id },
+   514→        data: { name, slug: slugify(name), description: parsed.data.description !== undefined ? parsed.data.description : existing.description },
+   515→      })
+   516→      return Response.json({ category })
+   517→    }
+   518→
+   519→    if (action === 'delete-category') {
+   520→      const id = optStr(body.id)
+   521→      if (!id) return badRequest('Category id is required')
+   522→      const existing = await db.category.findUnique({ where: { id } })
+   523→      if (!existing) return notFound('Category not found')
+   524→      await db.category.delete({ where: { id } })
+   525→      return Response.json({ ok: true })
+   526→    }
+   527→
+   528→    // ---- orders ----
+   529→    if (action === 'update-order') {
+   530→      const id = optStr(body.id)
+   531→      if (!id) return badRequest('Order id is required')
+   532→      const order = await db.order.findUnique({
+   533→        where: { id },
+   534→        include: { ...orderInclude, items: { include: { medicine: true } } },
+   535→      })
+   536→      if (!order) return notFound('Order not found')
+   537→
+   538→      const status = optStr(body.status)
+   539→      const deliveryStaffId = optStr(body.deliveryStaffId)
+   540→
+   541→      if (status && !ORDER_STATUSES.includes(status)) return badRequest('Invalid status')
+   542→      if (deliveryStaffId) {
+   543→        const staff = await db.user.findUnique({ where: { id: deliveryStaffId } })
+   544→        if (!staff || staff.role !== 'DELIVERY') return badRequest('Selected user is not delivery staff')
+   545→      }
+   546→
+   547→      if (status && status !== order.status) {
+   548→        if (status === 'CONFIRMED' && ['PENDING', 'PRESCRIPTION_REVIEW'].includes(order.status)) {
+   549→          for (const item of order.items) {
+   550→            if (!item.medicine || item.medicine.status !== 'ACTIVE' || item.medicine.stock < item.quantity) {
+   551→              return badRequest(`Insufficient stock for ${item.name}`)
+   552→            }
+   553→          }
+   554→          await db.$transaction(async (tx) => {
+   555→            const movements: StockMovementEntry[] = []
+   556→            for (const item of order.items) {
+   557→              if (item.medicineId) {
+   558→                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+   559→                movements.push({
+   560→                  medicineId: item.medicineId,
+   561→                  delta: -item.quantity,
+   562→                  reason: 'ORDER_CONFIRM',
+   563→                  note: `Order ${order.orderNo} confirmed`,
+   564→                  userId: user.id,
+   565→                })
+   566→              }
+   567→            }
+   568→            await recordStockMovements(tx, movements)
+   569→            const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
+   570→            if (!existingPayment) {
+   571→              await tx.payment.create({
+   572→                data: {
+   573→                  orderId: order.id,
+   574→                  method: order.paymentMethod,
+   575→                  status: order.paymentStatus === 'PAID' ? 'PAID' : 'PENDING',
+   576→                  amount: order.total,
+   577→                },
+   578→              })
+   579→            }
+   580→          })
+   581→        }
+   582→        if (status === 'CANCELLED' && ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY'].includes(order.status)) {
+   583→          const movements: StockMovementEntry[] = []
+   584→          await db.$transaction(async (tx) => {
+   585→            for (const item of order.items) {
+   586→              if (item.medicineId) {
+   587→                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { increment: item.quantity } } })
+   588→                movements.push({
+   589→                  medicineId: item.medicineId,
+   590→                  delta: item.quantity,
+   591→                  reason: 'ORDER_CANCEL',
+   592→                  note: `Order ${order.orderNo} cancelled — stock restored`,
+   593→                  userId: user.id,
+   594→                })
+   595→              }
+   596→            }
+   597→            await recordStockMovements(tx, movements)
+   598→          })
+   599→        }
+   600→        if (status === 'CANCELLED' && order.paymentStatus === 'PAID') {
+   601→          if (order.payment) {
+   602→            await db.payment.update({ where: { id: order.payment.id }, data: { status: 'REFUNDED' } })
+   603→          }
+   604→        }
+   605→      }
+   606→
+   607→      const wasPaid = order.paymentStatus === 'PAID'
+   608→      const updated = await db.order.update({
+   609→        where: { id },
+   610→        data: {
+   611→          ...(status ? { status, statusNote: 'Updated by admin' } : {}),
+   612→          ...(status === 'CANCELLED' && wasPaid ? { paymentStatus: 'REFUNDED' } : {}),
+   613→          ...(deliveryStaffId ? { deliveryStaffId } : {}),
+   614→        },
+   615→      })
+   616→
+   617→      if (status && status !== order.status) {
+   618→        const label = ORDER_STATUS_LABELS[status as OrderStatus] ?? status
+   619→        await notify(order.userId, label, `Order ${order.orderNo} status updated to ${label}.`)
+   620→      }
+   621→
+   622→      const full = await db.order.findUnique({ where: { id: updated.id }, include: orderInclude })
+   623→      if (!full) return notFound('Order not found')
+   624→      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+   625→    }
+   626→
+   627→    return badRequest('Invalid action')
+   628→  } catch (e) {
+   629→    return serverError(e)
+   630→  }
+   631→}
+   632→

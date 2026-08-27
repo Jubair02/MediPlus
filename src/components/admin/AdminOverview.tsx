@@ -20,6 +20,7 @@ import {
   Banknote,
   ClipboardList,
   FileCheck,
+  MessageSquareHeart,
   ShoppingBag,
   Users,
   type LucideIcon,
@@ -103,7 +104,7 @@ function OverviewSkeleton() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        {[...Array(6)].map((_, i) => (
+        {[...Array(7)].map((_, i) => (
           <Skeleton key={i} className="h-32 w-full rounded-xl" />
         ))}
       </div>
@@ -213,11 +214,23 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
           value={String(stats.lowStockCount)}
           hint="Restock recommended"
         />
+        <StatCard
+          icon={MessageSquareHeart}
+          bgClass="bg-teal-100"
+          iconClass="text-teal-700"
+          label="Reviews"
+          value={String(stats.totalReviews ?? 0)}
+          hint={
+            stats.avgRating != null
+              ? `★ ${stats.avgRating.toFixed(1)} average rating`
+              : 'No reviews yet'
+          }
+        />
       </div>
 
       {/* Charts */}
       <div className="grid gap-4 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+        <Card className="min-w-0 lg:col-span-3">
           <CardHeader>
             <CardTitle>Revenue trend</CardTitle>
             <CardDescription>Daily gross revenue</CardDescription>
@@ -261,7 +274,7 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card className="min-w-0 lg:col-span-2">
           <CardHeader>
             <CardTitle>Order statuses</CardTitle>
             <CardDescription>Distribution across the pipeline</CardDescription>
@@ -300,7 +313,7 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
 
       {/* Recent orders + low stock */}
       <div className="grid gap-4 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+        <Card className="min-w-0 lg:col-span-3">
           <CardHeader className="flex flex-row items-center justify-between">
             <div className="space-y-1">
               <CardTitle>Recent orders</CardTitle>
@@ -314,7 +327,7 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
             {(stats.recentOrders ?? []).length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">No orders yet.</p>
             ) : (
-              <div className="max-h-96 overflow-y-auto rounded-md border scrollbar-thin">
+              <div className="max-h-96 overflow-auto rounded-md border scrollbar-thin">
                 <Table>
                   <TableHeader className="sticky top-0 bg-card">
                     <TableRow>
@@ -350,7 +363,7 @@ export default function AdminOverview({ onViewAllOrders }: { onViewAllOrders: ()
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card className="min-w-0 lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-red-500" /> Low stock

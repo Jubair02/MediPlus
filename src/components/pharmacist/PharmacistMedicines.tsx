@@ -525,6 +525,7 @@ export default function PharmacistMedicines() {
                               className="h-6 w-6"
                               disabled={rowPending === m.id || m.stock <= 0}
                               onClick={() => void adjustStock(m, -1)}
+                              title={`Decrease stock of ${m.name}`}
                               aria-label={`Decrease stock of ${m.name}`}
                             >
                               <Minus className="h-3 w-3" />
@@ -536,6 +537,7 @@ export default function PharmacistMedicines() {
                               className="h-6 w-6"
                               disabled={rowPending === m.id}
                               onClick={() => void adjustStock(m, 1)}
+                              title={`Increase stock of ${m.name}`}
                               aria-label={`Increase stock of ${m.name}`}
                             >
                               <Plus className="h-3 w-3" />
@@ -577,6 +579,7 @@ export default function PharmacistMedicines() {
                               setEditing(m)
                               setDialogOpen(true)
                             }}
+                            title={`Edit ${m.name}`}
                             aria-label={`Edit ${m.name}`}
                           >
                             <Pencil className="h-3.5 w-3.5" />

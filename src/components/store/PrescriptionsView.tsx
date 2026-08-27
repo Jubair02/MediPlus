@@ -1,16 +1,23 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { FileText, Info, Loader2, LogIn, UploadCloud } from 'lucide-react'
+import { FileText, FileWarning, Info, Loader2, LogIn, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, fileToCompressedDataUrl } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
 import { fmtDate } from '@/lib/format'
-import type { Prescription } from '@/lib/types'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import type { Order, Prescription } from '@/lib/types'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -24,6 +31,7 @@ const statusBadgeClass: Record<Prescription['status'], string> = {
 export default function PrescriptionsView() {
   const user = useAppStore((s) => s.user)
   const setAuthOpen = useAppStore((s) => s.setAuthOpen)
+  const setView = useAppStore((s) => s.setView)
 
   const [prescriptions, setPrescriptions] = useState<Prescription[] | null>(null)
   const [dataUrl, setDataUrl] = useState<string | null>(null)
@@ -32,6 +40,18 @@ export default function PrescriptionsView() {
   const [processing, setProcessing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ---------- re-upload & reorder dialog (state machine: form → confirm) ----------
+  const [reuploadRx, setReuploadRx] = useState<Prescription | null>(null)
+  const [rxMode, setRxMode] = useState<'form' | 'confirm'>('form')
+  const [rxDataUrl, setRxDataUrl] = useState<string | null>(null)
+  const [rxFileName, setRxFileName] = useState<string | null>(null)
+  const [rxNote, setRxNote] = useState('')
+  const [rxProcessing, setRxProcessing] = useState(false)
+  const [rxUploading, setRxUploading] = useState(false)
+  const [rxPlacing, setRxPlacing] = useState(false)
+  const [uploadedRxId, setUploadedRxId] = useState<string | null>(null)
+  const rxFileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!user) return
@@ -96,6 +116,84 @@ export default function PrescriptionsView() {
       toast.error(err instanceof Error ? err.message : 'Failed to upload prescription')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // ---------- re-upload & reorder flow ----------
+  const openReupload = (p: Prescription) => {
+    setReuploadRx(p)
+    setRxMode('form')
+    setRxDataUrl(null)
+    setRxFileName(null)
+    setUploadedRxId(null)
+    setRxNote(p.orderNo ? `Re-upload for order ${p.orderNo}` : 'Re-uploaded prescription for pharmacist review')
+  }
+
+  const closeReupload = () => {
+    setReuploadRx(null)
+    setRxMode('form')
+    setRxDataUrl(null)
+    setRxFileName(null)
+    setRxNote('')
+    setUploadedRxId(null)
+  }
+
+  const pickReuploadFile = async (file: File | undefined) => {
+    if (!file) return
+    setRxProcessing(true)
+    try {
+      const url = await fileToCompressedDataUrl(file)
+      setRxDataUrl(url)
+      setRxFileName(file.name)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not read that image')
+    } finally {
+      setRxProcessing(false)
+      if (rxFileInputRef.current) rxFileInputRef.current.value = ''
+    }
+  }
+
+  const submitReupload = async () => {
+    if (!rxDataUrl) {
+      toast.error('Please choose a prescription photo first')
+      return
+    }
+    setRxUploading(true)
+    try {
+      const d = await api<{ prescription: Prescription }>('/api/prescriptions', {
+        method: 'POST',
+        body: { image: rxDataUrl, note: rxNote.trim() || undefined },
+      })
+      setPrescriptions((prev) => [d.prescription, ...(prev ?? [])])
+      setUploadedRxId(d.prescription.id)
+      if (!reuploadRx?.orderId) {
+        toast.info('Prescription uploaded. Add medicines to cart and checkout with the approved prescription.')
+        closeReupload()
+        return
+      }
+      setRxMode('confirm')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to upload prescription')
+    } finally {
+      setRxUploading(false)
+    }
+  }
+
+  const placeReorder = async () => {
+    if (!reuploadRx?.orderId || !uploadedRxId) return
+    setRxPlacing(true)
+    try {
+      await api<{ order: Order }>('/api/orders', {
+        method: 'PUT',
+        body: { action: 'reorder-prescription', orderId: reuploadRx.orderId, prescriptionId: uploadedRxId },
+      })
+      toast.success('Order placed — awaiting pharmacist review')
+      closeReupload()
+      setView('orders')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to place order')
+    } finally {
+      setRxPlacing(false)
     }
   }
 
@@ -220,12 +318,131 @@ export default function PrescriptionsView() {
                       Pharmacist: “{p.reviewNote}”
                     </p>
                   )}
+                  {p.status === 'REJECTED' && (
+                    <Button
+                      className="h-11 w-full rounded-xl bg-amber-500 text-white hover:bg-amber-600"
+                      onClick={() => openReupload(p)}
+                    >
+                      <UploadCloud className="size-4" aria-hidden="true" />
+                      Re-upload &amp; reorder
+                    </Button>
+                  )}
                 </Card>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* ---------- Re-upload & reorder dialog (form → confirm) ---------- */}
+      <Dialog open={!!reuploadRx} onOpenChange={(open) => !open && closeReupload()}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md scrollbar-thin">
+          <DialogHeader>
+            <DialogTitle>Re-upload prescription</DialogTitle>
+            <DialogDescription>
+              {rxMode === 'form'
+                ? 'Upload a clearer photo so our pharmacists can review it again.'
+                : 'Your new prescription is in — confirm the reorder below.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {rxMode === 'form' ? (
+            <div className="space-y-4">
+              <Alert className="border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                <FileWarning className="size-4 text-amber-600" aria-hidden="true" />
+                <AlertTitle>Prescription was rejected</AlertTitle>
+                <AlertDescription className="text-amber-800 dark:text-amber-200">
+                  {reuploadRx?.reviewNote ||
+                    'The pharmacist could not verify this prescription. Please upload a clearer photo.'}
+                </AlertDescription>
+              </Alert>
+
+              <input
+                ref={rxFileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => void pickReuploadFile(e.target.files?.[0])}
+              />
+
+              {rxDataUrl ? (
+                <div className="space-y-2">
+                  <img
+                    src={rxDataUrl}
+                    alt="Prescription preview"
+                    className="max-h-44 w-auto rounded-lg border"
+                  />
+                  <p className="truncate text-xs text-muted-foreground">{rxFileName}</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 rounded-lg"
+                    onClick={() => rxFileInputRef.current?.click()}
+                  >
+                    Choose a different photo
+                  </Button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => rxFileInputRef.current?.click()}
+                  className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-5 text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                >
+                  {rxProcessing ? (
+                    <Loader2 className="size-6 animate-spin text-primary" aria-hidden="true" />
+                  ) : (
+                    <UploadCloud className="size-6 text-primary" aria-hidden="true" />
+                  )}
+                  {rxProcessing ? 'Processing image…' : 'Tap to choose a photo of your prescription'}
+                </button>
+              )}
+
+              <Textarea
+                placeholder="Note for the pharmacist (optional)"
+                value={rxNote}
+                onChange={(e) => setRxNote(e.target.value)}
+                className="min-h-20"
+              />
+
+              <Button
+                className="h-11 w-full rounded-xl"
+                disabled={!rxDataUrl || rxUploading || rxProcessing}
+                onClick={() => void submitReupload()}
+              >
+                {rxUploading && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+                {rxUploading ? 'Uploading…' : 'Upload & create order'}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-xl border bg-card/50 p-4 text-sm">
+                <p className="font-semibold">Create order from previous items?</p>
+                <p className="mt-1 leading-relaxed text-muted-foreground">
+                  Your items from{' '}
+                  <span className="font-mono font-medium text-foreground">
+                    {reuploadRx?.orderNo ?? 'the previous order'}
+                  </span>{' '}
+                  will be re-ordered and sent to pharmacist review. Stock will be checked on approval.
+                </p>
+              </div>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl"
+                  disabled={rxPlacing}
+                  onClick={() => setRxMode('form')}
+                >
+                  Back
+                </Button>
+                <Button className="h-11 rounded-xl" disabled={rxPlacing} onClick={() => void placeReorder()}>
+                  {rxPlacing && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+                  {rxPlacing ? 'Placing order…' : 'Place order'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

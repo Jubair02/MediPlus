@@ -67,7 +67,7 @@ function ThemeToggle() {
     <Button
       variant="ghost"
       size="icon"
-      className="size-11"
+      className="hidden size-11 sm:inline-flex"
       aria-label="Toggle dark mode"
       onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
     >
@@ -183,6 +183,29 @@ export default function Header() {
       .catch(() => {})
   }
 
+  // Fetch notifications each time the popover opens
+  useEffect(() => {
+    if (!notifOpen || !user) return
+    const ac = new AbortController()
+    api<{ notifications: NotificationItem[]; unread: number }>('/api/notifications', { signal: ac.signal })
+      .then((d) => {
+        setNotifications(d.notifications)
+        setUnread(d.unread)
+      })
+      .catch(() => {})
+    return () => ac.abort()
+  }, [notifOpen, user])
+
+  // Sync the bell badge when the full-page notifications view marks everything read
+  useEffect(() => {
+    const onReadAll = () => {
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+      setUnread(0)
+    }
+    window.addEventListener('medplus:notifications-read', onReadAll)
+    return () => window.removeEventListener('medplus:notifications-read', onReadAll)
+  }, [])
+
   return (
     <header className="sticky top-0 z-40 border-b bg-card/90 backdrop-blur">
       {/* Announcement bar */}
@@ -229,6 +252,16 @@ export default function Header() {
                   </button>
                 )}
               </nav>
+              <Separator />
+              {/* Theme toggle lives here on small screens to keep the header row overflow-free */}
+              <div className="flex items-center justify-between rounded-lg border px-3 py-1.5">
+                <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Moon className="size-4 dark:hidden" aria-hidden="true" />
+                  <Sun className="hidden size-4 dark:block" aria-hidden="true" />
+                  Dark mode
+                </span>
+                <ThemeToggle />
+              </div>
               <Separator />
               {user ? (
                 <Button
@@ -282,7 +315,7 @@ export default function Header() {
         </div>
 
         {/* Right actions */}
-        <div className="ml-auto flex items-center gap-1.5 sm:gap-2 md:ml-2">
+        <div className="ml-auto flex items-center gap-1 sm:gap-2 md:ml-2">
           {/* Theme toggle */}
           <ThemeToggle />
 
@@ -386,6 +419,20 @@ export default function Header() {
                       </div>
                     ))
                   )}
+                </div>
+                <div className="border-t p-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-full gap-1.5"
+                    onClick={() => {
+                      setNotifOpen(false)
+                      setView('notifications')
+                    }}
+                  >
+                    <Bell className="size-4" aria-hidden="true" />
+                    View all notifications
+                  </Button>
                 </div>
               </PopoverContent>
             </Popover>

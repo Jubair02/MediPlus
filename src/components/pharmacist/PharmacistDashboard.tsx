@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   FileCheck,
+  History,
   LayoutDashboard,
   Pill,
   ShoppingBag,
@@ -17,14 +18,16 @@ import type { PharmacistStats } from '@/lib/types'
 import PharmacistOverview from './PharmacistOverview'
 import PharmacistPrescriptions from './PharmacistPrescriptions'
 import PharmacistMedicines from './PharmacistMedicines'
+import StockLog from './StockLog'
 import PharmacistOrders from './PharmacistOrders'
 
-type PharmacistTab = 'overview' | 'prescriptions' | 'medicines' | 'orders'
+type PharmacistTab = 'overview' | 'prescriptions' | 'medicines' | 'stocklog' | 'orders'
 
 const NAV: { id: PharmacistTab; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'prescriptions', label: 'Prescriptions', icon: FileCheck },
   { id: 'medicines', label: 'Medicines', icon: Pill },
+  { id: 'stocklog', label: 'Stock Log', icon: History },
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
 ]
 
@@ -32,6 +35,7 @@ const TITLES: Record<PharmacistTab, { title: string; subtitle: string }> = {
   overview: { title: 'Overview', subtitle: 'Your pharmacy desk at a glance' },
   prescriptions: { title: 'Prescriptions', subtitle: 'Review uploaded prescriptions and approve orders' },
   medicines: { title: 'Medicines', subtitle: 'Catalog, pricing and stock management' },
+  stocklog: { title: 'Stock Log', subtitle: 'Every stock change with who and why' },
   orders: { title: 'Orders', subtitle: 'Read-only view of incoming orders' },
 }
 
@@ -160,6 +164,7 @@ export default function PharmacistDashboard() {
               stats={stats}
               loading={statsLoading}
               onGoToPrescriptions={() => setActiveTab('prescriptions')}
+              onOpenStockLog={() => setActiveTab('stocklog')}
               onRefresh={() => void refreshStats()}
             />
           )}
@@ -167,6 +172,7 @@ export default function PharmacistDashboard() {
             <PharmacistPrescriptions onStatsChanged={() => void refreshStats()} />
           )}
           {activeTab === 'medicines' && <PharmacistMedicines />}
+          {activeTab === 'stocklog' && <StockLog />}
           {activeTab === 'orders' && <PharmacistOrders />}
         </motion.div>
       </section>

@@ -1,6 +1,6 @@
 'use client'
 
-import { Pill, ShieldCheck } from 'lucide-react'
+import { Facebook, Instagram, Pill, ShieldCheck, Twitter, Youtube } from 'lucide-react'
 import { useAppStore, type View } from '@/lib/store'
 
 const quickLinks: { view: View; label: string }[] = [
@@ -37,6 +37,25 @@ export default function Footer() {
             <ShieldCheck className="size-3.5" aria-hidden="true" />
             Licensed online pharmacy demo
           </p>
+          <div className="flex items-center gap-2 pt-1">
+            {[
+              { icon: Facebook, label: 'Facebook' },
+              { icon: Instagram, label: 'Instagram' },
+              { icon: Twitter, label: 'Twitter' },
+              { icon: Youtube, label: 'YouTube' },
+            ].map(({ icon: Icon, label }) => (
+              <a
+                key={label}
+                href="#"
+                onClick={(e) => e.preventDefault()}
+                aria-label={`MediPlus on ${label}`}
+                title={`MediPlus on ${label}`}
+                className="flex size-10 items-center justify-center rounded-full border border-emerald-800 bg-emerald-900/50 text-emerald-200 transition-all hover:-translate-y-0.5 hover:border-emerald-600 hover:bg-emerald-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                <Icon className="size-4" aria-hidden="true" />
+              </a>
+            ))}
+          </div>
         </div>
 
         {/* Quick links */}

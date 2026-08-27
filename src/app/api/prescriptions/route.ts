@@ -16,7 +16,7 @@ export async function GET(request: Request) {
         reviewNote: true,
         createdAt: true,
         updatedAt: true,
-        order: { select: { orderNo: true } },
+        order: { select: { id: true, orderNo: true } },
       },
       orderBy: { createdAt: 'desc' },
     })
@@ -29,6 +29,7 @@ export async function GET(request: Request) {
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
         orderNo: p.order?.orderNo ?? null,
+        orderId: p.order?.id ?? null,
       })),
     })
   } catch (e) {

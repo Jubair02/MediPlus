@@ -8,7 +8,10 @@ import {
   addressToJson,
   parseAddressInput,
   resolveCoupon,
+  recordStockMovements,
+  round2,
   type ParsedAddress,
+  type StockMovementEntry,
 } from '../_lib'
 
 const CANCELLABLE = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING']
@@ -181,9 +184,18 @@ export async function POST(request: Request) {
             include: orderInclude,
           })
           if (deductStock) {
+            const movements: StockMovementEntry[] = []
             for (const it of cartItems) {
               await tx.medicine.update({ where: { id: it.medicineId }, data: { stock: { decrement: it.quantity } } })
+              movements.push({
+                medicineId: it.medicineId,
+                delta: -it.quantity,
+                reason: prescriptionId ? 'RX_APPROVE' : 'ORDER_CONFIRM',
+                note: prescriptionId ? `Order ${order.orderNo} confirmed via approved prescription` : `Order ${order.orderNo} confirmed`,
+                userId: user.id,
+              })
             }
+            await recordStockMovements(tx, movements)
           }
           await tx.cartItem.deleteMany({ where: { userId: user.id } })
           await tx.notification.create({
@@ -229,7 +241,7 @@ export async function GET(request: Request) {
   }
 }
 
-/** PUT /api/orders {action:'cancel'|'reorder', id} */
+/** PUT /api/orders {action:'cancel'|'reorder'|'reorder-prescription', id?|orderId?, prescriptionId?} */
 export async function PUT(request: Request) {
   try {
     const user = await getAuthUser(request)
@@ -237,6 +249,92 @@ export async function PUT(request: Request) {
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const action = typeof body.action === 'string' ? body.action : ''
+
+    if (action === 'reorder-prescription') {
+      const orderId = typeof body.orderId === 'string' ? body.orderId : ''
+      const prescriptionId = typeof body.prescriptionId === 'string' ? body.prescriptionId : ''
+      if (!orderId) return badRequest('Order id is required')
+      if (!prescriptionId) return badRequest('Prescription id is required')
+
+      const oldOrder = await db.order.findFirst({ where: { id: orderId, userId: user.id }, include: { items: true, prescription: true } })
+      if (!oldOrder) return notFound('Order not found')
+      const prescription = await db.prescription.findFirst({ where: { id: prescriptionId, userId: user.id }, include: { order: { select: { id: true } } } })
+      if (!prescription) return notFound('Prescription not found')
+      if (prescription.status !== 'PENDING') return badRequest('Prescription has already been reviewed')
+      if (prescription.order) return badRequest('Prescription is already linked to an order')
+
+      // Validate availability & stock of every item BEFORE creating anything
+      const currentPrice = new Map<string, number>()
+      for (const item of oldOrder.items) {
+        if (!item.medicineId) continue
+        const medicine = await db.medicine.findUnique({ where: { id: item.medicineId } })
+        if (!medicine || medicine.status !== 'ACTIVE') return badRequest(`${item.name} is no longer available`)
+        if (medicine.stock < item.quantity) return badRequest(`Insufficient stock for ${item.name}`)
+        currentPrice.set(item.id, medicine.discountPrice ?? medicine.price)
+      }
+
+      const subtotal = round2(oldOrder.items.reduce((sum, it) => sum + (currentPrice.get(it.id) ?? it.price) * it.quantity, 0))
+      const deliveryFee = subtotal >= FREE_DELIVERY_MIN ? 0 : DELIVERY_FEE
+      const total = round2(subtotal + deliveryFee)
+
+      // Create order (retry orderNo on unique conflict)
+      const baseNo = 100000 + (await db.order.count()) + 1
+      let created: { id: string } | null = null
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          created = await db.$transaction(async (tx) => {
+            const order = await tx.order.create({
+              data: {
+                orderNo: `MP-${baseNo + attempt}`,
+                userId: user.id,
+                addressJson: oldOrder.addressJson,
+                subtotal,
+                discount: 0,
+                deliveryFee,
+                total,
+                paymentMethod: oldOrder.paymentMethod,
+                paymentStatus: 'PENDING',
+                status: 'PRESCRIPTION_REVIEW',
+                prescriptionId: prescription.id,
+                statusNote: null,
+                items: {
+                  create: oldOrder.items.map((it) => ({
+                    medicineId: it.medicineId,
+                    name: it.name,
+                    price: currentPrice.get(it.id) ?? it.price,
+                    quantity: it.quantity,
+                    image: it.image,
+                    requiresPrescription: it.requiresPrescription,
+                  })),
+                },
+                payment: {
+                  create: { method: oldOrder.paymentMethod, status: 'PENDING', amount: total },
+                },
+              },
+              include: orderInclude,
+            })
+            await tx.notification.create({
+              data: {
+                userId: user.id,
+                title: 'Prescription resubmitted',
+                message: `A new order ${order.orderNo} was created from ${oldOrder.orderNo} with your re-uploaded prescription. A pharmacist will review it shortly.`,
+              },
+            })
+            return order
+          })
+          break
+        } catch (e) {
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && attempt < 4) continue
+          return serverError(e)
+        }
+      }
+      if (!created) return serverError(new Error('Could not create order'))
+
+      const full = await loadFullOrder(created.id)
+      if (!full) return serverError(new Error('Order not found after creation'))
+      return Response.json({ order: parseOrder(full, { prescriptionImage: false }) }, { status: 201 })
+    }
+
     const id = typeof body.id === 'string' ? body.id : ''
     if (!id) return badRequest('Order id is required')
 
@@ -249,11 +347,20 @@ export async function PUT(request: Request) {
       const wasPaid = order.paymentStatus === 'PAID'
       await db.$transaction(async (tx) => {
         if (restock) {
+          const movements: StockMovementEntry[] = []
           for (const it of order.items) {
             if (it.medicineId) {
               await tx.medicine.update({ where: { id: it.medicineId }, data: { stock: { increment: it.quantity } } })
+              movements.push({
+                medicineId: it.medicineId,
+                delta: it.quantity,
+                reason: 'ORDER_CANCEL',
+                note: `Order ${order.orderNo} cancelled — stock restored`,
+                userId: user.id,
+              })
             }
           }
+          await recordStockMovements(tx, movements)
         }
         await tx.order.update({
           where: { id: order.id },

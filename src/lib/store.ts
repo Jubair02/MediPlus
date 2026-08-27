@@ -13,6 +13,7 @@ export type View =
   | 'checkout'
   | 'orders'
   | 'prescriptions'
+  | 'notifications'
   | 'profile'
   | 'admin'
   | 'pharmacist'
@@ -24,7 +25,7 @@ export interface CatalogFilters {
   minPrice: number | null
   maxPrice: number | null
   rxOnly: boolean
-  sort: 'featured' | 'price-asc' | 'price-desc' | 'name-asc' | 'name-desc' | 'newest'
+  sort: 'featured' | 'price-asc' | 'price-desc' | 'name-asc' | 'name-desc' | 'newest' | 'rating'
   page: number
 }
 

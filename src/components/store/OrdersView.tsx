@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react'
 import {
   CheckCircle2,
   FileText,
+  FileWarning,
   LogIn,
   MapPin,
   Package,
   Printer,
   RefreshCcw,
   Truck,
+  UploadCloud,
   XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -301,6 +303,25 @@ export default function OrdersView() {
                 <p className="font-semibold">{fmtBDT(o.total)}</p>
               </div>
             </div>
+
+            {/* Prescription rejected — prompt re-upload */}
+            {o.prescription?.status === 'REJECTED' && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs dark:border-amber-900 dark:bg-amber-950/30">
+                <span className="inline-flex items-center gap-1.5 font-medium text-amber-800 dark:text-amber-200">
+                  <FileWarning className="size-3.5" aria-hidden="true" />
+                  Prescription was rejected
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-lg border-amber-300 text-amber-700 hover:bg-amber-100 hover:text-amber-800 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+                  onClick={() => setView('prescriptions')}
+                >
+                  <UploadCloud className="size-3.5" aria-hidden="true" />
+                  Re-upload &amp; reorder
+                </Button>
+              </div>
+            )}
 
             {/* Delivery staff + actions */}
             <div className="flex flex-wrap items-center gap-2">

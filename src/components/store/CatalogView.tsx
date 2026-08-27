@@ -30,6 +30,7 @@ const SORT_OPTIONS: { value: CatalogFilters['sort']; label: string }[] = [
   { value: 'name-asc', label: 'Name A–Z' },
   { value: 'name-desc', label: 'Name Z–A' },
   { value: 'newest', label: 'Newest' },
+  { value: 'rating', label: 'Top rated' },
 ]
 
 interface MedicinePage {

@@ -11,12 +11,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { AlertTriangle, BarChart3, Medal } from 'lucide-react'
+import { AlertTriangle, BarChart3, Download, Loader2, Medal } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { downloadCsv } from '@/lib/download'
 import { effectivePrice, fmtBDT, fmtDate } from '@/lib/format'
 import type { Medicine } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -82,6 +84,7 @@ export default function AdminReports() {
   const [days, setDays] = useState('7')
   const [reports, setReports] = useState<ReportsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [exportPending, setExportPending] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -99,6 +102,23 @@ export default function AdminReports() {
     void load()
   }, [load])
 
+  async function exportCsv() {
+    setExportPending(true)
+    try {
+      const d = await api<{ filename: string; csv: string }>(
+        `/api/admin?resource=export-report&days=${days}`
+      )
+      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+        throw new Error('Export unavailable')
+      downloadCsv(d.filename, d.csv)
+      toast.success('Report exported')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to export report')
+    } finally {
+      setExportPending(false)
+    }
+  }
+
   if (loading && !reports) return <ReportsSkeleton />
   if (!reports) {
     return (
@@ -114,7 +134,7 @@ export default function AdminReports() {
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Toolbar */}
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <Select value={days} onValueChange={setDays}>
           <SelectTrigger className="w-[160px]">
             <SelectValue />
@@ -124,6 +144,14 @@ export default function AdminReports() {
             <SelectItem value="30">Last 30 days</SelectItem>
           </SelectContent>
         </Select>
+        <Button variant="outline" onClick={() => void exportCsv()} disabled={exportPending}>
+          {exportPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+          Export CSV
+        </Button>
       </div>
 
       {/* Charts */}

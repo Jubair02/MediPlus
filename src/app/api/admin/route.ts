@@ -12,6 +12,10 @@ import {
   orderInclude,
   parseOrder,
   notify,
+  addressFromJson,
+  escapeCsv,
+  recordStockMovements,
+  type StockMovementEntry,
 } from '../_lib'
 import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
 
@@ -21,6 +25,92 @@ const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true
 
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+function csvDate(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}${m}${day}`
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10
+}
+
+function csvRow(values: unknown[]): string {
+  return values.map(escapeCsv).join(',')
+}
+
+/** Shared data source for the reports view and the export-report CSV (same shape as GET ?resource=reports). */
+async function reportData(days: number) {
+  const notCancelled = { not: 'CANCELLED' }
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  start.setDate(start.getDate() - (days - 1))
+
+  const [orders, orderItems, lowStock] = await Promise.all([
+    db.order.findMany({
+      where: { status: notCancelled, createdAt: { gte: start } },
+      select: { createdAt: true, total: true },
+    }),
+    db.orderItem.findMany({
+      where: { order: { status: notCancelled } },
+      select: { name: true, price: true, quantity: true, medicine: { select: { category: { select: { name: true } } } } },
+    }),
+    db.medicine.findMany({
+      where: { status: 'ACTIVE', stock: { lte: 10 } },
+      include: { category: true },
+      orderBy: { stock: 'asc' },
+      take: 10,
+    }),
+  ])
+
+  const byDay = new Map<string, { revenue: number; orders: number }>()
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start)
+    d.setDate(start.getDate() + i)
+    byDay.set(dayKey(d), { revenue: 0, orders: 0 })
+  }
+  for (const o of orders) {
+    const entry = byDay.get(dayKey(o.createdAt))
+    if (entry) {
+      entry.revenue = round2(entry.revenue + o.total)
+      entry.orders += 1
+    }
+  }
+  const salesByDay = Array.from(byDay.entries()).map(([key, v]) => {
+    const [y, m, d] = key.split('-').map(Number)
+    const date = new Date(y, m - 1, d)
+    return {
+      date: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+      revenue: v.revenue,
+      orders: v.orders,
+    }
+  })
+
+  const catMap = new Map<string, { qty: number; revenue: number }>()
+  const medMap = new Map<string, { qty: number; revenue: number }>()
+  for (const it of orderItems) {
+    const revenue = round2(it.price * it.quantity)
+    const catName = it.medicine?.category?.name ?? 'Uncategorized'
+    const cat = catMap.get(catName) ?? { qty: 0, revenue: 0 }
+    cat.qty += it.quantity
+    cat.revenue = round2(cat.revenue + revenue)
+    catMap.set(catName, cat)
+    const med = medMap.get(it.name) ?? { qty: 0, revenue: 0 }
+    med.qty += it.quantity
+    med.revenue = round2(med.revenue + revenue)
+    medMap.set(it.name, med)
+  }
+  const categorySales = Array.from(catMap.entries())
+    .map(([category, v]) => ({ category, qty: v.qty, revenue: v.revenue }))
+    .sort((a, b) => b.revenue - a.revenue)
+  const topMedicines = Array.from(medMap.entries())
+    .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 5)
+
+  return { salesByDay, categorySales, topMedicines, lowStock }
 }
 
 /** GET /api/admin?resource=stats|users|medicines|categories|orders|staff|reports */
@@ -51,6 +141,8 @@ export async function GET(request: Request) {
         orderItems,
         lowStock,
         recentOrdersRaw,
+        totalReviews,
+        reviewAgg,
       ] = await Promise.all([
         db.user.count({ where: { role: 'CUSTOMER' } }),
         db.order.count({ where: { status: notCancelled } }),
@@ -72,6 +164,8 @@ export async function GET(request: Request) {
           take: 10,
         }),
         db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'desc' }, take: 8 }),
+        db.review.count(),
+        db.review.aggregate({ _avg: { rating: true } }),
       ])
 
       // revenue by day (last 7 days)
@@ -121,6 +215,8 @@ export async function GET(request: Request) {
           topSelling,
           lowStock,
           recentOrders: recentOrdersRaw.map((o) => parseOrder(o, { prescriptionImage: true })),
+          totalReviews,
+          avgRating: reviewAgg._avg.rating == null ? null : round1(reviewAgg._avg.rating),
         },
       })
     }
@@ -137,20 +233,33 @@ export async function GET(request: Request) {
 
     if (resource === 'medicines') {
       const search = sp.get('search')?.trim()
-      const medicines = await db.medicine.findMany({
-        where: search
-          ? {
-              OR: [
-                { name: { contains: search } },
-                { genericName: { contains: search } },
-                { brand: { contains: search } },
-              ],
-            }
-          : {},
-        include: { category: true },
-        orderBy: { createdAt: 'desc' },
+      const [medicines, reviewGroups] = await Promise.all([
+        db.medicine.findMany({
+          where: search
+            ? {
+                OR: [
+                  { name: { contains: search } },
+                  { genericName: { contains: search } },
+                  { brand: { contains: search } },
+                ],
+              }
+            : {},
+          include: { category: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
+      ])
+      const ratingByMed = new Map(reviewGroups.map((g) => [g.medicineId, g]))
+      return Response.json({
+        medicines: medicines.map((m) => {
+          const g = ratingByMed.get(m.id)
+          return {
+            ...m,
+            rating: g?._avg.rating != null ? round1(g._avg.rating) : null,
+            ratingCount: g?._count._all ?? 0,
+          }
+        }),
       })
-      return Response.json({ medicines })
     }
 
     if (resource === 'categories') {
@@ -196,74 +305,94 @@ export async function GET(request: Request) {
 
     if (resource === 'reports') {
       const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
-      const notCancelled = { not: 'CANCELLED' }
-      const start = new Date()
-      start.setHours(0, 0, 0, 0)
-      start.setDate(start.getDate() - (days - 1))
+      return Response.json(await reportData(days))
+    }
 
-      const [orders, orderItems, lowStock] = await Promise.all([
-        db.order.findMany({
-          where: { status: notCancelled, createdAt: { gte: start } },
-          select: { createdAt: true, total: true },
-        }),
-        db.orderItem.findMany({
-          where: { order: { status: notCancelled } },
-          select: { name: true, price: true, quantity: true, medicine: { select: { category: { select: { name: true } } } } },
-        }),
-        db.medicine.findMany({
-          where: { status: 'ACTIVE', stock: { lte: 10 } },
-          include: { category: true },
-          orderBy: { stock: 'asc' },
-          take: 10,
-        }),
+    if (resource === 'export-orders') {
+      const orders = await db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'asc' } })
+      const header = ['orderNo', 'createdAt', 'customer', 'email', 'city', 'items', 'subtotal', 'discount', 'deliveryFee', 'total', 'paymentMethod', 'paymentStatus', 'status']
+      const rows = orders.map((o) =>
+        csvRow([
+          o.orderNo,
+          o.createdAt.toISOString(),
+          o.user?.name ?? '',
+          o.user?.email ?? '',
+          addressFromJson(o.addressJson).city,
+          o.items.map((it) => `${it.quantity}x ${it.name}`).join('; '),
+          round2(o.subtotal),
+          round2(o.discount),
+          round2(o.deliveryFee),
+          round2(o.total),
+          o.paymentMethod,
+          o.paymentStatus,
+          o.status,
+        ])
+      )
+      return Response.json({ filename: `orders-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+    }
+
+    if (resource === 'export-medicines') {
+      const [medicines, grouped] = await Promise.all([
+        db.medicine.findMany({ include: { category: true }, orderBy: { name: 'asc' } }),
+        db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
       ])
-
-      const byDay = new Map<string, { revenue: number; orders: number }>()
-      for (let i = 0; i < days; i++) {
-        const d = new Date(start)
-        d.setDate(start.getDate() + i)
-        byDay.set(dayKey(d), { revenue: 0, orders: 0 })
-      }
-      for (const o of orders) {
-        const entry = byDay.get(dayKey(o.createdAt))
-        if (entry) {
-          entry.revenue = round2(entry.revenue + o.total)
-          entry.orders += 1
-        }
-      }
-      const salesByDay = Array.from(byDay.entries()).map(([key, v]) => {
-        const [y, m, d] = key.split('-').map(Number)
-        const date = new Date(y, m - 1, d)
-        return {
-          date: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-          revenue: v.revenue,
-          orders: v.orders,
-        }
+      const ratingByMed = new Map(grouped.map((g) => [g.medicineId, g]))
+      const header = ['name', 'genericName', 'brand', 'category', 'price', 'discountPrice', 'effectivePrice', 'stock', 'unit', 'requiresPrescription', 'status', 'expiryDate', 'rating', 'ratingCount']
+      const rows = medicines.map((m) => {
+        const g = ratingByMed.get(m.id)
+        return csvRow([
+          m.name,
+          m.genericName ?? '',
+          m.brand ?? '',
+          m.category?.name ?? '',
+          m.price,
+          m.discountPrice ?? '',
+          m.discountPrice ?? m.price,
+          m.stock,
+          m.unit,
+          m.requiresPrescription ? 'YES' : 'NO',
+          m.status,
+          m.expiryDate ? m.expiryDate.toISOString().slice(0, 10) : '',
+          g?._avg.rating != null ? round1(g._avg.rating) : '',
+          g?._count._all ?? 0,
+        ])
       })
+      return Response.json({ filename: `medicines-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+    }
 
-      const catMap = new Map<string, { qty: number; revenue: number }>()
-      const medMap = new Map<string, { qty: number; revenue: number }>()
-      for (const it of orderItems) {
-        const revenue = round2(it.price * it.quantity)
-        const catName = it.medicine?.category?.name ?? 'Uncategorized'
-        const cat = catMap.get(catName) ?? { qty: 0, revenue: 0 }
-        cat.qty += it.quantity
-        cat.revenue = round2(cat.revenue + revenue)
-        catMap.set(catName, cat)
-        const med = medMap.get(it.name) ?? { qty: 0, revenue: 0 }
-        med.qty += it.quantity
-        med.revenue = round2(med.revenue + revenue)
-        medMap.set(it.name, med)
-      }
-      const categorySales = Array.from(catMap.entries())
-        .map(([category, v]) => ({ category, qty: v.qty, revenue: v.revenue }))
-        .sort((a, b) => b.revenue - a.revenue)
-      const topMedicines = Array.from(medMap.entries())
-        .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
-        .sort((a, b) => b.qty - a.qty)
-        .slice(0, 5)
+    if (resource === 'export-users') {
+      const users = await db.user.findMany({
+        select: { ...USER_SELECT, _count: { select: { orders: true } } },
+        orderBy: { createdAt: 'asc' },
+      })
+      const header = ['name', 'email', 'phone', 'role', 'status', 'createdAt', 'ordersCount']
+      const rows = users.map((u) =>
+        csvRow([
+          u.name ?? '',
+          u.email,
+          u.phone ?? '',
+          u.role,
+          u.status,
+          u.createdAt.toISOString(),
+          u._count.orders,
+        ])
+      )
+      return Response.json({ filename: `users-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+    }
 
-      return Response.json({ salesByDay, categorySales, topMedicines, lowStock })
+    if (resource === 'export-report') {
+      const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
+      const { salesByDay, categorySales, topMedicines, lowStock } = await reportData(days)
+      const lines: string[] = []
+      lines.push('Sales by day', csvRow(['date', 'orders', 'revenue']))
+      for (const s of salesByDay) lines.push(csvRow([s.date, s.orders, s.revenue]))
+      lines.push('', 'Sales by category', csvRow(['category', 'qty', 'revenue']))
+      for (const c of categorySales) lines.push(csvRow([c.category, c.qty, c.revenue]))
+      lines.push('', 'Top medicines', csvRow(['name', 'qty', 'revenue']))
+      for (const t of topMedicines) lines.push(csvRow([t.name, t.qty, t.revenue]))
+      lines.push('', 'Low stock', csvRow(['name', 'stock', 'price']))
+      for (const m of lowStock) lines.push(csvRow([m.name, m.stock, m.discountPrice ?? m.price]))
+      return Response.json({ filename: `report-${csvDate(new Date())}.csv`, csv: lines.join('\n') })
     }
 
     return badRequest('Unknown resource')
@@ -336,6 +465,9 @@ export async function PUT(request: Request) {
       const parsed = await buildMedicineData(body.data, 'create')
       if ('error' in parsed) return badRequest(parsed.error)
       const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+      if (medicine.stock > 0) {
+        await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
+      }
       return Response.json({ medicine }, { status: 201 })
     }
 
@@ -346,7 +478,11 @@ export async function PUT(request: Request) {
       if (!existing) return notFound('Medicine not found')
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
+      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
       const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+      if (newStock !== undefined && newStock !== existing.stock) {
+        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+      }
       return Response.json({ medicine })
     }
 
@@ -429,11 +565,20 @@ export async function PUT(request: Request) {
             }
           }
           await db.$transaction(async (tx) => {
+            const movements: StockMovementEntry[] = []
             for (const item of order.items) {
               if (item.medicineId) {
                 await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+                movements.push({
+                  medicineId: item.medicineId,
+                  delta: -item.quantity,
+                  reason: 'ORDER_CONFIRM',
+                  note: `Order ${order.orderNo} confirmed`,
+                  userId: user.id,
+                })
               }
             }
+            await recordStockMovements(tx, movements)
             const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
             if (!existingPayment) {
               await tx.payment.create({
@@ -448,11 +593,22 @@ export async function PUT(request: Request) {
           })
         }
         if (status === 'CANCELLED' && ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY'].includes(order.status)) {
-          for (const item of order.items) {
-            if (item.medicineId) {
-              await db.medicine.update({ where: { id: item.medicineId }, data: { stock: { increment: item.quantity } } })
+          const movements: StockMovementEntry[] = []
+          await db.$transaction(async (tx) => {
+            for (const item of order.items) {
+              if (item.medicineId) {
+                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { increment: item.quantity } } })
+                movements.push({
+                  medicineId: item.medicineId,
+                  delta: item.quantity,
+                  reason: 'ORDER_CANCEL',
+                  note: `Order ${order.orderNo} cancelled — stock restored`,
+                  userId: user.id,
+                })
+              }
             }
-          }
+            await recordStockMovements(tx, movements)
+          })
         }
         if (status === 'CANCELLED' && order.paymentStatus === 'PAID') {
           if (order.payment) {

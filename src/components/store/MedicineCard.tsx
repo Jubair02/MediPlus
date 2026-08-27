@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { FileWarning, Heart, Pill, ShoppingCart } from 'lucide-react'
+import { FileWarning, Heart, Pill, ShoppingCart, Star } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
@@ -124,6 +124,7 @@ export default function MedicineCard({
   const stock = stockLabel(medicine.stock)
   const out = medicine.stock <= 0
   const wishlisted = useAppStore((s) => s.wishlistIds.includes(medicine.id))
+  const showRating = typeof medicine.rating === 'number' && (medicine.ratingCount ?? 0) > 0
 
   const onHeart = useCallback(
     (e: React.MouseEvent) => {
@@ -195,7 +196,19 @@ export default function MedicineCard({
         {medicine.genericName && (
           <p className="line-clamp-1 text-xs text-muted-foreground">{medicine.genericName}</p>
         )}
-        <p className={cn('text-xs font-medium', stockToneClass[stock.tone])}>{stock.text}</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className={cn('text-xs font-medium', stockToneClass[stock.tone])}>{stock.text}</p>
+          {showRating && (
+            <span
+              className="inline-flex items-center gap-1 whitespace-nowrap text-xs"
+              title={`${medicine.rating?.toFixed(1)} out of 5`}
+            >
+              <Star className="size-3 fill-amber-400 text-amber-400" aria-hidden="true" />
+              <span className="font-medium">{medicine.rating?.toFixed(1)}</span>
+              <span className="text-muted-foreground">({medicine.ratingCount})</span>
+            </span>
+          )}
+        </div>
 
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">

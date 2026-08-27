@@ -13,9 +13,11 @@ import WishlistView from '@/components/store/WishlistView'
 import CheckoutView from '@/components/store/CheckoutView'
 import OrdersView from '@/components/store/OrdersView'
 import PrescriptionsView from '@/components/store/PrescriptionsView'
+import NotificationsView from '@/components/store/NotificationsView'
 import ProfileView from '@/components/store/ProfileView'
 import AuthModal from '@/components/store/AuthModal'
 import MedicineDetailModal from '@/components/store/MedicineDetailModal'
+import BackToTop from '@/components/store/BackToTop'
 import AdminDashboard from '@/components/admin/AdminDashboard'
 import PharmacistDashboard from '@/components/pharmacist/PharmacistDashboard'
 import DeliveryDashboard from '@/components/delivery/DeliveryDashboard'
@@ -56,6 +58,8 @@ export default function Page() {
         return <OrdersView />
       case 'prescriptions':
         return <PrescriptionsView />
+      case 'notifications':
+        return <NotificationsView />
       case 'profile':
         return <ProfileView />
       case 'admin':
@@ -87,6 +91,7 @@ export default function Page() {
         </AnimatePresence>
       </main>
       <Footer />
+      <BackToTop />
       <AuthModal />
       <MedicineDetailModal />
     </div>

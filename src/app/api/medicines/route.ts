@@ -7,6 +7,30 @@ function effective(m: { price: number; discountPrice: number | null }): number {
   return m.discountPrice != null ? m.discountPrice : m.price
 }
 
+/** Average rating + review count per medicine id (Prisma relation include supports only _count, so aggregate via groupBy). */
+async function ratingsFor(medicineIds: string[]): Promise<Map<string, { rating: number | null; ratingCount: number }>> {
+  if (medicineIds.length === 0) return new Map()
+  const grouped = await db.review.groupBy({
+    by: ['medicineId'],
+    where: { medicineId: { in: medicineIds } },
+    _avg: { rating: true },
+    _count: { _all: true },
+  })
+  const map = new Map<string, { rating: number | null; ratingCount: number }>()
+  for (const g of grouped) {
+    map.set(g.medicineId, {
+      rating: g._avg.rating == null ? null : Math.round(g._avg.rating * 10) / 10,
+      ratingCount: g._count._all,
+    })
+  }
+  return map
+}
+
+function withRatings<T extends { id: string }>(medicine: T, ratings: Map<string, { rating: number | null; ratingCount: number }>) {
+  const r = ratings.get(medicine.id)
+  return { ...medicine, rating: r?.rating ?? null, ratingCount: r?.ratingCount ?? 0 }
+}
+
 /**
  * GET /api/medicines?id=<id>            → single ACTIVE medicine (include category)
  * GET /api/medicines?search&category&minPrice&maxPrice&rxOnly&sort&featured&page&limit
@@ -18,7 +42,8 @@ export async function GET(request: Request) {
     if (id) {
       const medicine = await db.medicine.findUnique({ where: { id }, include: { category: true } })
       if (!medicine || medicine.status !== 'ACTIVE') return notFound('Medicine not found')
-      return Response.json({ medicine })
+      const ratings = await ratingsFor([medicine.id])
+      return Response.json({ medicine: withRatings(medicine, ratings) })
     }
 
     const search = sp.get('search')?.trim()
@@ -78,6 +103,23 @@ export async function GET(request: Request) {
       case 'newest':
         all.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         break
+      case 'rating': {
+        const groups = await db.review.groupBy({
+          by: ['medicineId'],
+          _avg: { rating: true },
+          _count: { _all: true },
+        })
+        const score = new Map(
+          groups.map((g) => {
+            const avg = g._avg.rating ?? 0
+            const count = g._count._all
+            // rated first; score = avg + small count bonus (max +1), unrated sink
+            return [g.medicineId, avg > 0 ? avg + Math.min(1, count / 10) : -1] as const
+          })
+        )
+        all.sort((a, b) => (score.get(b.id) ?? -1) - (score.get(a.id) ?? -1))
+        break
+      }
       default:
         // 'featured': discounted first, then newest
         all.sort((a, b) => {
@@ -93,7 +135,8 @@ export async function GET(request: Request) {
     const total = all.length
     const pages = Math.ceil(total / useLimit)
     const medicines = all.slice((usePage - 1) * useLimit, usePage * useLimit)
-    return Response.json({ medicines, total, page: usePage, pages })
+    const ratings = await ratingsFor(medicines.map((m) => m.id))
+    return Response.json({ medicines: medicines.map((m) => withRatings(m, ratings)), total, page: usePage, pages })
   } catch (e) {
     return serverError(e)
   }

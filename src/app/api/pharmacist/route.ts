@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
-import { readJson, optStr, buildMedicineData, orderInclude, parseOrder, notify } from '../_lib'
+import { readJson, optStr, numParam, buildMedicineData, orderInclude, parseOrder, notify, recordStockMovements, type StockMovementEntry } from '../_lib'
 
 const RX_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
@@ -107,6 +107,31 @@ export async function GET(request: Request) {
       return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
     }
 
+    if (resource === 'movements') {
+      const medicineId = sp.get('medicineId')?.trim()
+      const take = Math.min(100, Math.max(1, Math.trunc(numParam(sp.get('take')) ?? 50)))
+      const movements = await db.stockMovement.findMany({
+        where: medicineId ? { medicineId } : {},
+        include: {
+          medicine: { select: { id: true, name: true, image: true, unit: true } },
+          user: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+      })
+      return Response.json({
+        movements: movements.map((m) => ({
+          id: m.id,
+          delta: m.delta,
+          reason: m.reason,
+          note: m.note,
+          createdAt: m.createdAt,
+          medicine: m.medicine,
+          user: m.user,
+        })),
+      })
+    }
+
     return badRequest('Unknown resource')
   } catch (e) {
     return serverError(e)
@@ -156,11 +181,20 @@ export async function PUT(request: Request) {
             where: { id: prescription.id },
             data: { status: 'APPROVED', reviewNote, reviewedById: user.id },
           })
+          const movements: StockMovementEntry[] = []
           for (const item of order.items) {
             if (item.medicineId) {
               await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+              movements.push({
+                medicineId: item.medicineId,
+                delta: -item.quantity,
+                reason: 'RX_APPROVE',
+                note: `Order ${order.orderNo} confirmed after prescription approval`,
+                userId: user.id,
+              })
             }
           }
+          await recordStockMovements(tx, movements)
           await tx.order.update({ where: { id: order.id }, data: { status: 'CONFIRMED' } })
           const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
           if (!existingPayment) {
@@ -231,6 +265,9 @@ export async function PUT(request: Request) {
       const parsed = await buildMedicineData(body.data, 'create')
       if ('error' in parsed) return badRequest(parsed.error)
       const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+      if (medicine.stock > 0) {
+        await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
+      }
       return Response.json({ medicine }, { status: 201 })
     }
 
@@ -241,7 +278,11 @@ export async function PUT(request: Request) {
       if (!existing) return notFound('Medicine not found')
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
+      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
       const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+      if (newStock !== undefined && newStock !== existing.stock) {
+        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+      }
       return Response.json({ medicine })
     }
 

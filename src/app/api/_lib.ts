@@ -313,6 +313,38 @@ export async function buildMedicineData(
   return { data: out as Prisma.MedicineUncheckedCreateInput | Prisma.MedicineUncheckedUpdateInput }
 }
 
+// ---------- stock movements (audit log) ----------
+
+export interface StockMovementEntry {
+  medicineId: string
+  delta: number
+  reason: string
+  note?: string | null
+  userId?: string | null
+}
+
+/** Create StockMovement audit rows; pass a transaction client (or db) to keep it atomic with the caller. */
+export async function recordStockMovements(client: Prisma.TransactionClient, entries: StockMovementEntry[]): Promise<void> {
+  if (entries.length === 0) return
+  await client.stockMovement.createMany({
+    data: entries.map((e) => ({
+      medicineId: e.medicineId,
+      delta: e.delta,
+      reason: e.reason,
+      note: e.note ?? null,
+      userId: e.userId ?? null,
+    })),
+  })
+}
+
+// ---------- CSV (admin exports) ----------
+
+/** Escape a single CSV field (RFC-4180 style: quote when needed, double inner quotes). */
+export function escapeCsv(value: unknown): string {
+  const s = value === null || value === undefined ? '' : String(value)
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
 // ---------- categories ----------
 
 export function slugify(name: string): string {
