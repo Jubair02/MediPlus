@@ -10,6 +10,7 @@ import {
   Package,
   Printer,
   RefreshCcw,
+  StickyNote,
   Truck,
   UploadCloud,
   XCircle,
@@ -278,6 +279,15 @@ export default function OrdersView() {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <p className="font-mono font-bold">{o.orderNo}</p>
               <StatusBadge status={o.status} />
+              {o.notes && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                  title={o.notes}
+                >
+                  <StickyNote className="size-3.5" aria-hidden="true" />
+                  Note
+                </span>
+              )}
               <p className="ml-auto text-sm text-muted-foreground">{fmtDate(o.createdAt)}</p>
             </div>
 
@@ -457,6 +467,17 @@ export default function OrdersView() {
                   </TableBody>
                 </Table>
               </div>
+
+              {/* Customer delivery note */}
+              {detail.notes && (
+                <div className="rounded-xl border p-4 text-sm">
+                  <p className="mb-1 flex items-center gap-1.5 font-semibold">
+                    <StickyNote className="size-4 text-primary" aria-hidden="true" />
+                    Your note
+                  </p>
+                  <p className="italic leading-snug text-muted-foreground">“{detail.notes}”</p>
+                </div>
+              )}
 
               {/* Address + payment */}
               <div className="grid gap-4 sm:grid-cols-2">

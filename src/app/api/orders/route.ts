@@ -18,6 +18,7 @@ const CANCELLABLE = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING'
 const RESTOCK_STATUSES = ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY']
 const FREE_DELIVERY_MIN = 2000
 const DELIVERY_FEE = 60
+const MAX_NOTES_LENGTH = 600
 
 async function loadCart(userId: string) {
   return db.cartItem.findMany({ where: { userId }, include: { medicine: true }, orderBy: { createdAt: 'asc' } })
@@ -29,7 +30,7 @@ async function loadFullOrder(id: string) {
 
 /**
  * POST /api/orders — place an order from the current cart.
- * Body: {addressId? | address?, prescriptionId?, prescription?{image,note?}, couponCode?, paymentMethod:'COD'|'BKASH_DEMO'}
+ * Body: {addressId? | address?, prescriptionId?, prescription?{image,note?}, couponCode?, paymentMethod:'COD'|'BKASH_DEMO', notes?}
  */
 export async function POST(request: Request) {
   try {
@@ -77,6 +78,13 @@ export async function POST(request: Request) {
     if (body.paymentMethod !== undefined) {
       if (body.paymentMethod === 'COD' || body.paymentMethod === 'BKASH_DEMO') paymentMethod = body.paymentMethod
       else return badRequest('Invalid payment method')
+    }
+
+    // 3b. Optional customer note for the order (delivery instructions etc.)
+    let notes: string | null = null
+    if (typeof body.notes === 'string' && body.notes.trim() !== '') {
+      notes = body.notes.trim()
+      if (notes.length > MAX_NOTES_LENGTH) return badRequest(`Notes must be ${MAX_NOTES_LENGTH} characters or less`)
     }
 
     // 4. Totals
@@ -160,6 +168,7 @@ export async function POST(request: Request) {
               paymentStatus,
               status,
               prescriptionId: rxId,
+              notes,
               items: {
                 create: cartItems.map((it) => ({
                   medicineId: it.medicineId,

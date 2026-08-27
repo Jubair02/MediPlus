@@ -172,6 +172,7 @@ export function parseOrder(order: FullOrder, opts: { prescriptionImage?: boolean
       : null,
     user: order.user,
     statusNote: order.statusNote,
+    notes: order.notes,
     payment: order.payment
       ? { id: order.payment.id, method: order.payment.method, status: order.payment.status, amount: order.payment.amount }
       : null,

@@ -9,6 +9,7 @@ import {
   PackageSearch,
   Phone,
   Search,
+  StickyNote,
   UserRound,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -255,6 +256,12 @@ export default function AdminOrders() {
                     <TableRow key={o.id} className="transition-colors hover:bg-accent/40">
                       <TableCell className="whitespace-nowrap font-mono text-xs font-medium">
                         {o.orderNo}
+                        {o.notes && (
+                          <StickyNote
+                            className="ml-1.5 inline h-3 w-3 text-amber-500"
+                            aria-label={`Has customer note: ${o.notes}`}
+                          />
+                        )}
                       </TableCell>
                       <TableCell className="max-w-40 truncate">
                         {o.user?.name ?? o.address?.recipient ?? '—'}
@@ -340,6 +347,20 @@ export default function AdminOrders() {
                     </div>
                   </div>
                 </div>
+
+                {/* Customer note */}
+                {selected.notes && (
+                  <div className="space-y-2">
+                    <SectionTitle>Customer note</SectionTitle>
+                    <div
+                      className="flex gap-2 rounded-lg border border-amber-300/70 bg-amber-50 p-3 text-sm dark:border-amber-500/30 dark:bg-amber-500/10"
+                      aria-label={`Customer note: ${selected.notes}`}
+                    >
+                      <StickyNote className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <p className="min-w-0 break-words text-amber-950 dark:text-amber-100">{selected.notes}</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Items */}
                 <div className="space-y-2">

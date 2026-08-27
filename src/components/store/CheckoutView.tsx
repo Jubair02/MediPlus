@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   ShoppingBag,
   Smartphone,
+  StickyNote,
   Tag,
   X,
 } from 'lucide-react'
@@ -42,9 +43,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import AddressFormDialog from '@/components/store/AddressFormDialog'
 import BkashPayDialog from '@/components/store/BkashPayDialog'
+import { MedImage } from '@/components/store/MedicineCard'
 import { cn } from '@/lib/utils'
 
 const FREE_DELIVERY_THRESHOLD = 2000
+const MAX_NOTES = 600
 
 export default function CheckoutView() {
   const user = useAppStore((s) => s.user)
@@ -73,6 +76,7 @@ export default function CheckoutView() {
   const [placing, setPlacing] = useState(false)
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null)
   const [bkashOpen, setBkashOpen] = useState(false)
+  const [notes, setNotes] = useState('')
 
   // ---------- initial load ----------
   useEffect(() => {
@@ -186,6 +190,8 @@ export default function CheckoutView() {
         ...(coupon ? { couponCode: coupon.code } : {}),
       }
       if (selectedAddressId) body.addressId = selectedAddressId
+      const trimmedNotes = notes.trim()
+      if (trimmedNotes) body.notes = trimmedNotes
       if (needsRx) {
         if (upload?.image) {
           body.prescription = { image: upload.image, note: upload.note.trim() || undefined }
@@ -486,6 +492,48 @@ export default function CheckoutView() {
               </div>
             </RadioGroup>
           </Card>
+
+          {/* 4. Delivery notes (optional courier instructions) */}
+          <Card className="gap-4 p-5 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                <StickyNote className="size-5 text-primary" aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <h2 className="font-semibold leading-tight">Delivery notes</h2>
+                <p className="text-xs text-muted-foreground">Optional instructions for our courier</p>
+              </div>
+            </div>
+            <div className="relative">
+              <Textarea
+                value={notes}
+                maxLength={MAX_NOTES}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="e.g. Leave with the reception, call me at arrival…"
+                aria-label="Delivery notes"
+                className="min-h-22 resize-none pb-7 pr-10 focus-visible:ring-primary/30"
+              />
+              {notes.length > 0 && (
+                <button
+                  type="button"
+                  aria-label="Clear delivery notes"
+                  className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  onClick={() => setNotes('')}
+                >
+                  <X className="size-3.5" aria-hidden="true" />
+                </button>
+              )}
+              <span
+                className={cn(
+                  'pointer-events-none absolute bottom-2.5 right-3 text-[11px] tabular-nums',
+                  notes.length > 540 ? 'font-medium text-amber-600' : 'text-muted-foreground'
+                )}
+                aria-live="polite"
+              >
+                {notes.length} / {MAX_NOTES}
+              </span>
+            </div>
+          </Card>
         </div>
 
         {/* ---------- Right column: summary ---------- */}
@@ -493,10 +541,15 @@ export default function CheckoutView() {
           <h2 className="font-semibold">Order summary</h2>
           <Separator className="my-4" />
 
-          <ul className="max-h-40 space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+          <ul className="max-h-56 space-y-1 overflow-y-auto pr-1 scrollbar-thin">
             {cartItems.map((i) => (
-              <li key={i.id} className="flex items-start justify-between gap-3 text-sm">
-                <span className="min-w-0">
+              <li key={i.id} className="flex items-center gap-3 py-1 text-sm">
+                <MedImage
+                  src={i.medicine.image}
+                  alt={i.medicine.name}
+                  className="size-10 shrink-0 rounded-md border"
+                />
+                <span className="min-w-0 flex-1">
                   <span className="line-clamp-1">{i.medicine.name}</span>
                   <span className="text-xs text-muted-foreground">× {i.quantity}</span>
                 </span>

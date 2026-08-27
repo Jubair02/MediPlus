@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Eye, FileCheck, Info, PackageSearch, Search } from 'lucide-react'
+import { Eye, FileCheck, Info, PackageSearch, Search, StickyNote } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { fmtBDT, fmtDateTime } from '@/lib/format'
@@ -216,7 +216,18 @@ export default function PharmacistOrders() {
                     return (
                       <TableRow key={o.id} className="transition-colors hover:bg-accent/40">
                         <TableCell className="whitespace-nowrap font-mono text-xs font-medium">
-                          {o.orderNo}
+                          <span className="inline-flex items-center gap-1.5">
+                            {o.orderNo}
+                            {o.notes && (
+                              <span
+                                title={`Customer note: ${o.notes}`}
+                                aria-label={`Has customer note: ${o.notes}`}
+                                className="inline-flex text-amber-500"
+                              >
+                                <StickyNote className="h-3 w-3" aria-hidden="true" />
+                              </span>
+                            )}
+                          </span>
                         </TableCell>
                         <TableCell className="max-w-40 truncate">
                           {o.user?.name ?? o.address?.recipient ?? '—'}
@@ -283,6 +294,17 @@ export default function PharmacistOrders() {
                   <p className="mt-2 text-xs text-muted-foreground">Note: {selected.statusNote}</p>
                 )}
               </div>
+
+              {/* Customer delivery note */}
+              {selected.notes && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-400">
+                    <StickyNote className="h-3.5 w-3.5" aria-hidden="true" />
+                    Customer note
+                  </p>
+                  <p className="mt-1 text-sm text-amber-950 dark:text-amber-100">{selected.notes}</p>
+                </div>
+              )}
 
               {/* Items */}
               <div className="space-y-2">

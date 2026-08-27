@@ -24,6 +24,8 @@ model User {
   deliveries    Order[]        @relation("DeliveryStaff")
   reviewsDone   Prescription[] @relation("ReviewedBy")
   reviews       Review[]
+  questions     Question[]
+  answeredQuestions Question[] @relation("QuestionAnswerer")
   stockMovements StockMovement[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -75,6 +77,7 @@ model Medicine {
   wishlistItems        WishlistItem[]
   orderItems           OrderItem[]
   reviews              Review[]
+  questions            Question[]
   stockMovements       StockMovement[]
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
@@ -138,6 +141,7 @@ model Order {
   deliveryStaffId String?
   deliveryStaff   User?         @relation("DeliveryStaff", fields: [deliveryStaffId], references: [id], onDelete: SetNull)
   statusNote      String?
+  notes           String?
   payment         Payment?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -193,6 +197,26 @@ model Review {
 
   @@unique([userId, medicineId])
   @@index([medicineId])
+}
+
+model Question {
+  id           String    @id @default(cuid())
+  medicineId   String
+  medicine     Medicine  @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question     String
+  answer       String?
+  answeredById String?
+  answeredBy   User?     @relation("QuestionAnswerer", fields: [answeredById], references: [id], onDelete: SetNull)
+  answeredAt   DateTime?
+  status       String    @default("PENDING") // PENDING | ANSWERED | REJECTED
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([medicineId])
+  @@index([userId])
+  @@index([status, createdAt])
 }
 
 model StockMovement {

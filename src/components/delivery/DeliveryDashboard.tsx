@@ -9,6 +9,7 @@ import {
   MapPin,
   PackageOpen,
   Phone,
+  StickyNote,
   Truck,
   UserRound,
   XCircle,
@@ -223,7 +224,7 @@ export default function DeliveryDashboard() {
             transition={{ duration: 0.2, ease: 'easeOut' }}
           >
             {loading ? (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-2 [&>*]:min-w-0">
                 {[...Array(2)].map((_, i) => (
                   <Skeleton key={i} className="h-80 w-full rounded-xl" />
                 ))}
@@ -237,7 +238,7 @@ export default function DeliveryDashboard() {
                 </p>
               </div>
             ) : (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-2 [&>*]:min-w-0">
                 {active.map((order) => (
                   <Card key={order.id} className="gap-3 p-4 transition-shadow hover:shadow-md">
                     {/* Header */}
@@ -264,7 +265,7 @@ export default function DeliveryDashboard() {
                     </div>
 
                     {/* Address */}
-                    <div className="flex gap-2 rounded-lg border p-2.5 text-sm">
+                    <div className="flex min-w-0 gap-2 rounded-lg border p-2.5 text-sm">
                       <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                       <div className="min-w-0">
                         <p className="truncate font-medium">{fullAddress(order)}</p>
@@ -274,6 +275,22 @@ export default function DeliveryDashboard() {
                         </p>
                       </div>
                     </div>
+
+                    {/* Customer delivery instructions */}
+                    {order.notes && (
+                      <div
+                        className="flex gap-2 rounded-lg border border-amber-300/70 bg-amber-50 p-2.5 text-sm dark:border-amber-500/30 dark:bg-amber-500/10"
+                        aria-label={`Customer note: ${order.notes}`}
+                      >
+                        <StickyNote className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                            Delivery instructions
+                          </p>
+                          <p className="mt-0.5 break-words text-amber-950 dark:text-amber-100">{order.notes}</p>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Items */}
                     <div className="max-h-32 space-y-1.5 overflow-y-auto rounded-lg border p-2 scrollbar-thin">
@@ -384,6 +401,12 @@ export default function DeliveryDashboard() {
                             <StatusBadge status={o.status} />
                           </TableCell>
                           <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
+                            {o.notes && (
+                              <StickyNote
+                                className="mr-1 inline h-3 w-3 text-amber-500"
+                                aria-label={`Customer note: ${o.notes}`}
+                              />
+                            )}
                             {o.statusNote ?? '—'}
                           </TableCell>
                         </TableRow>

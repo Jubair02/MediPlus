@@ -1,0 +1,732 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useState } from 'react'
+     4→import {
+     5→  Bar,
+     6→  BarChart,
+     7→  CartesianGrid,
+     8→  Legend,
+     9→  ResponsiveContainer,
+    10→  Tooltip,
+    11→  XAxis,
+    12→  YAxis,
+    13→} from 'recharts'
+    14→import {
+    15→  AlertTriangle,
+    16→  BarChart3,
+    17→  Bike,
+    18→  Download,
+    19→  HandCoins,
+    20→  Loader2,
+    21→  Medal,
+    22→  PackageCheck,
+    23→  RefreshCw,
+    24→  Truck,
+    25→  Users,
+    26→} from 'lucide-react'
+    27→import { toast } from 'sonner'
+    28→import { api } from '@/lib/api'
+    29→import { downloadCsv } from '@/lib/download'
+    30→import { effectivePrice, fmtBDT, fmtDate, fmtDateTime } from '@/lib/format'
+    31→import { cn } from '@/lib/utils'
+    32→import type { Medicine } from '@/lib/types'
+    33→import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+    34→import { Badge } from '@/components/ui/badge'
+    35→import { Button } from '@/components/ui/button'
+    36→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+    37→import { Progress } from '@/components/ui/progress'
+    38→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    39→import { Skeleton } from '@/components/ui/skeleton'
+    40→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    41→
+    42→interface ReportsData {
+    43→  salesByDay: { date: string; revenue: number; orders: number }[]
+    44→  categorySales: { category: string; qty: number; revenue: number }[]
+    45→  topMedicines: { name: string; qty: number; revenue: number }[]
+    46→  lowStock: Medicine[]
+    47→}
+    48→
+    49→interface DeliveryStaff {
+    50→  id: string
+    51→  name: string | null
+    52→  email: string
+    53→  phone: string | null
+    54→  assigned: number
+    55→  active: number
+    56→  delivered: number
+    57→  failed: number
+    58→  deliveredValue: number
+    59→  codCollected: number
+    60→  avgCompletionHours: number | null
+    61→  lastDeliveryAt: string | null
+    62→}
+    63→
+    64→const CHART_GRID = '#e2e8f0'
+    65→const AXIS = '#94a3b8'
+    66→
+    67→function shortDay(d: string): string {
+    68→  const date = new Date(d)
+    69→  if (Number.isNaN(date.getTime())) return d
+    70→  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    71→}
+    72→
+    73→function kFmt(v: number): string {
+    74→  return Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`
+    75→}
+    76→
+    77→function StockChip({ stock }: { stock: number }) {
+    78→  if (stock <= 0)
+    79→    return (
+    80→      <Badge variant="outline" className="border-red-300 bg-red-100 text-red-800">
+    81→        Out
+    82→      </Badge>
+    83→    )
+    84→  return (
+    85→    <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800">
+    86→      Low · {stock}
+    87→    </Badge>
+    88→  )
+    89→}
+    90→
+    91→function RankCell({ idx }: { idx: number }) {
+    92→  if (idx === 0) return <Medal className="h-4 w-4 text-amber-500" />
+    93→  if (idx === 1) return <Medal className="h-4 w-4 text-gray-400" />
+    94→  if (idx === 2) return <Medal className="h-4 w-4 text-amber-700" />
+    95→  return <span className="text-xs text-muted-foreground">{idx + 1}</span>
+    96→}
+    97→
+    98→function ReportsSkeleton() {
+    99→  return (
+   100→    <div className="space-y-4">
+   101→      <div className="grid gap-4 lg:grid-cols-2">
+   102→        <Skeleton className="h-80 w-full rounded-xl" />
+   103→        <Skeleton className="h-80 w-full rounded-xl" />
+   104→      </div>
+   105→      <div className="grid gap-4 lg:grid-cols-2">
+   106→        <Skeleton className="h-72 w-full rounded-xl" />
+   107→        <Skeleton className="h-72 w-full rounded-xl" />
+   108→      </div>
+   109→    </div>
+   110→  )
+   111→}
+   112→
+   113→function DeliverySkeleton() {
+   114→  return (
+   115→    <div className="space-y-4" aria-hidden="true">
+   116→      <div className="flex flex-wrap items-center justify-between gap-2">
+   117→        <div className="space-y-2">
+   118→          <Skeleton className="h-6 w-52" />
+   119→          <Skeleton className="h-4 w-64" />
+   120→        </div>
+   121→        <Skeleton className="h-9 w-28 rounded-md" />
+   122→      </div>
+   123→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   124→        {[...Array(4)].map((_, i) => (
+   125→          <Skeleton key={i} className="h-[86px] rounded-xl" />
+   126→        ))}
+   127→      </div>
+   128→      <Card className="gap-0 py-4">
+   129→        <CardContent className="px-4">
+   130→          <div className="overflow-x-auto scrollbar-thin">
+   131→            <Table className="min-w-[820px]">
+   132→              <TableHeader>
+   133→                <TableRow>
+   134→                  {[...Array(9)].map((_, i) => (
+   135→                    <TableHead key={i}>
+   136→                      <Skeleton className="h-4 w-16" />
+   137→                    </TableHead>
+   138→                  ))}
+   139→                </TableRow>
+   140→              </TableHeader>
+   141→              <TableBody>
+   142→                {[...Array(3)].map((_, i) => (
+   143→                  <TableRow key={`sk-${i}`}>
+   144→                    <TableCell colSpan={9}>
+   145→                      <Skeleton className="h-9 w-full" />
+   146→                    </TableCell>
+   147→                  </TableRow>
+   148→                ))}
+   149→              </TableBody>
+   150→            </Table>
+   151→          </div>
+   152→        </CardContent>
+   153→      </Card>
+   154→    </div>
+   155→  )
+   156→}
+   157→
+   158→function StatChip({
+   159→  label,
+   160→  value,
+   161→  sub,
+   162→  icon,
+   163→  tone,
+   164→}: {
+   165→  label: string
+   166→  value: string | number
+   167→  sub: string
+   168→  icon: React.ReactNode
+   169→  tone: string
+   170→}) {
+   171→  return (
+   172→    <Card className="gap-1 p-4">
+   173→      <div className="flex items-center gap-2">
+   174→        <span className={cn('flex size-8 items-center justify-center rounded-lg', tone)}>
+   175→          {icon}
+   176→        </span>
+   177→        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+   178→      </div>
+   179→      <p className="text-2xl font-bold tabular-nums">{value}</p>
+   180→      <p className="text-[11px] text-muted-foreground">{sub}</p>
+   181→    </Card>
+   182→  )
+   183→}
+   184→
+   185→function DeliverySection({
+   186→  staff,
+   187→  loading,
+   188→  error,
+   189→  exportPending,
+   190→  onRetry,
+   191→  onExport,
+   192→}: {
+   193→  staff: DeliveryStaff[] | null
+   194→  loading: boolean
+   195→  error: string | null
+   196→  exportPending: boolean
+   197→  onRetry: () => void
+   198→  onExport: () => void
+   199→}) {
+   200→  const totals = useMemo(() => {
+   201→    const list = staff ?? []
+   202→    return {
+   203→      delivered: list.reduce((sum, s) => sum + s.delivered, 0),
+   204→      active: list.reduce((sum, s) => sum + s.active, 0),
+   205→      cod: list.reduce((sum, s) => sum + s.codCollected, 0),
+   206→      size: list.length,
+   207→    }
+   208→  }, [staff])
+   209→
+   210→  if (loading && !staff) return <DeliverySkeleton />
+   211→
+   212→  return (
+   213→    <div className="space-y-4">
+   214→      {/* Section header + toolbar */}
+   215→      <div className="flex flex-wrap items-center justify-between gap-2">
+   216→        <div>
+   217→          <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+   218→            <Truck className="h-5 w-5 text-primary" aria-hidden="true" /> Delivery performance
+   219→          </h2>
+   220→          <p className="text-sm text-muted-foreground">How each delivery partner is doing</p>
+   221→        </div>
+   222→        <Button
+   223→          variant="outline"
+   224→          onClick={onExport}
+   225→          disabled={exportPending || !staff || staff.length === 0}
+   226→        >
+   227→          {exportPending ? (
+   228→            <Loader2 className="h-4 w-4 animate-spin" />
+   229→          ) : (
+   230→            <Download className="h-4 w-4" />
+   231→          )}
+   232→          Export CSV
+   233→        </Button>
+   234→      </div>
+   235→
+   236→      {error ? (
+   237→        <Card className="flex-col items-center gap-2 p-10 text-center">
+   238→          <Truck className="h-8 w-8 text-muted-foreground/50" />
+   239→          <p className="text-sm text-muted-foreground">{error}</p>
+   240→          <Button variant="outline" size="sm" onClick={onRetry}>
+   241→            <RefreshCw className="h-3.5 w-3.5" /> Retry
+   242→          </Button>
+   243→        </Card>
+   244→      ) : !staff || staff.length === 0 ? (
+   245→        <Card className="flex-col items-center gap-3 p-10 text-center">
+   246→          <Truck className="h-8 w-8 text-muted-foreground/50" />
+   247→          <div>
+   248→            <p className="text-sm font-medium">No delivery staff yet</p>
+   249→            <p className="text-sm text-muted-foreground">
+   250→              Delivery partners will appear here once they join the team.
+   251→            </p>
+   252→          </div>
+   253→        </Card>
+   254→      ) : (
+   255→        <>
+   256→          {/* Team summary strip */}
+   257→          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   258→            <StatChip
+   259→              label="Total delivered"
+   260→              value={totals.delivered}
+   261→              sub="orders completed by the team"
+   262→              tone="bg-emerald-100"
+   263→              icon={<PackageCheck className="size-4 text-emerald-700" aria-hidden="true" />}
+   264→            />
+   265→            <StatChip
+   266→              label="Active on the road"
+   267→              value={totals.active}
+   268→              sub="orders out for delivery"
+   269→              tone="bg-teal-100"
+   270→              icon={<Bike className="size-4 text-teal-700" aria-hidden="true" />}
+   271→            />
+   272→            <StatChip
+   273→              label="COD collected"
+   274→              value={fmtBDT(totals.cod)}
+   275→              sub="cash collected on delivery"
+   276→              tone="bg-amber-100"
+   277→              icon={<HandCoins className="size-4 text-amber-700" aria-hidden="true" />}
+   278→            />
+   279→            <StatChip
+   280→              label="Team size"
+   281→              value={totals.size}
+   282→              sub="delivery partners"
+   283→              tone="bg-primary/10"
+   284→              icon={<Users className="text-primary size-4" aria-hidden="true" />}
+   285→            />
+   286→          </div>
+   287→
+   288→          {/* Staff table */}
+   289→          <Card className="gap-0 py-4">
+   290→            <CardContent className="px-4">
+   291→              <div className="max-h-[60vh] overflow-auto rounded-md border scrollbar-thin">
+   292→                <Table className="min-w-[820px]" aria-label="Delivery performance by staff member">
+   293→                  <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+   294→                    <TableRow className="hover:bg-transparent">
+   295→                      <TableHead>Staff</TableHead>
+   296→                      <TableHead className="text-center">Assigned</TableHead>
+   297→                      <TableHead className="text-center">Active</TableHead>
+   298→                      <TableHead className="text-center">Delivered</TableHead>
+   299→                      <TableHead className="text-center">Failed</TableHead>
+   300→                      <TableHead className="text-center">Success rate</TableHead>
+   301→                      <TableHead className="text-right">COD collected</TableHead>
+   302→                      <TableHead className="text-right">Avg completion</TableHead>
+   303→                      <TableHead className="text-right">Last delivery</TableHead>
+   304→                    </TableRow>
+   305→                  </TableHeader>
+   306→                  <TableBody>
+   307→                    {staff.map((s) => {
+   308→                      const hasOrders = s.assigned > 0 || s.delivered > 0
+   309→                      const successPct =
+   310→                        s.assigned > 0 ? Math.round((s.delivered / s.assigned) * 100) : null
+   311→                      const avgH =
+   312→                        s.avgCompletionHours != null
+   313→                          ? Math.round(s.avgCompletionHours * 10) / 10
+   314→                          : null
+   315→                      const initial = (s.name?.trim()?.[0] ?? s.email[0] ?? '?').toUpperCase()
+   316→                      return (
+   317→                        <TableRow
+   318→                          key={s.id}
+   319→                          className={cn(!hasOrders && 'text-muted-foreground')}
+   320→                        >
+   321→                          <TableCell>
+   322→                            <div className="flex items-center gap-2.5">
+   323→                              <Avatar className="size-8">
+   324→                                <AvatarFallback className="text-xs">{initial}</AvatarFallback>
+   325→                              </Avatar>
+   326→                              <div className="min-w-0">
+   327→                                <p className="truncate text-sm font-medium">{s.name ?? s.email}</p>
+   328→                                <p className="max-w-44 truncate text-xs text-muted-foreground">
+   329→                                  {s.email}
+   330→                                </p>
+   331→                              </div>
+   332→                            </div>
+   333→                          </TableCell>
+   334→                          <TableCell className="whitespace-nowrap text-center text-sm">
+   335→                            {s.assigned}
+   336→                          </TableCell>
+   337→                          <TableCell className="text-center">
+   338→                            {s.active > 0 ? (
+   339→                              <Badge
+   340→                                variant="outline"
+   341→                                className="whitespace-nowrap border-teal-300 bg-teal-100 text-teal-800"
+   342→                              >
+   343→                                {s.active}
+   344→                              </Badge>
+   345→                            ) : (
+   346→                              <span className="text-sm">0</span>
+   347→                            )}
+   348→                          </TableCell>
+   349→                          <TableCell
+   350→                            className={cn(
+   351→                              'whitespace-nowrap text-center text-sm',
+   352→                              hasOrders && 'font-bold text-emerald-600 dark:text-emerald-400'
+   353→                            )}
+   354→                          >
+   355→                            {s.delivered}
+   356→                          </TableCell>
+   357→                          <TableCell
+   358→                            className={cn(
+   359→                              'whitespace-nowrap text-center text-sm',
+   360→                              s.failed > 0 && 'font-medium text-red-600 dark:text-red-400'
+   361→                            )}
+   362→                          >
+   363→                            {s.failed}
+   364→                          </TableCell>
+   365→                          <TableCell>
+   366→                            {successPct === null ? (
+   367→                              <span className="text-sm text-muted-foreground">—</span>
+   368→                            ) : (
+   369→                              <div
+   370→                                className="flex items-center justify-center gap-2"
+   371→                                title={`${successPct}% of assigned orders delivered`}
+   372→                              >
+   373→                                <Progress
+   374→                                  value={successPct}
+   375→                                  className="h-1.5 w-16"
+   376→                                  aria-label={`${successPct}% success rate`}
+   377→                                />
+   378→                                <span className="w-9 text-xs font-medium tabular-nums">
+   379→                                  {successPct}%
+   380→                                </span>
+   381→                              </div>
+   382→                            )}
+   383→                          </TableCell>
+   384→                          <TableCell className="whitespace-nowrap text-right text-sm font-medium">
+   385→                            {fmtBDT(s.codCollected)}
+   386→                          </TableCell>
+   387→                          <TableCell
+   388→                            className="whitespace-nowrap text-right text-sm"
+   389→                            title="Avg hours from order placed to delivered"
+   390→                          >
+   391→                            {avgH != null ? `${avgH}h` : '—'}
+   392→                          </TableCell>
+   393→                          <TableCell className="whitespace-nowrap text-right text-sm">
+   394→                            {s.lastDeliveryAt ? (
+   395→                              fmtDateTime(s.lastDeliveryAt)
+   396→                            ) : (
+   397→                              <span className="text-muted-foreground">Never</span>
+   398→                            )}
+   399→                          </TableCell>
+   400→                        </TableRow>
+   401→                      )
+   402→                    })}
+   403→                  </TableBody>
+   404→                </Table>
+   405→              </div>
+   406→            </CardContent>
+   407→          </Card>
+   408→        </>
+   409→      )}
+   410→    </div>
+   411→  )
+   412→}
+   413→
+   414→export default function AdminReports() {
+   415→  const [days, setDays] = useState('7')
+   416→  const [reports, setReports] = useState<ReportsData | null>(null)
+   417→  const [loading, setLoading] = useState(true)
+   418→  const [exportPending, setExportPending] = useState(false)
+   419→  const [staff, setStaff] = useState<DeliveryStaff[] | null>(null)
+   420→  const [staffLoading, setStaffLoading] = useState(true)
+   421→  const [staffError, setStaffError] = useState<string | null>(null)
+   422→  const [staffExportPending, setStaffExportPending] = useState(false)
+   423→
+   424→  const load = useCallback(async () => {
+   425→    setLoading(true)
+   426→    try {
+   427→      const d = await api<ReportsData>(`/api/admin?resource=reports&days=${days}`)
+   428→      setReports(d)
+   429→    } catch (e) {
+   430→      toast.error(e instanceof Error ? e.message : 'Failed to load reports')
+   431→    } finally {
+   432→      setLoading(false)
+   433→    }
+   434→  }, [days])
+   435→
+   436→  useEffect(() => {
+   437→    void load()
+   438→  }, [load])
+   439→
+   440→  const loadDelivery = useCallback(async (signal?: AbortSignal) => {
+   441→    setStaffLoading(true)
+   442→    setStaffError(null)
+   443→    try {
+   444→      const d = await api<{ staff: DeliveryStaff[] }>(
+   445→        '/api/admin?resource=delivery-performance',
+   446→        { signal }
+   447→      )
+   448→      setStaff(d.staff)
+   449→    } catch (e) {
+   450→      if (e instanceof DOMException && e.name === 'AbortError') return
+   451→      setStaffError(e instanceof Error ? e.message : 'Failed to load delivery performance')
+   452→    } finally {
+   453→      setStaffLoading(false)
+   454→    }
+   455→  }, [])
+   456→
+   457→  useEffect(() => {
+   458→    const ctrl = new AbortController()
+   459→    void loadDelivery(ctrl.signal)
+   460→    return () => ctrl.abort()
+   461→  }, [loadDelivery])
+   462→
+   463→  async function exportCsv() {
+   464→    setExportPending(true)
+   465→    try {
+   466→      const d = await api<{ filename: string; csv: string }>(
+   467→        `/api/admin?resource=export-report&days=${days}`
+   468→      )
+   469→      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+   470→        throw new Error('Export unavailable')
+   471→      downloadCsv(d.filename, d.csv)
+   472→      toast.success('Report exported')
+   473→    } catch (e) {
+   474→      toast.error(e instanceof Error ? e.message : 'Failed to export report')
+   475→    } finally {
+   476→      setExportPending(false)
+   477→    }
+   478→  }
+   479→
+   480→  async function exportDeliveryCsv() {
+   481→    setStaffExportPending(true)
+   482→    try {
+   483→      const d = await api<{ filename: string; csv: string }>(
+   484→        '/api/admin?resource=export-delivery'
+   485→      )
+   486→      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+   487→        throw new Error('Export unavailable')
+   488→      downloadCsv(d.filename, d.csv)
+   489→      toast.success('Delivery report exported')
+   490→    } catch (e) {
+   491→      toast.error(e instanceof Error ? e.message : 'Failed to export delivery report')
+   492→    } finally {
+   493→      setStaffExportPending(false)
+   494→    }
+   495→  }
+   496→
+   497→  const catHeight = reports ? Math.max(220, reports.categorySales.length * 44 + 40) : 220
+   498→
+   499→  return (
+   500→    <div className="space-y-4 md:space-y-6">
+   501→      {/* Toolbar */}
+   502→      <div className="flex flex-wrap items-center justify-end gap-2">
+   503→        <Select value={days} onValueChange={setDays}>
+   504→          <SelectTrigger className="w-[160px]">
+   505→            <SelectValue />
+   506→          </SelectTrigger>
+   507→          <SelectContent>
+   508→            <SelectItem value="7">Last 7 days</SelectItem>
+   509→            <SelectItem value="30">Last 30 days</SelectItem>
+   510→          </SelectContent>
+   511→        </Select>
+   512→        <Button variant="outline" onClick={() => void exportCsv()} disabled={exportPending}>
+   513→          {exportPending ? (
+   514→            <Loader2 className="h-4 w-4 animate-spin" />
+   515→          ) : (
+   516→            <Download className="h-4 w-4" />
+   517→          )}
+   518→          Export CSV
+   519→        </Button>
+   520→      </div>
+   521→
+   522→      {loading && !reports ? (
+   523→        <ReportsSkeleton />
+   524→      ) : !reports ? (
+   525→        <Card className="items-center p-10 text-center">
+   526→          <BarChart3 className="h-8 w-8 text-muted-foreground/50" />
+   527→          <p className="text-sm text-muted-foreground">Could not load reports.</p>
+   528→        </Card>
+   529→      ) : (
+   530→        <>
+   531→          {/* Charts */}
+   532→          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+   533→            <Card>
+   534→              <CardHeader>
+   535→                <CardTitle>Sales by day</CardTitle>
+   536→                <CardDescription>Revenue and order volume</CardDescription>
+   537→              </CardHeader>
+   538→              <CardContent>
+   539→                <ResponsiveContainer width="100%" height={300}>
+   540→                  <BarChart data={reports.salesByDay} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+   541→                    <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+   542→                    <XAxis
+   543→                      dataKey="date"
+   544→                      tickFormatter={shortDay}
+   545→                      tick={{ fontSize: 11 }}
+   546→                      stroke={AXIS}
+   547→                    />
+   548→                    <YAxis
+   549→                      yAxisId="rev"
+   550→                      orientation="left"
+   551→                      tick={{ fontSize: 11 }}
+   552→                      stroke={AXIS}
+   553→                      width={48}
+   554→                      tickFormatter={kFmt}
+   555→                    />
+   556→                    <YAxis
+   557→                      yAxisId="ord"
+   558→                      orientation="right"
+   559→                      tick={{ fontSize: 11 }}
+   560→                      stroke={AXIS}
+   561→                      width={32}
+   562→                      allowDecimals={false}
+   563→                    />
+   564→                    <Tooltip
+   565→                      contentStyle={{ borderRadius: 8, fontSize: 12 }}
+   566→                      formatter={(v, name) => (name === 'orders' ? `${Number(v)} orders` : fmtBDT(Number(v)))}
+   567→                      labelFormatter={(l) => fmtDate(String(l))}
+   568→                    />
+   569→                    <Legend
+   570→                      wrapperStyle={{ fontSize: 12 }}
+   571→                      formatter={(v) => (v === 'orders' ? 'Orders' : 'Revenue')}
+   572→                    />
+   573→                    <Bar
+   574→                      yAxisId="rev"
+   575→                      dataKey="revenue"
+   576→                      fill="#10b981"
+   577→                      radius={[4, 4, 0, 0]}
+   578→                      maxBarSize={22}
+   579→                    />
+   580→                    <Bar
+   581→                      yAxisId="ord"
+   582→                      dataKey="orders"
+   583→                      fill="#14b8a6"
+   584→                      radius={[4, 4, 0, 0]}
+   585→                      maxBarSize={22}
+   586→                    />
+   587→                  </BarChart>
+   588→                </ResponsiveContainer>
+   589→              </CardContent>
+   590→            </Card>
+   591→
+   592→            <Card>
+   593→              <CardHeader>
+   594→                <CardTitle>Sales by category</CardTitle>
+   595→                <CardDescription>Revenue share per department</CardDescription>
+   596→              </CardHeader>
+   597→              <CardContent>
+   598→                {reports.categorySales.length === 0 ? (
+   599→                  <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+   600→                    No sales in this period
+   601→                  </div>
+   602→                ) : (
+   603→                  <ResponsiveContainer width="100%" height={catHeight}>
+   604→                    <BarChart
+   605→                      data={reports.categorySales}
+   606→                      layout="vertical"
+   607→                      margin={{ top: 4, right: 24, left: 8, bottom: 0 }}
+   608→                    >
+   609→                      <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} horizontal={false} />
+   610→                      <XAxis
+   611→                        type="number"
+   612→                        tick={{ fontSize: 11 }}
+   613→                        stroke={AXIS}
+   614→                        tickFormatter={kFmt}
+   615→                      />
+   616→                      <YAxis
+   617→                        type="category"
+   618→                        dataKey="category"
+   619→                        tick={{ fontSize: 11 }}
+   620→                        stroke={AXIS}
+   621→                        width={110}
+   622→                      />
+   623→                      <Tooltip
+   624→                        contentStyle={{ borderRadius: 8, fontSize: 12 }}
+   625→                        formatter={(v) => fmtBDT(Number(v))}
+   626→                      />
+   627→                      <Bar dataKey="revenue" fill="#14b8a6" radius={[0, 4, 4, 0]} maxBarSize={18} />
+   628→                    </BarChart>
+   629→                  </ResponsiveContainer>
+   630→                )}
+   631→              </CardContent>
+   632→            </Card>
+   633→          </div>
+   634→
+   635→          {/* Tables */}
+   636→          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+   637→            <Card>
+   638→              <CardHeader>
+   639→                <CardTitle>Top selling medicines</CardTitle>
+   640→                <CardDescription>Best performers by units sold</CardDescription>
+   641→              </CardHeader>
+   642→              <CardContent>
+   643→                {reports.topMedicines.length === 0 ? (
+   644→                  <p className="py-8 text-center text-sm text-muted-foreground">No sales data yet.</p>
+   645→                ) : (
+   646→                  <div className="max-h-96 overflow-y-auto rounded-md border scrollbar-thin">
+   647→                    <Table>
+   648→                      <TableHeader className="sticky top-0 bg-card">
+   649→                        <TableRow>
+   650→                          <TableHead className="w-12">#</TableHead>
+   651→                          <TableHead>Medicine</TableHead>
+   652→                          <TableHead className="text-center">Units</TableHead>
+   653→                          <TableHead className="text-right">Revenue</TableHead>
+   654→                        </TableRow>
+   655→                      </TableHeader>
+   656→                      <TableBody>
+   657→                        {reports.topMedicines.map((m, i) => (
+   658→                          <TableRow key={m.name}>
+   659→                            <TableCell>
+   660→                              <RankCell idx={i} />
+   661→                            </TableCell>
+   662→                            <TableCell className="max-w-48 truncate text-sm font-medium">{m.name}</TableCell>
+   663→                            <TableCell className="text-center text-sm">{m.qty}</TableCell>
+   664→                            <TableCell className="text-right font-medium">{fmtBDT(m.revenue)}</TableCell>
+   665→                          </TableRow>
+   666→                        ))}
+   667→                      </TableBody>
+   668→                    </Table>
+   669→                  </div>
+   670→                )}
+   671→              </CardContent>
+   672→            </Card>
+   673→
+   674→            <Card>
+   675→              <CardHeader>
+   676→                <CardTitle className="flex items-center gap-2">
+   677→                  <AlertTriangle className="h-4 w-4 text-red-500" /> Low stock report
+   678→                </CardTitle>
+   679→                <CardDescription>Consider restocking these items soon</CardDescription>
+   680→              </CardHeader>
+   681→              <CardContent>
+   682→                {reports.lowStock.length === 0 ? (
+   683→                  <p className="py-8 text-center text-sm text-muted-foreground">
+   684→                    Nothing critical — inventory looks healthy.
+   685→                  </p>
+   686→                ) : (
+   687→                  <div className="max-h-96 overflow-y-auto rounded-md border scrollbar-thin">
+   688→                    <Table>
+   689→                      <TableHeader className="sticky top-0 bg-card">
+   690→                        <TableRow>
+   691→                          <TableHead>Medicine</TableHead>
+   692→                          <TableHead className="text-center">Stock</TableHead>
+   693→                          <TableHead>Category</TableHead>
+   694→                          <TableHead className="text-right">Price</TableHead>
+   695→                        </TableRow>
+   696→                      </TableHeader>
+   697→                      <TableBody>
+   698→                        {reports.lowStock.map((m) => (
+   699→                          <TableRow key={m.id}>
+   700→                            <TableCell className="max-w-44 truncate text-sm font-medium">{m.name}</TableCell>
+   701→                            <TableCell className="text-center">
+   702→                              <StockChip stock={m.stock} />
+   703→                            </TableCell>
+   704→                            <TableCell className="text-sm text-muted-foreground">
+   705→                              {m.category?.name ?? 'Uncategorized'}
+   706→                            </TableCell>
+   707→                            <TableCell className="text-right text-sm">{fmtBDT(effectivePrice(m))}</TableCell>
+   708→                          </TableRow>
+   709→                        ))}
+   710→                      </TableBody>
+   711→                    </Table>
+   712→                  </div>
+   713→                )}
+   714→              </CardContent>
+   715→            </Card>
+   716→          </div>
+   717→        </>
+   718→      )}
+   719→
+   720→      {/* Delivery performance */}
+   721→      <DeliverySection
+   722→        staff={staff}
+   723→        loading={staffLoading}
+   724→        error={staffError}
+   725→        exportPending={staffExportPending}
+   726→        onRetry={() => void loadDelivery()}
+   727→        onExport={() => void exportDeliveryCsv()}
+   728→      />
+   729→    </div>
+   730→  )
+   731→}
+   732→

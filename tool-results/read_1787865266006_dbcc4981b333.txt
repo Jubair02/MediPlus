@@ -1,0 +1,540 @@
+     1→# MediPlus E-Pharmacy MVP — Worklog
+     2→
+     3→Project: Next.js 16 (App Router) + TypeScript + Tailwind 4 + shadcn/ui + Prisma (SQLite) + Zustand.
+     4→Single visible route `/` (SPA view router via zustand `useAppStore.view`). All backend in `/api/*` route handlers.
+     5→Theme: emerald/teal pharmacy green, NO blue/indigo. Currency BDT (৳). Sticky footer required.
+     6→
+     7→Demo accounts (seeded):
+     8→- ADMIN admin@medplus.com / Admin123!
+     9→- PHARMACIST pharmacist@medplus.com / Pharma123!
+    10→- DELIVERY delivery@medplus.com / Deliver123!
+    11→- CUSTOMER customer@medplus.com / Customer123!
+    12→
+    13→---
+    14→Task ID: 1
+    15→Agent: main (Z.ai Code)
+    16→Task: Project foundation — database schema, seed data, shared libs, theme, app shell
+    17→
+    18→Work Log:
+    19→- Designed full Prisma schema: User, Address, Category, Medicine, CartItem, Prescription, Order, OrderItem, Payment, Coupon, Notification. Pushed to SQLite (db/custom.db).
+    20→- Seeded: 8 categories, 26 medicines (5 prescription-required, some low-stock), 6 users (all 4 roles), 3 addresses, 2 prescriptions, 3 coupons (SAVE10, FIRST50, HEALTH15), 4 sample orders (DELIVERED x2, OUT_FOR_DELIVERY, PRESCRIPTION_REVIEW), notifications.
+    21→- Created src/lib/auth.ts — HS256 JWT (crypto), scrypt password hashing, getAuthUser/requireRole guards, error helpers.
+    22→- Created src/lib/types.ts — ALL shared types incl. Order/OrderStatus/AdminStats/PharmacistStats + ORDER_STATUS_FLOW/ORDER_STATUS_LABELS.
+    23→- Created src/lib/api.ts — client fetch helper `api<T>(path, {method, body})` w/ Bearer token, fileToCompressedDataUrl for Rx uploads.
+    24→- Created src/lib/store.ts — zustand store (persisted user): view router, authOpen, cartCount, filters, detailMedicine, successOrderNo.
+    25→- Created src/lib/format.ts — fmtBDT, fmtDate/DateTime, effectivePrice, discountPercent, stockLabel, DELIVERY_FEE=60, free delivery over ৳2000.
+    26→- globals.css: emerald/teal oklch theme, custom scrollbars, med-gradient, fade-up animation.
+    27→- layout.tsx: MediPlus metadata, sonner Toaster.
+    28→- page.tsx: app shell — Header / animated view switch / Footer (min-h-screen flex-col + sticky footer) / AuthModal + MedicineDetailModal.
+    29→
+    30→Stage Summary:
+    31→- DB ready with rich demo data. Shared libs/types/store are FROZEN contracts — subagents must import, not modify them.
+    32→- API contract documented in subagent prompts (Task 2-a/b/c). Product images generating to /public/images (hero.png, cat-*.png, med-*.png) — UI must gracefully fall back to gradient placeholder if image missing.
+    33→- Order lifecycle: PENDING → PRESCRIPTION_REVIEW → CONFIRMED → PROCESSING → OUT_FOR_DELIVERY → DELIVERED (+ CANCELLED/FAILED). Non-Rx orders go CONFIRMED immediately on placement (stock deducted); Rx orders wait for pharmacist approval. Cancel restocks.
+    34→
+    35→---
+    36→Task ID: 2-c
+    37→Agent: frontend-styling-expert (subagent)
+    38→Task: Staff dashboards UI — Admin / Pharmacist / Delivery (src/components/admin|pharmacist|delivery)
+    39→
+    40→Work Log:
+    41→- Created 17 files, all 'use client', default exports, strict TS, no `any`. Only imports from src/lib + src/components/ui + same folder (no cross-dashboard imports, no frozen-file edits).
+    42→- MedImage helper (copied per folder: admin/pharmacist/delivery) — img with onError → med-gradient fallback + white Pill icon; used for medicine images and prescription dataURLs.
+    43→- AdminDashboard: sticky w-56 sidebar (top-[64px], h-[calc(100vh-64px)]) + mobile horizontal-scroll segmented pill row; tabs overview/orders/medicines/categories/users/staff/reports with per-tab title+subtitle; framer-motion tab transition; defensive user-null / role-mismatch fallbacks.
+    44→- AdminOverview: 6 stat cards (Users, Orders, Revenue ৳, Pending Orders amber, Pending Prescriptions amber, Low Stock red), AreaChart revenueByDay (emerald #10b981 gradient fill, fmtBDT tooltip), PieChart statusCounts (hex palette map, legend), Recent Orders table (max-h-96 scroll, View all → orders tab), low-stock mini-list with Out/Low chips.
+    45→- AdminOrders: status Select + search toolbar (client filter); table w/ mono orderNo, items count, staff, status badge; Manage Dialog: customer/address blocks, items table, prescription (image max-h-64 + status chip + reviewNote), payment chip, totals breakdown, update zone (status Select all 8 + delivery staff Select from ?resource=staff) → PUT update-order → list+dialog refresh + toast; skeleton rows + empty state.
+    46→- AdminMedicines: search + Add; table w/ MedImage thumb, category chip, effective price + strike original, stock chip (0 gray Out / ≤10 red Low / else emerald), Rx chip, ACTIVE status Switch, expiry (red if expired), Edit + AlertDialog Delete. Shared in-file Add/Edit dialog validates name/price>0/stock≥0/discount<price; create/update via PUT {action:create-medicine|update-medicine}; image hint "leave empty for placeholder".
+    47→- AdminCategories: card grid w/ medicineCount chip, add/edit dialog (name*, description), AlertDialog delete warning "medicines become uncategorized".
+    48→- AdminUsers: search + role filter; table w/ Avatar initial, inline role Select → AlertDialog confirm → update-user role, status Switch → update-user (both disabled for own account), joined date.
+    49→- AdminStaff: Pharmacists (Pill) & Delivery Staff (Bike) cards with counts + joined dates; Add Staff dialog (name/email/password*, phone, role PHARMACIST|DELIVERY) → create-staff.
+    50→- AdminReports: days Select 7/30 → reports; BarChart salesByDay (revenue emerald + orders teal, dual Y axes), horizontal BarChart categorySales (teal); Top Medicines table with medal icons for ranks 1–3; Low Stock table (stock chips, price) + "Consider restocking" hint.
+    51→- PharmacistDashboard: w-52 sidebar, default tab prescriptions with amber pending-count badge (stats fetched in shell, refreshable); header shows pharmacist name; same mobile segmented row pattern.
+    52→- PharmacistOverview: 5 stat cards (Pending amber, Approved/Rejected today, Total Medicines, Low Stock red), low-stock Alert list w/ Pill icons + chips, quick actions (Review queue → prescriptions tab, Refresh).
+    53→- PharmacistPrescriptions: Tabs Pending/Approved/Rejected/All with counts (client filter); card grid w/ dataURL thumbnail, patient info, note line-clamp-2, orderNo chip, date, status badge; review Dialog (full image max-h-[65vh] object-contain, patient/order info, reviewNote textarea, "Approving will confirm the linked order and deduct stock" info Alert) → PUT review APPROVED/REJECTED (note required for reject, enforced) → toast + refetch + stats refresh.
+    54→- PharmacistMedicines: like admin minus delete, /api/pharmacist endpoints, categories via GET /api/categories; inline stock quick-edit (+/− buttons, clamp ≥0), status Switch, add/edit dialog.
+    55→- PharmacistOrders: read-only status Select + search + table w/ Rx chip (any item requiresPrescription); Dialog with flow timeline (ORDER_STATUS_FLOW progress dots), Rx rows highlighted amber, address/payment/totals, info alert pointing to Prescriptions tab.
+    56→- DeliveryDashboard: emerald→teal gradient hero (greeting, role chip, 3 mini stat tiles: Active/On the way/Delivered); Tabs Active/History. Active cards (1/2 cols): orderNo + status badge, customer + tel: Call button, MapPin full address, scrollable items list w/ thumbnails, payment chip (COD → amber "Collect ৳N on delivery", BKASH_DEMO → emerald "Paid via bKash"); status actions: PROCESSING → "Picked up — Out for delivery" (Truck), OUT_FOR_DELIVERY → green Mark Delivered + outline-destructive Report Failed (note Dialog) → PUT /api/delivery, optimistic active/history move + refetch + toasts. History table: orderNo/date/city/total/status/statusNote. PackageOpen empty states.
+    57→- Shared style repeated per file: status badge tone map (PENDING/PRESCRIPTION_REVIEW amber, PRESCRIPTION_REVIEW outline variant, CONFIRMED emerald, PROCESSING teal, OUT_FOR_DELIVERY emerald-700, DELIVERED emerald-600, CANCELLED gray, FAILED red), payment tones, Radix-safe 'ALL'/'NONE' select values, overflow-x-auto tables, max-h-96 scrollbar-thin lists, skeleton loaders for every fetch, per-row pending/disabled states, sonner toasts.
+    58→
+    59→Stage Summary:
+    60→- All three staff dashboards complete against the frozen lib contracts and Task 2-a API contract; page.tsx imports resolve (AdminDashboard/PharmacistDashboard/DeliveryDashboard).
+    61→- eslint (bunx eslint on the 3 folders): 0 errors, 0 warnings. tsc --noEmit: 0 errors in these folders (remaining repo errors are pre-existing examples/scripts/skills scaffolding, not app code).
+    62→- Contract assumptions: status/search filtering for orders, medicines and users done client-side after full fetch (MVP-sized data); deliveryStaffId sent as null when "Unassigned"; reviewNote omitted when empty on approve; failed-delivery note optional; reports lowStock typed as Medicine[]; delivery PUT body {orderId, status, note?}. No files outside the three dashboard folders were touched.
+    63→
+    64→
+    65→---
+    66→Task ID: 2-b
+    67→Agent: frontend-styling-expert (subagent)
+    68→Task: Customer storefront UI — Header, Footer, Home, Catalog, Medicine card/detail, Cart, Checkout, Orders, Prescriptions, Profile, Auth modal
+    69→
+    70→Work Log:
+    71→- Read frozen contracts (store.ts, api.ts, types.ts, format.ts, page.tsx, globals.css) and the shadcn/ui inventory; built exclusively under src/components/store/.
+    72→- MedicineCard.tsx — default card (clickable + keyboard accessible, discount/Rx badges, out-of-stock overlay, stock tone, fmtBDT price row, 44px add-to-cart icon button) + two shared exports: `MedImage` (renders src, falls back to med-gradient + white Pill icon on error/absence) and `addToCart(medicine, qty)` (guard → auth modal + toast.info, POST /api/cart, setCartCount, success/error toasts, returns boolean).
+    73→- Header.tsx — sticky bg-card/90 backdrop-blur; emerald-600 announcement bar (fmtBDT(2000)); mobile Sheet (search + nav + role dashboard + login/logout); desktop nav with active text-primary highlighting; search form → setFilters+catalog; cart button w/ count badge; notifications Popover (fetch on open, unread dots, mark-all-read PUT); avatar DropdownMenu (role dashboard for ADMIN/PHARMACIST/DELIVERY, orders, prescriptions, profile, red Log Out) or Sign in button.
+    74→- Footer.tsx — emerald-950 4-column footer (brand/licensed demo chip, quick links, support + hotline/email/Dhaka, payment chips), bottom bar © year, safe-area padding via env(safe-area-inset-bottom).
+    75→- HomeView.tsx — framer-motion section mounts; hero (med-gradient shapes, hero.png via MedImage, 2 CTAs, trust chips); 4-card feature strip; categories grid (GET /api/categories, cat-<slug>.png fallback, click → filters+catalog); Deals of the week (GET /api/medicines?featured=true, MedicineCard grid + View all); gradient 3-step prescription banner w/ CTA; skeletons per async section.
+    76→- CatalogView.tsx — sticky sidebar (categories w/ counts, price min/max + Apply, Rx-only Switch, clear all) reused inside a mobile Filters Sheet; toolbar w/ live result count + sort Select (featured/price/name/newest); search chip w/ clear; 2→3-col MedicineCard grid; Prev/Next pagination; AbortController cleanup; loading is DERIVED from filter key (no sync setState in effect — passes react-hooks/set-state-in-effect); empty + fetch-error states w/ retry.
+    77→- MedicineDetailModal.tsx — store-driven Dialog; keyed DetailBody resets qty per medicine; stock/unit/expiry rows, Rx amber Alert, qty stepper (clamped to stock), live subtotal, add-to-cart (closes on success).
+    78→- CartView.tsx — sign-in guard, skeleton loading, line items w/ optimistic qty update + revert-on-error (PUT /api/cart) and remove (DELETE /api/cart?itemId=), sticky summary (subtotal, delivery note, amber Rx alert), checkout + continue-shopping, empty state, cartCount synced after every mutation.
+    79→- AddressFormDialog.tsx — shared add/edit address Dialog (label Select, recipient/phone/line1/area/city/postcode, default Switch, required-field validation) → POST/PUT /api/addresses; used by Checkout + Profile.
+    80→- CheckoutView.tsx — parallel load of cart+addresses(+prescriptions if Rx items); radio address cards + add-address dialog; prescription card (Tabs: select APPROVED radio / upload new w/ fileToCompressedDataUrl preview + pharmacist note) only when cart has Rx items; COD vs bKash (Demo) RadioGroup; summary with coupon apply (POST /api/coupons → chip + remove), FREE delivery ≥ ৳2000 else DELIVERY_FEE, discount, total; Place Order disabled until address (+prescription) chosen; success Dialog (CheckCircle2, order no, Rx review note, Track order / Continue shopping) + setSuccessOrderNo + setCartCount(0).
+    81→- OrdersView.tsx — order cards (mono orderNo, tone-mapped status Badge per spec, 3 thumbnails + "+N", total, delivery staff); Cancel (AlertDialog → PUT action:cancel, only PENDING/PRESCRIPTION_REVIEW/CONFIRMED/PROCESSING), Reorder (PUT action:reorder → cart count → cart view); detail Dialog fetches GET /api/orders?id= — vertical ORDER_STATUS_FLOW stepper (done CheckCircle2 / pulsing current dot / muted upcoming, PRESCRIPTION_REVIEW step shown only for Rx orders), red banner for CANCELLED/FAILED, items Table, address + payment/status chips, totals w/ coupon, prescription image + status + reviewNote, delivery staff.
+    82→- PrescriptionsView.tsx — dashed upload card (fileToCompressedDataUrl preview + note, submit → POST /api/prescriptions, prepends, resets), 30-min review Info Alert, grid list w/ FileText placeholder, note, date, PENDING/APPROVED/REJECTED badges, pharmacist reviewNote.
+    83→- ProfileView.tsx — profile card (avatar/email/role chip, name+phone → PUT /api/auth → setUser), change-password card (client match/length validation → PUT), addresses card (grid, default badge, set-default/edit/delete w/ AlertDialog, shared AddressFormDialog).
+    84→- AuthModal.tsx — Tabs sign-in/register with shared email state; password Eye show/hide; login/register → POST /api/auth → store.login → toast + non-CUSTOMER role redirect; demo accounts box (4 seeded creds) with click-to-fill rows; toast.error on failures.
+    85→
+    86→Stage Summary:
+    87→- All 13 storefront components created under src/components/store/ (Header, Footer, HomeView, CatalogView, MedicineCard (+MedImage/addToCart exports), MedicineDetailModal, CartView, AddressFormDialog, CheckoutView, OrdersView, PrescriptionsView, ProfileView, AuthModal) — exactly the default exports page.tsx imports; zero edits to frozen files.
+    88→- ESLint clean (`bunx eslint src/components/store` → 0 problems) and `tsc --noEmit` clean for src/** (remaining repo errors are pre-existing in examples/scripts/skills). No `any`, every file 'use client', strict props, mobile-first grids, ≥44px touch targets, skeletons/empty states everywhere, no blue/indigo, all currency via fmtBDT.
+    89→- Assumptions for API (Task 2-a): /api/medicines supports featured&limit&sort&page params and clamps out-of-range page via returned `page`; category cards fall back to /images/cat-<slug>.png when category.image is null; PUT /api/addresses accepts {id, ...fields} incl. isDefault; reorder returns {items} used only for count; list endpoints for orders/prescriptions/notifications may omit heavy fields (UI degrades gracefully).
+    90→
+    91→---
+    92→Task ID: 2-a
+    93→Agent: backend-api (Z.ai Code)
+    94→Task: Backend API — all 12 route handlers under src/app/api per the frozen API contract
+    95→
+    96→Work Log:
+    97→- Created src/app/api/_lib.ts (only non-route file, underscore-prefixed): readJson body parser, numParam/numOr/round2, publicUser (strips password), addressFromJson/addressToJson/parseAddressInput, orderInclude + parseOrder (maps addressJson→address, items, prescription w/o image unless opted in, deliveryStaff, payment, user), notify(), resolveCoupon (percent w/ maxDiscount cap, fixed capped at subtotal, minAmount + expiry checks), buildMedicineData (create/update validation shared by pharmacist+admin), slugify, parseCategoryInput.
+    98→- auth/route.ts: register (unique email, pw>=6, CUSTOMER, JWT), login (401 'Invalid email or password', 403 'Account is deactivated'), GET me, PUT profile (name/phone; password change verifies currentPassword).
+    99→- addresses/route.ts: GET (default first), POST (isDefault or first→true, unset others), PUT (ownership, partial, default switching), DELETE ?id=.
+   100→- categories/route.ts: public GET with ACTIVE medicineCount, ordered by name.
+   101→- medicines/route.ts: GET ?id= (ACTIVE or 404) + list: search(name/genericName/brand contains), category id-or-slug, minPrice/maxPrice (price OR discountPrice range), rxOnly, featured(8), sorts featured/price-asc/price-desc(JS effective price)/name-asc/name-desc/newest, page/limit(12, max 50), only ACTIVE, include category.
+   102→- cart/route.ts: GET (newest first, med+category), POST (ACTIVE check 'Medicine not available', 'Out of stock', qty=min(existing+req, stock)), PUT (ownership, clamp 1..stock, ACTIVE), DELETE one/clear.
+   103→- prescriptions/route.ts: GET mine newest-first WITHOUT image + orderNo; POST data:image validation ('Please upload a valid image').
+   104→- coupons/route.ts: public POST code+subtotal → CouponInfo; messages 'Invalid coupon code'/'This coupon has expired'/'Minimum order ৳N required'.
+   105→- orders/route.ts: POST place — cart load, ACTIVE+stock validation ('Insufficient stock for <name>'), addressId|inline address (created inside tx, isDefault if first) else 'Delivery address required', paymentMethod validation, subtotal=(discountPrice??price)*qty, deliveryFee 0>=2000 else 60, coupon via resolveCoupon, needsRx branches (approved prescriptionId→CONFIRMED+deduct; new prescription image→PRESCRIPTION_REVIEW, no deduction, Payment PENDING; else 'Prescription required for prescription items'), orderNo MP-{100000+count+1} with P2002 retry (+1..+5), Payment row (BKASH_DEMO PAID w/ demo txn id), cart cleared, 'Order placed' notification, returns parsed order (rx without image). GET list (newest, rx w/o image), GET ?id= (ownership, rx WITH image). PUT cancel (cancellable statuses, restock if CONFIRMED/PROCESSING/OUT_FOR_DELIVERY, PAID→REFUNDED+Payment REFUNDED, 'Order cancelled' notification), PUT reorder (ACTIVE+stock>0, qty=min(item.qty, stock), upsert).
+   106→- notifications/route.ts: GET (take 30 + unread count), PUT read-all.
+   107→- pharmacist/route.ts: GET stats (pending/approvedToday/rejectedToday via updatedAt>=00:00, ACTIVE counts, lowStock<=10 take 10), prescriptions (WITH image, user, orderNo, status filter), medicines (ALL incl INACTIVE, search), orders (user+items+address, PRESCRIPTION_REVIEW first via JS sort). PUT review (PENDING→APPROVED/REJECTED, 'Already reviewed' guard; APPROVED: stock check BEFORE approve ('Insufficient stock for <name>'), deduct, order→CONFIRMED, Payment if missing, 2 notifications; REJECTED: order→CANCELLED, notification w/ reason), create-medicine, update-medicine.
+   108→- admin/route.ts: GET stats (totalUsers CUSTOMER, orders/revenue excl CANCELLED, pendingOrders, revenueByDay last 7 'Mon 3' labels incl zero days, statusCounts groupBy, topSelling top5 from OrderItems, lowStock, recentOrders 8), users (search name/email, role filter, NO password), medicines, categories (counts), orders (status+search on orderNo/user, rx WITH image), staff, reports (days=7|30, salesByDay '3 Jan', categorySales, topMedicines, lowStock). PUT update-user (self-demotion/self-deactivation blocked 400), create-staff (PHARMACIST|DELIVERY, unique email, pw>=6), create/update/delete-medicine (delete→INACTIVE + cart cleanup), create/update/delete-category (slug regenerated, unique name 400), update-order (valid status, CONFIRMED from PENDING|PRESCRIPTION_REVIEW→stock check+deduct+Payment if missing ('Insufficient stock for <name>'), CANCELLED→restock if CONFIRMED/PROCESSING/OUT_FOR_DELIVERY + PAID→REFUNDED, statusNote 'Updated by admin', notification w/ ORDER_STATUS_LABELS title; deliveryStaffId must have DELIVERY role).
+   109→- delivery/route.ts: GET active (PROCESSING|OUT_FOR_DELIVERY) + history (DELIVERED|FAILED take 30), items+address+user+payment fields. PUT {orderId, status OUT_FOR_DELIVERY|DELIVERED|FAILED, note?} — must be assigned to me; transitions PROCESSING→any / OUT_FOR_DELIVERY→DELIVERED|FAILED; statusNote note||'Updated by delivery staff'; DELIVERED+COD→paymentStatus PAID + Payment PAID; customer notifications.
+   110→- Verification: `bunx eslint src/app/api` → 0 errors/warnings; `bunx tsc --noEmit` → 0 errors in src/app/api (remaining tsc errors are in page.tsx/components owned by UI agents). Ran direct handler-invocation smoke test covering the full lifecycle (register/login, cart→order→cancel→restock→reorder, Rx order w/ approved prescription, PRESCRIPTION_REVIEW→admin confirm→assign delivery→OUT_FOR_DELIVERY→DELIVERED COD→PAID, coupons, addresses default switching, pharmacist stats/review, admin stats/reports/staff CRUD, role guards 401/403, self-demotion block). Smoke-test entities cleaned from DB afterwards (seeded demo data intact: 6 users, 4 orders, 26 meds, 8 cats, 2 rxs).
+   111→
+   112→Stage Summary:
+   113→- All 12 API routes + _lib.ts complete and contract-compliant. NOTE for UI agents: smoke test initially returned 500s over HTTP because page.tsx currently imports not-yet-created components (AuthModal, DeliveryDashboard, etc.) which breaks the Next dev build globally — API routes themselves are verified working via direct handler tests; once page.tsx compiles they will respond normally on port 3000.
+   114→- Deviations (minor, additive only): orders POST returns 201; prescription objects include `note` alongside id/status/reviewNote/createdAt; parsed orders include a small `payment` summary object; cart DELETE with unknown itemId → 404; INACTIVE medicine in cart order flow → '<name> is no longer available' (stock error keeps contract wording 'Insufficient stock for <name>').
+   115→
+   116→---
+   117→Task ID: 3
+   118→Agent: main (Z.ai Code)
+   119→Task: Integration, end-to-end verification and fixes across all roles
+   120→
+   121→Work Log:
+   122→- Integrated all subagent outputs; full-project ESLint passes (exit 0), tsc clean for src/.
+   123→- API smoke tests (curl): register/login, categories, medicines (featured/search/detail), cart add/update/clear, coupon validation (SAVE10 min-amount guard correct), order place (COD, CONFIRMED, correct fees), cancel (restock), reorder, Rx-without-prescription correctly rejected, pharmacist stats, admin stats/reports, delivery active/history.
+   124→- Browser verification (agent-browser):
+   125→  - Customer: home renders (hero, categories w/ generated images, deals), auth modal + demo quick-fill login, catalog filters/sort/search ("vitamin" -> 2 results), add-to-cart (badge + toast), cart qty stepper, checkout (address radios, COD/bKash, coupon UI), order placed MP-100006 success dialog, My Orders list with status badges, detail dialog with tracking timeline.
+   126→  - Pharmacist: auto-redirect to pharmacy desk, pending Rx queue, approve-with-note flow -> linked order MP-100003 became CONFIRMED (stock deducted).
+   127→  - Admin: overview stats/charts/recent orders/low stock live, manage-order dialog -> status PROCESSING + assign Jamal Uddin, medicines table + Add Medicine dialog (created "Vitamin C 500mg"), reports (sales-by-day, category bars).
+   128→  - Delivery: hero stats, assigned orders, "Picked up — Out for delivery" -> "Mark Delivered" full lifecycle on MP-100006.
+   129→  - Prescription upload: registered new user (Rahim), uploaded test image -> compressed preview -> submitted -> PENDING in list.
+   130→  - Mobile 390px: hamburger sheet, compact header, 2-col grid, footer sticks correctly.
+   131→- Fixed a11y: added sr-only DialogTitle to OrdersView + AdminOrders loading states.
+   132→- Generated 20 product/category images (19 seeded + hero retrying); z-ai CLI rate-limits caused some failures — background retry loop running (scripts/retry-images.sh); UI has graceful med-gradient fallback.
+   133→
+   134→Stage Summary:
+   135→- MVP COMPLETE: all 4 role flows work end-to-end in the browser. Auth (JWT), catalog, cart, coupons, prescription gate, checkout (COD + bKash demo), order lifecycle, delivery assignment, notifications, admin CRUD + reports.
+   136→- Pending: 16 images regenerating in background (fallback safe), demo data intact, dev server healthy on port 3000.
+   137→
+   138→---
+   139→Task ID: 4 (webDevReview round 2)
+   140→Agent: main (Z.ai Code)
+   141→Task: QA pass, bug fixes, dark mode, wishlist, expiring-soon panel, printable invoice
+   142→
+   143→Work Log (Current project status):
+   144→- QA via agent-browser found 1 real bug: MedImage hydration race — images that 404'd BEFORE React attached onError rendered as broken (hero). Fixed in all 3 MedImage copies (store/MedicineCard.tsx, admin/MedImage.tsx, pharmacist/MedImage.tsx) with a ref callback checking `complete && naturalWidth===0` on mount.
+   145→- Nav "My Orders" wrapped to 2 lines → added whitespace-nowrap.
+   146→- Stale-state incidents: (1) dev server held OLD Prisma client after WishlistItem model push → /api/wishlist 500 'Cannot read properties of undefined (reading findMany)'; old next-server (PID survived bun wrapper kill) kept serving stale code + stale Turbopack CSS cache (same CSS chunk hash pre/post restart). FIX: kill next dev + next-server tree, `rm -rf .next`, restart `bun run dev`. Lesson for future rounds: after prisma db push, restart next-server properly (kill `next dev` AND `next-server` PIDs, clear .next if CSS looks stale).
+   147→
+   148→Work Log (New features):
+   149→- WISHLIST (full stack): Prisma WishlistItem model (unique userId+medicineId, cascade); /api/wishlist GET(list+ids)/POST(toggle)/DELETE; store: wishlistIds + toggleWishlistId + 'wishlist' View; MedicineCard heart button (fill-red when saved, works for guests → auth prompt); WishlistView (skeletons, empty state, add-all-in-stock-to-cart, live sync when unhearting from cards); header heart w/ count badge + nav link + dropdown item.
+   150→- DARK MODE: next-themes ThemeProvider in layout (class attribute, light default); CSS-driven Sun/Moon toggle in header (no hydration mismatch); new dark palette (emerald-tinted dark surfaces, oklch); scoped `.dark` overrides in globals.css remap tone badges (bg-emerald-100/amber-100/red-100/gray-100, text-*), white overlays (white/60|70|90), med-gradient → coherent dark equivalents across ALL components without touching each file.
+   151→- PHARMACIST EXPIRING-SOON: /api/pharmacist stats now include expiringSoon (ACTIVE, expiry ≤ 90d, asc, take 10) + expiringSoonCount; PharmacistOverview shows 'Expiring within 90 days' card with day-countdown badges (red ≤30d/'Expired', amber ≤90d); seeded 5 medicines with near/expired dates (Savoy -5d, Torex 20d, Cef-3 45d, Amoxin 75d, Fungin 85d).
+   152→- PRINTABLE INVOICE: src/lib/invoice.ts — standalone print window with branded layout (logo, order meta w/ payment+status, billed-to, delivery staff, coupon, items table w/ Rx marks, totals, footer); 'Print invoice' button in customer order detail dialog; popup blocked → error toast.
+   153→
+   154→Work Log (Verification results):
+   155→- ESLint full src: 0 problems. tsc src/: clean.
+   156→- Wishlist API cycle tested via curl (add → list 1 → remove). Browser: hearted 3 items → badge '3', wishlist view renders, unheart from card → '2 saved', add-all-in-stock → cart 2.
+   157→- Dark mode verified across home/catalog/pharmacist dashboards (dark hero, legible outline buttons, badges readable).
+   158→- Invoice popup opened (tab 'Invoice MP-100006') with correct PAID/DELIVERED data, ৳ totals, items table.
+   159→- Expiring panel shows Expired/20d/45d/75d/85d badges correctly.
+   160→- Images: 35/35 generated (hero needed 1344x768 — API rejects non-32-multiple sizes like 1440x720).
+   161→- Final: fresh light-mode home with real hero photo, catalog with real product photos, 27 medicines.
+   162→
+   163→Stage Summary:
+   164→- App is feature-complete for MVP + wishlist + dark mode + expiry tracking + invoices. All roles verified again post-changes.
+   165→- Risks/notes: Turbopack cache can serve stale CSS after heavy edits (rm -rf .next fixes); Prisma model additions REQUIRE next-server restart (kill both PIDs); z-ai image sizes must be 32-multiples within 512-2880px.
+   166→- Next round suggestions: customer-side 'recommended/expiring-soon discount' automation, order prescription re-upload on reject, admin export CSV reports, email/SMS-style notification center page, stock movement audit log, product Q&A, or multi-image medicine gallery.
+   167→
+   168→---
+   169→Task ID: 5-a
+   170→Agent: backend-api (subagent)
+   171→Task: Backend — reviews API, reorder-prescription, stock movement audit log, admin CSV exports, seed-reviews script
+   172→
+   173→Work Log:
+   174→- _lib.ts (additive): recordStockMovements(client: Prisma.TransactionClient, entries) — createMany StockMovement rows (userId nullable); StockMovementEntry type; escapeCsv (RFC-4180: quotes fields containing , " \n \r, doubles inner quotes).
+   175→- NEW src/app/api/reviews/route.ts: GET ?medicineId= (required, else 400) → { summary: {avg (1 decimal, 0 when none), count, distribution [5..1 incl. zeros]}, reviews: [{id, rating, comment, createdAt, user{id,name}, verified}] } newest-first; `verified` batched — ONE orderItem query (medicineId + order.status DELIVERED + order.userId in reviewerIds). POST {medicineId, rating, comment?} auth required; medicine must be ACTIVE ('Medicine not available'); rating Number.isInteger 1-5 ('Rating must be between 1 and 5'); comment trimmed, max 600 (rejected with message, not truncated), '' → null; upsert on userId_medicineId (update keeps createdAt) → 201 {review with user + verified}. DELETE ?id= owner-only (403 'You can only delete your own reviews'), 404 if missing → {ok:true}.
+   176→- medicines/route.ts: list + ?id= detail now attach rating (avg 1-decimal | null) + ratingCount (0 default). NOTE: Prisma relation include supports only _count (no nested _avg), so implemented via db.review.groupBy({by:['medicineId'], _avg:{rating}, _count}) on the page's medicine ids — same result, one extra query.
+   177→- prescriptions/route.ts GET: order select now {id, orderNo} → each prescription exposes orderId (string|null) alongside orderNo; image still excluded.
+   178→- orders/route.ts: NEW PUT action 'reorder-prescription' {orderId, prescriptionId} (branch added BEFORE the generic body.id check so existing cancel/reorder behavior is untouched): ownership 404s; prescription must be PENDING ('Prescription has already been reviewed') and unlinked ('Prescription is already linked to an order'); per-item ACTIVE ('<name> is no longer available') + stock ('Insufficient stock for <name>') validation up-front; tx creates Order orderNo 'MP-{100000+n}' with the P2002 retry loop (+1..+5), copies addressJson + paymentMethod, per-item CURRENT effective price (discountPrice ?? price, else old item price), discount 0, deliveryFee >=2000?0:60, status PRESCRIPTION_REVIEW, prescriptionId, statusNote null, Payment PENDING, notification 'Prescription resubmitted' (exact task wording) inside tx → 201 parseOrder shape (rx without image). Stock movements: orders POST deduct now records ORDER_CONFIRM ('Order X confirmed') or RX_APPROVE ('Order X confirmed via approved prescription') inside the same tx; customer cancel restock records ORDER_CANCEL ('Order X cancelled — stock restored') inside tx.
+   179→- pharmacist/route.ts: GET ?resource=movements (medicineId?, take default 50 max 100, createdAt desc, medicine{id,name,image,unit} + user{id,name}) → { movements }; review APPROVED deduct records RX_APPROVE ('Order X confirmed after prescription approval') inside tx; create-medicine (stock>0 → MANUAL_EDIT 'Initial stock') and update-medicine (stock changed → delta new-old, MANUAL_EDIT 'Manual stock update') record with pharmacist userId.
+   180→- admin/route.ts: stats + totalReviews (count) + avgRating (_avg 1-decimal, null when none); report logic extracted into module-level reportData(days) shared by 'reports' and 'export-report' (identical shape); NEW GET resources export-orders | export-medicines | export-users | export-report → { filename, csv } with header rows: orders-YYYYMMDD.csv (orderNo, createdAt ISO, customer, email, city, items '2x Name; …', subtotal, discount, deliveryFee, total, paymentMethod, paymentStatus, status), medicines-*.csv (name…ratingCount, requiresPrescription YES/NO, expiry ISO date or ''), users-*.csv (…, ordersCount via _count), report-*.csv (4 blank-line-separated sections: 'Sales by day', 'Sales by category', 'Top medicines', 'Low stock' — same data source as reports). update-order CONFIRMED deduct → ORDER_CONFIRM inside tx; CANCELLED restock wrapped in a tx + ORDER_CANCEL; create/update-medicine record MANUAL_EDIT with admin userId.
+   181→- scripts/seed-reviews.ts (bun run): creates karim@example.com + salma@example.com (and rahim@example.com if missing) as CUSTOMERs with scrypt hash mirroring src/lib/auth.ts (same pattern as prisma/seed.ts); 14 reviews upserted (create sets staggered createdAt, re-run keeps existing) across Napa Extra, Vitamin C 500mg Effervescent, Maxpro D3, Fexo 120mg, Seclo 20mg, Neuro-B, Digital BP Monitor, Glucometer Elite Kit (name-contains lookup, ACTIVE only) from Tanvir/Rahim/Karim/Salma — mostly 4-5, two 3s, BD-flavoured comments; 10 SEED StockMovements 'Initial inventory' (+deltas) staggered 4-12 days back, idempotent (one SEED row per medicine); prints created + total counts.
+   182→- Verification (curl, all HTTP-status-checked): login all 4 accounts OK (incl. seeded karim); reviews GET (avg 4.7, distribution with zeros, Tanvir verified=true via DELIVERED MP-100001, others false); POST create 201 → upsert same id keeps createdAt/updates rating; rating 6 → 400; unknown medicine → 'Medicine not available'; no token → 401; non-owner DELETE → 403; owner → ok, then 404; summary resets. medicines list/detail/featured expose rating+ratingCount (null/0 when unrated). Pharmacist movements (take/medicineId filters, role guard 403 for customer) shows SEED + ORDER_CONFIRM rows. Admin stats totalReviews=14 avgRating=4.3; all 4 exports return correct headers/filenames + CSV (items joined '; ', YES/NO, ISO dates, 4 report sections). orders POST (COD inline address) → CONFIRMED, stock 87→85, movement ORDER_CONFIRM -2 recorded. reorder-prescription: rx upload (tiny data:image/png) → PUT → 201 MP-100010 PRESCRIPTION_REVIEW, copied address/paymentMethod, item at current price 225, fee 60, total 285, Payment PENDING, rx linked (orderId now exposed in /api/prescriptions); negatives → 'Prescription is already linked to an order' / 'Order not found' (other user). eslint (src/app/api + scripts) 0 problems; tsc --noEmit 0 errors in src/** and scripts/** (repo-wide errors remain only in pre-existing examples/ + skills/ scaffolding); dev.log clean of API errors.
+   183→- Cleanup: temporary prisma script deleted BOTH test orders (MP-100009 cascade items/payment/movement/notification/inline-address + MP-100010 cascade/payment/notification), test prescription, leftover test reviews, and restored thermometer stock to 87 — seeded demo data untouched (14 reviews, 10 SEED movements remain). Concurrent MP-100007/MP-100008 rows created by another agent's testing were left alone.
+   184→
+   185→Stage Summary:
+   186→- Reviews (GET/POST/DELETE with verified badges + summary), reorder-prescription, stock movement audit log (all 8 recording sites: orders POST confirm both flavors, pharmacist rx approve, customer cancel restock, admin confirm/cancel, pharmacist+admin medicine create/update) and 4 admin CSV exports are live and verified end-to-end; pharmacist movements endpoint powers the stock log UI; seed-reviews.ts is idempotent and safe to re-run.
+   187→- Deviations (minor, additive): medicines rating aggregation uses groupBy instead of nested include (Prisma relation include only supports _count — behavior identical); comment >600 chars is rejected rather than silently truncated; admin CANCELLED restock now runs inside a transaction (was bare updates — behavior superset, now atomic + logged); export-report's Sales by category reports qty+revenue (reports already returns qty; orders-per-category is not tracked); pharmacist movements is pharmacist-only (role guard, like other pharmacist resources).
+   188→- Frontend integration notes: reviews GET response is {summary, reviews[]}; review POST returns {review} 201; exports are {filename, csv} strings (client can Blob-download); movements response {movements[]} matches StockMovementItem; prescriptions now carry orderId for the re-upload flow; Medicine.rating may be null — render fallback when absent.
+   189→
+   190→---
+   191→Task ID: 5-c
+   192→Agent: frontend-styling-expert (subagent)
+   193→Task: Dashboard UI — Stock Log tab, CSV exports, ratings + reviews stat card, recent stock activity
+   194→
+   195→Work Log:
+   196→- NEW src/lib/download.ts — downloadCsv(filename, csv): '\uFEFF' BOM-prefixed Blob 'text/csv;charset=utf-8', createObjectURL → hidden anchor click → revokeObjectURL; SSR-guarded (typeof document).
+   197→- StockLog.tsx (NEW, default export, wired into PharmacistDashboard 'stocklog' tab — History icon, after Medicines; title 'Stock Log', subtitle 'Every stock change with who and why'): fetches GET /api/pharmacist?resource=movements&take=100 (AbortController, 8 skeleton rows, error state with Retry, PackageOpen empty state distinguishing 'no movements yet' vs 'no filter matches'); medicine filter Select (options fetched once via ?resource=medicines, includes INACTIVE) + reason filter Select (All / Confirmed / Cancelled / Rx approved / Manual edit / Seed) + RefreshCw icon button (spins while refreshing, title+aria tooltips); summary chips (filtered count, Net = Σdelta with +emerald/−red mono badge, today count); table max-h-[65vh] overflow-auto scrollbar-thin with sticky bg-card header: fmtDateTime, MedImage size-8 thumb + truncate max-w-52 name, mono delta badge (+emerald-100/−red-100/0 gray), reason chip tone map (ORDER_CONFIRM teal, RX_APPROVE emerald, ORDER_CANCEL amber, MANUAL_EDIT gray, SEED outline), note text-xs truncate with title attr, By = user?.name ?? 'System'; client-side memo filtering; min-w-[760px] inside overflow-x-auto (no 390px overflow — verified scrollWidth 390).
+   198→- CRITICAL FIX across 6 files: the new 5-a endpoints were being called with the WRONG query param (`?action=` instead of `?resource=`) — both /api/pharmacist and /api/admin read `resource`, so every call silently fell through to `stats` (empty log, exports throwing 'Export unavailable'). Fixed: StockLog movements, PharmacistOverview movements (?resource=movements&take=6), AdminOrders/AdminMedicines/AdminUsers/AdminReports exports (?resource=export-*). AdminReports export also now passes `&days=${days}` so the CSV matches the selected 7/30-day period.
+   199→- AdminMedicines: 'Export CSV' outline Download button in toolbar (Loader2 while pending) → export-medicines → downloadCsv + toast.success('Medicines exported'); compact Rating column (Star size-3 fill-amber-400 + rating 1-decimal + '· count', muted '—' when none, whitespace-nowrap).
+   200→- AdminOrders: Export CSV → export-orders (+ 'Orders exported'); AdminUsers: Export CSV → export-users (+ 'Users exported'); AdminReports: Export CSV next to days Select → export-report (+ 'Report exported').
+   201→- AdminOverview: 7th stat card 'Reviews' (MessageSquareHeart, teal bg) value totalReviews ?? 0, hint `★ ${avgRating.toFixed(1)} average rating` when avgRating != null else 'No reviews yet'; skeleton grid bumped 6 → 7.
+   202→- PharmacistOverview: 'Recent stock activity' card (take=6 movements, AbortController, skeleton rows, graceful empty state) — DeltaBadge + medicine name truncate + formatDistanceToNow(addSuffix) + 'View full log' link button wired via the existing onOpenStockLog prop (PharmacistDashboard setActiveTab('stocklog')); fixed its movements fetch to `resource=`.
+   203→- Polish kept consistent: emerald/teal only (amber for warnings/stars), p-4/p-6 gap-4/6, ≥44px targets, aria-labels/tooltips on icon buttons, skeletons for every fetch, empty states for every list, scrollbar-thin, dark-mode via existing .dark tone remaps.
+   204→
+   205→Verification:
+   206→- bunx eslint src/components/pharmacist src/components/admin src/lib/download.ts → 0 problems; bunx tsc --noEmit → 0 errors in src/** (remaining repo errors are pre-existing examples/ + skills/ scaffolding).
+   207→- agent-browser (localhost:3000): pharmacist@medplus.com → Stock Log tab renders 12 movements (10 SEED + 2 ORDER_CONFIRM from 5-a testing), chips '12 movements / Net +1928 / 2 today'; Seed filter → exactly 10 rows; medicine filter 'Digital BP Monitor' → 2 rows 'Net +39 / 1 today'; refresh OK; View full log from Overview jumps to Stock Log tab; console + page errors clean; 390px viewport scrollWidth = 390 (no horizontal overflow).
+   208→- admin@medplus.com → Reviews card '14 / ★ 4.3 average rating'; all four Export CSV buttons fire ?resource=export-* (network log 200s: export-orders, export-medicines, export-users, export-report&days=7), toast 'Report exported' captured in DOM; curl-verified payloads {filename, csv} for all 4 (+ days=30 variant) with correct headers/filenames; zero page errors.
+   209→
+   210→Stage Summary:
+   211→- Stock movement audit log UI, 4 admin CSV exports, ratings column, reviews stat card and overview stock-activity card are live and browser-verified end-to-end against the 5-a backend. Root cause found & fixed: 5-a endpoints use the `resource=` query convention (the `action=` name is only a PUT body field) — six fetch URLs corrected; no backend or frozen-file changes, scope limited to src/components/pharmacist/**, src/components/admin/** and new src/lib/download.ts.
+   212→
+   213→---
+   214→Task ID: 5-b
+   215→Agent: frontend-styling-expert (subagent)
+   216→Task: Storefront UI — reviews module, Rx re-upload & reorder, full notifications page
+   217→
+   218→Work Log:
+   219→- Audited the Task 5-a API contracts (reviews GET/POST/DELETE, medicines rating+ratingCount, prescriptions orderId, orders reorder-prescription) via curl before/while building; all payloads matched the documented shapes (reviews GET → {summary{avg,count,distribution[5..1 incl zeros]},reviews[{id,rating,comment,createdAt,user,verified}]}, POST → 201 {review} upsert, prescriptions carry orderId alongside orderNo, orders list embeds prescription.status).
+   220→- NEW src/components/store/ReviewsSection.tsx — ratings module rendered inside MedicineDetailModal: heading 'Ratings & reviews'; summary row (text-3xl font-bold avg, 5 amber Star icons filled by Math.round(avg) / text-muted-foreground empty, 'Based on N reviews' / 'No reviews yet') + horizontal distribution bars 5→1 (star number, h-2 rounded bg-muted track, emerald fill width=count/max*100%, count label); review list (max-h-80 overflow-y-auto scrollbar-thin space-y-3) with Avatar initial (bg-primary/10 text-primary), name fallback 'Anonymous', 'Verified purchase' chip (BadgeCheck size-3.5 emerald, title 'Ordered & delivered via MediPlus'), amber size-3.5 star row, comment text-sm muted, fmtDate date; skeleton rows while loading + retry card on failure; write/update form keyed by own review id — prefill + 'Update your review' + Delete (Trash2, outline red, AlertDialog confirm → DELETE → reload) when the user already reviewed, else 'Write a review'; interactive 5-star picker (size-9 motion buttons, aria-label 'Rate N star(s)', whileHover grow + whileTap shrink, hover preview), Textarea maxLength 600 + char counter, submit loading state → POST → toast + reload, errors → toast.error; guest compact 'Sign in to review this medicine' card → setAuthOpen(true). AbortController cleanup; refetches when user changes.
+   221→- MedicineDetailModal.tsx — ReviewsSection mounted below DetailBody inside the scrollable area, separated by border-t px-4 pt-4 pb-6 mt-4 (sm:px-6); nothing else changed.
+   222→- MedicineCard.tsx — compact rating row beside the stock label when ratingCount>0 (Star size-3 fill-amber-400 + avg font-medium + '(N)' muted, title tooltip); card already had hover:shadow-md — confirmed.
+   223→- PrescriptionsView.tsx — re-upload & reorder flow for REJECTED cards: prominent amber 'Re-upload & reorder' button (UploadCloud) opens Dialog state machine 'form' → 'confirm'; form shows amber Alert with the pharmacist's reviewNote, file picker via fileToCompressedDataUrl + preview (same upload UI pattern as the main card), note textarea prefilled 'Re-upload for order <orderNo>'; submit → POST /api/prescriptions → prescription.id → confirm panel ('Create order from previous items?' — items from <orderNo> re-ordered and sent to pharmacist review, stock checked on approval) with Back / 'Place order' loading state; confirm → PUT /api/orders {action:'reorder-prescription', orderId, prescriptionId} → toast.success('Order placed — awaiting pharmacist review') → close + setView('orders'); missing rx.orderId → toast.info('Prescription uploaded. Add medicines to cart and checkout with the approved prescription.') + close; errors → toast.error and stay. Existing upload card/list untouched.
+   224→- OrdersView.tsx — orders whose order.prescription?.status === 'REJECTED' render an amber banner (rounded-md bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900 p-2 text-xs) 'Prescription was rejected' with inline size-sm 'Re-upload & reorder' button → setView('prescriptions'). Verified the list API does include prescription status (MP-100008 showed REJECTED) so the banner renders for real data.
+   225→- NEW src/components/store/NotificationsView.tsx — full-page notification center matching OrdersView page-container conventions: sign-in prompt card for guests; title + subtitle + 'Mark all read' (CheckCheck, disabled when unread===0) → PUT /api/notifications {action:'read-all'} (same body shape as Header) → refetch + toast; Tabs All / Unread with unread count badge; rows use keyword icon tiles on title+message lowercase — 'confirm'→CheckCircle2 emerald, 'out for delivery'/'assign'→Truck teal (checked before generic 'deliver'), 'deliver'→PackageCheck emerald-600, 'cancel'→XCircle red-500, 'prescription'→FileText amber-500, 'refund'→RotateCcw teal-600, default Bell muted; unread rows bg-emerald-50/60 dark:bg-emerald-950/20 + 'New' chip; relative times via date-fns formatDistanceToNow(addSuffix); max-w-2xl mx-auto space-y-2 list; skeletons, BellOff empty states per tab, staggered fade via framer-motion.
+   226→- Header.tsx — notifications Popover footer is now a full-width outline size-sm 'View all notifications' (Bell) button → setView('notifications') + close popover; added a tiny 'medplus:notifications-read' window-event listener so the bell badge drops to 0 the moment the full-page view marks all read (no frozen-file changes).
+   227→- page.tsx (final edit) — imports NotificationsView + case 'notifications' in the view router.
+   228→
+   229→Verification:
+   230→- bunx eslint src/components/store src/app/page.tsx → 0 problems; bunx tsc --noEmit → 0 errors in src/** (remaining repo errors only in pre-existing examples/skills scaffolding).
+   231→- agent-browser (isolated session, http://localhost:3000): logged out, signed in via auth-modal demo row (customer@medplus.com / Customer123!) ✓; Napa Extra detail modal → summary 4.7 / 'Based on 3 reviews', distribution 2/1/0/0/0, seeded reviews (Salma Akter, Rahim Mia, Tanvir Ahmed w/ 'Verified purchase') render ✓; customer's own review prefilled in 'Update your review' mode with Delete + 44/600 counter ✓; star picker interactive (4/5 → 5/5), Update review POST → toast + section reload (avg intact) ✓; Digital Thermometer (unrated) → 'No reviews yet' + zeroed bars + 'Write a review' ✓; submit-without-stars → toast.error guard ✓; notifications popover footer button → full notifications page (13 rows, Unread tab filter = 1 row, relative times, 'New' chip, keyword icons incl. Truck for 'Out for delivery') ✓; Mark all read → toast + all rows cleared + header bell synced to 0 ✓; orders view → amber 'Prescription was rejected' banner on MP-100008 → inline button → prescriptions view ✓; REJECTED card dialog: amber reason Alert ('Photo is blurry…'), prefilled note 'Re-upload for order MP-100008', test image upload → compressed JPEG preview → confirm panel 'Create order from previous items?' → Place order → toast 'Order placed — awaiting pharmacist review' → landed on orders with new MP-100010 PRESCRIPTION_REVIEW + PENDING linked prescription (server-verified via /api/orders) ✓; card rating row on catalog ('In Stock | 4.7 (3)') ✓; 390px viewport: no horizontal overflow on orders/prescriptions/notifications; agent-browser errors → none; dev.log clean.
+   232→- Demo-data note: verification placed real order MP-100010 (PRESCRIPTION_REVIEW) from the rejected MP-100008 prescription and marked the customer's notifications read — both legitimate customer actions, left in place as realistic demo state; the REJECTED prescription card itself remains for future demos; the customer's Napa Extra review was re-upserted with its exact seeded values (5★, same comment).
+   233→
+   234→Stage Summary:
+   235→- Storefront reviews (summary + distribution + list + write/update/delete w/ verified badges), Rx re-upload & reorder (orders banner → prescriptions dialog → reorder-prescription PUT) and the full notifications page are live and verified end-to-end in the browser as customer@medplus.com; eslint/tsc clean; no blue/indigo, no frozen-file edits (only the sanctioned one-time page.tsx wiring).
+   236→- Deviations (minor): distribution bar fill uses count/max-count per spec (not count/total); header bell badge syncs via a window CustomEvent from NotificationsView since store.ts is frozen; PrescriptionsView prefills 'Re-upload for order <orderNo>' with a sensible fallback when orderNo is null; confirm-panel wording 'Stock will be checked on approval' matches spec intent verbatim.
+   237→
+   238→---
+   239→Task ID: 5 (webDevReview round 3)
+   240→Agent: main (Z.ai Code) + subagents 5-a/5-b/5-c
+   241→Task: QA pass, bug fixes, reviews & ratings, Rx re-upload loop, stock audit log, CSV exports, notification center, styling polish
+   242→
+   243→Work Log (Current project status assessment):
+   244→- Read worklog; dev server healthy; API + pages responding. Prior MVP + round-4 features all functional.
+   245→
+   246→Work Log (Bugs found & fixed):
+   247→- Category images broken (2 rows): DB had stale paths /images/cat-diabetes.png & /images/cat-vitamins.png while files are cat-diabetes-care.png / cat-vitamins-supplements.png → fixed via scripts/fix-cats.ts (UI gradient fallback had been masking it).
+   248→- "Vitamin C 500mg Effervescent" (QA-created) had no image → generated med-vitaminc.png (z-ai CLI: sizes must be 32-multiples in {1024x1024,768x1344,864x1152,1344x768,1152x864,1440x720,720x1440}) and assigned via scripts/fix-medimg.ts.
+   249→- Admin medicines endpoint lacked rating aggregates (Rating column showed "—") → added db.review.groupBy to admin ?resource=medicines mapping rating/ratingCount.
+   250→- Prisma schema change lesson re-applied: after db push + generate, killed `bun run dev`/next-server PIDs, rm -rf .next, restarted.
+   251→
+   252→Work Log (New features — Task 5-a backend by subagent):
+   253→- NEW /api/reviews (GET summary+reviews w/ batched verified-purchase flags, POST upsert 1-5 + comment ≤600, DELETE own) ; medicines list+detail now carry rating (1-dec) + ratingCount.
+   254→- NEW PUT /api/orders action 'reorder-prescription' {orderId, prescriptionId} — guards (rx PENDING+unlinked, ownership), per-item ACTIVE/stock validation, current effective prices, fee rule, Payment PENDING, PRESCRIPTION_REVIEW status, notification; closes the rejected-Rx loop.
+   255→- NEW /api/pharmacist?resource=movements (filter medicineId, take) + StockMovement audit rows written transactionally at: order confirm (ORDER_CONFIRM/RX_APPROVE), rx approve, cancel restock, admin confirm/cancel, manual stock edits (MANUAL_EDIT).
+   256→- Admin ?resource=export-orders|medicines|users|report → {filename, csv} (RFC-4180 escapeCsv); stats += totalReviews/avgRating.
+   257→- Seed: 14 reviews (4 users incl. new karim@/salma@example.com, Customer123!), 10 SEED movements — idempotent scripts/seed-reviews.ts.
+   258→
+   259→Work Log (New features — Task 5-b storefront by subagent):
+   260→- ReviewsSection in medicine detail modal: avg + amber stars + distribution bars (5→1), review cards w/ 'Verified purchase' chip, write/update form (interactive star picker, 600-char counter, AlertDialog delete), guest sign-in prompt.
+   261→- MedicineCard shows compact ★ rating row; PrescriptionsView rejected cards → 'Re-upload & reorder' Dialog (form→confirm state machine, prefilled note) → new order via reorder-prescription → orders view; OrdersView amber 'Prescription was rejected' banner on rejected-Rx orders.
+   262→- NotificationsView full page (All/Unread tabs, keyword icon map, unread highlight + 'New' chip, relative times, mark-all-read w/ header badge sync via medplus:notifications-read CustomEvent); header bell popover 'View all notifications' button; page.tsx case 'notifications'.
+   263→
+   264→Work Log (New features — Task 5-c dashboards by subagent):
+   265→- src/lib/download.ts (BOM-prefixed CSV blob download); pharmacist 'Stock Log' tab (StockLog.tsx: medicine/reason filters, summary chips count/Net Σ/today, sticky-header table w/ mono ±delta badges + reason chips + By) + PharmacistOverview 'Recent stock activity' card (take 6, View full log jump).
+   266→- Admin: Export CSV buttons on Orders/Medicines/Users/Reports (reports passes &days=), Rating column (★ avg · N), Overview 7th 'Reviews' stat card (totalReviews + avg rating).
+   267→- CRITICAL fix by 5-c: earlier partial run had used ?action= for the new endpoints — routes actually read ?resource= ; corrected all six fetches.
+   268→
+   269→Work Log (Main-agent additions & styling detail pass):
+   270→- NEW home section 'Top rated by customers' (ranked 1-4 cards w/ image, brand, ★ avg (N), price) via NEW ?sort=rating medicines param (avg + min(count/10,1) score, unrated sink); catalog sort Select gains 'Top rated'; store CatalogFilters sort union extended.
+   271→- Footer: 4 social icon buttons (Facebook/Instagram/Twitter/YouTube, hover lift, focus rings).
+   272→- NEW BackToTop FAB (appears >480px scroll, AnimatePresence, smooth scroll, safe-area aware) mounted in page.tsx.
+   273→
+   274→Work Log (Verification results):
+   275→- bun run lint → 0 problems (whole repo). tsc --noEmit → 0 errors in src/** (only pre-existing skills/ scaffolding error). dev.log clean.
+   276→- agent-browser QA: reviews modal (4.7 avg/3 reviews/distribution/verified chip/update form), notifications page + mobile 390px, stock log w/ filters + summary chips, pharmacist overview activity card, admin Reviews card 14/★4.3, admin medicines Rating column post-fix, export CSV click no errors, top-rated home section, orders rejected banner, back-to-top, footer socials; no horizontal overflow at 390px; agent-browser errors empty.
+   277→
+   278→Stage Summary:
+   279→- Round 5 COMPLETE: e-pharmacy now has social proof (reviews/ratings everywhere), a closed prescription-rejection loop (re-upload → auto reorder → pharmacist review), full stock audit trail, CSV exports for all admin data, and a real notification center.
+   280→- Demo data: MP-100008 (cancelled, rejected Rx) drives the re-upload demo; MP-100009/MP-100010 are PRESCRIPTION_REVIEW demo orders created by E2E tests — pharmacist queue shows 3 pending.
+   281→- Risks/notes: movements seeded with reason SEED; review aggregates use groupBy (Prisma relation include only supports _count); CSV export needs auth header (downloaded via fetch→blob, not window.open).
+   282→- Next round ideas: medicine multi-image gallery, product Q&A, delivery staff performance report, bKash-style payment page simulation, admin coupon management CRUD UI, customer 'recommended for you' from order history.
+   283→
+   284→---
+   285→Task ID: 6 (QA round, in progress)
+   286→Agent: main (Z.ai Code)
+   287→Task: Status assessment + agent-browser QA sweep before Round 6
+   288→
+   289→Work Log (QA results — all PASS):
+   290→- Storefront: home hero, categories, deals, top-rated render clean; guest + customer nav OK.
+   291→- Customer flow E2E: login → catalog → add 2 items to cart → cart view → checkout → coupon SAVE10 applied (−৳200 toast) → Place order (COD) → success dialog MP-100011 ✓. No console/page errors.
+   292→- Admin: dashboard 7 stat cards render (5 users/9 orders/৳8,152 revenue/14 reviews ★4.3), welcome toast, sidebar nav OK.
+   293→- Pharmacist: prescriptions queue renders — Pending(3)/Approved(2)/Rejected(1)/All(6) ✓.
+   294→- Delivery: greeting header, stat tiles, active order MP-100002 w/ Mark Delivered / Report Failed actions ✓.
+   295→- ISSUE FOUND (cosmetic, demo data): prescriptions for MP-100009 & MP-100010 (E2E test artifacts) render as solid black/green placeholder images — plan: replace with realistic generated Rx image in Round 6.
+   296→- Confirmed /api/admin?resource=coupons → "Unknown resource": admin coupon CRUD does not exist yet → Round 6 feature.
+   297→
+   298→Assessment: Project STABLE → proceed to Round 6 new features (coupon CRUD, bKash payment simulation, recommended-for-you, styling detail pass).
+   299→
+   300→---
+   301→Task ID: 6-a
+   302→Agent: general-purpose (backend)
+   303→Task: Coupon admin CRUD, recommended-for-you endpoint, Rx demo image polish
+   304→
+   305→Work Log:
+   306→- Admin coupon CRUD in src/app/api/admin/route.ts (owner file; no other src files touched):
+   307→  - GET ?resource=coupons → all coupons newest-first, each with usedCount + discountAmount computed in ONE db.order.groupBy by couponCode (where couponCode != null AND status != CANCELLED) carrying both _count._all and _sum.discount (single grouped pass instead of groupBy+aggregate), mapped onto rows; discountAmount = round2(Σ discount ?? 0).
+   308→  - PUT {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}} → 201 {coupon}. Shared parseCouponInput() validator: code required/trimmed/uppercased, /^[A-Z0-9_-]{1,20}$/; type PERCENT|FIXED; value > 0 (PERCENT ≤ 90); minAmount ≥ 0; maxDiscount > 0 only when PERCENT (null/'' clears); expiresAt ISO parsed, rejected when date < today (same-day allowed), null clears; isActive must be boolean, defaults true via schema. Prisma P2002 → badRequest('A coupon with this code already exists').
+   309→  - PUT {action:'update-coupon', id, coupon:{partial}} → 404 if missing; provided fields validated only, cross-field checks use the row's resulting type (existing passed into validator via 'update' overload, mirroring buildMedicineData pattern); code change collision → P2002 → same badRequest.
+   310→  - PUT {action:'delete-coupon', id} → 404 if missing → {ok:true} (couponCode on orders is a plain string, no FK, safe).
+   311→  - GET/PUT route doc-comments updated to list coupons.
+   312→- Recommended-for-you in src/app/api/medicines/route.ts (owner file): ?recommended=true&limit=N (default 4, clamp 1..8). Reads getAuthUser(request); for authed users: orders (status != CANCELLED) → distinct ordered medicineIds → their categoryIds → ACTIVE medicines where categoryId IN cats AND id NOT IN ordered, include category, orderBy createdAt desc, take limit. Empty result (or guest/no history) → fallback = existing ?sort=rating scoring (avg + min(count/10,1), unrated sink) over all ACTIVE, sliced to limit. Response { medicines:[...] } with rating/ratingCount via ratingsFor/withRatings + category object. All existing branches untouched.
+   313→- Rx demo image polish: loaded image-generation skill, generated ONE 1024x1024 photo via z-ai CLI (handwritten Rx on Bangladeshi clinic letterhead 'Dhanmondi Health Care Clinic, Dhaka', blue scrawl, Rx symbol, 'Tab. Napa Extra 1+0+1' / 'Monas 10' legible, white paper top-down, natural light) → public/images/rx-sample.png (converted to true PNG via sharp; z-ai CLI writes JPEG bytes). New idempotent scripts/fix-rx-images.ts: resolves prescriptionId of orders MP-100009/MP-100010, updates image → '/images/rx-sample.png', skips if already pointing there; re-run = 0 updates. Seeded/real prescriptions untouched (checked first: those two were jpeg data-URL test uploads that rendered as solid placeholders).
+   314→
+   315→Verification (all PASS):
+   316→- bunx eslint src/app/api → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples//skills/ noise elsewhere).
+   317→- curl E2E (admin@medplus.com token): GET ?resource=coupons → SAVE10 usedCount 1 / discountAmount 200 (matches DB: 1 non-cancelled order, Σ discount 200), FIRST50/HEALTH15 0/0 ✓. create-coupon 'test20' → 201 uppercased TEST20; duplicate code → 400 'already exists'; type HALF → 400; PERCENT 95 → 400 'cannot exceed 90'; maxDiscount on FIXED → 400; 'BAD CODE!' / 22-char code → 400; past expiry → 400; today expiry → 201 allowed ✓.
+   318→- update-coupon toggle isActive:false → public POST /api/coupons rejects ('Invalid coupon code'); toggle back + rename TEST20B → 200; rename to colliding code → 400 P2002; update unknown id → 404. delete-coupon → {ok:true} ×3, repeat delete → 404, deleted code publicly rejected ✓.
+   319→- POST /api/coupons with new coupons: TEST20 @subtotal 1000 → 20% = 200 capped at maxDiscount 150 ✓; below minAmount 500 → 'Minimum order ৳500 required' ✓; TESTFIX (FIXED 75, min 100) @100 → discount 75 ✓. All test coupons deleted afterwards; final state = seeded SAVE10/FIRST50/HEALTH15 only.
+   320→- GET /api/medicines?recommended=true&limit=4 as customer@medplus.com (has 7 non-cancelled orders) → exactly 4 (Crepe Bandage/First Aid, Bisocor/Heart & BP, Sodium Bicarbonate + Seclo/Pain Relief) — all ACTIVE, zero overlap with their 9 ordered medicineIds, categories ⊆ history categories, each with rating/ratingCount/category keys ✓. Guest call → top-rated fallback identical to ?sort=rating top-4 (Neuro-B 5(1), Digital BP Monitor 5(1), Napa Extra 4.7(3), Seclo 4.5(2)) ✓; default limit 4; limit=99 capped to 8 ✓.
+   321→- http://localhost:3000/images/rx-sample.png → HTTP 200 image/png 1.05MB; dev.log tail clean (no errors/500s; dev server NOT restarted — no schema change).
+   322→
+   323→Stage Summary (API contracts for frontend agents):
+   324→- GET /api/admin?resource=coupons (ADMIN) → { coupons: [{ id, code, type:'PERCENT'|'FIXED', value, minAmount, maxDiscount: number|null, isActive, expiresAt: string|null, createdAt, usedCount, discountAmount }] } newest first. usedCount = non-cancelled orders using the code; discountAmount = rounded Σ order.discount for those orders.
+   325→- PUT /api/admin (ADMIN) bodies: {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}} → 201 {coupon} (full row; code auto-trimmed+uppercased, expiresAt accepts ISO date, must be today or later); {action:'update-coupon', id, coupon:{...partial}} → 200 {coupon}, 404 'Coupon not found'; {action:'delete-coupon', id} → 200 {ok:true}, 404 on repeat. Errors: 400 {error} incl. 'A coupon with this code already exists' (P2002), 'Type must be PERCENT or FIXED', 'Percent value cannot exceed 90', 'Max discount is only allowed for PERCENT coupons', 'Expiry date cannot be in the past'.
+   326→- GET /api/medicines?recommended=true&limit=4 (limit optional, default 4, max 8; optional Bearer token) → { medicines: [Medicine & { rating:number|null, ratingCount:number, category }] } — personalized (order-history categories, excludes already-ordered, newest first) when signed in with history, else top-rated fallback; same item shape as catalog list (no total/page/pages on this branch).
+   327→
+   328→---
+   329→Task ID: 6-b
+   330→Agent: frontend-styling-expert
+   331→Task: bKash payment simulation dialog + checkout payment UX
+   332→
+   333→Work Log:
+   334→- NEW src/components/store/BkashPayDialog.tsx — controlled 4-phase bKash demo payment dialog (wallet → OTP → confirm&PIN → processing → success) with internal state machine + framer-motion AnimatePresence step slides (180ms, direction-aware slide/fade).
+   335→- Header: pink brand strip (#E2136E→#d10a62 gradient), white 'bKash' logotype (black 'b' + extrabold 'Kash') + 'Payment' label, back arrow (steps 2/3), custom close X (disabled while locked), 3-segment progress bar + 'Step x of 3'; body on semantic card bg (dark-safe), rounded-2xl overflow-hidden max-w-sm p-0.
+   336→- Step 1 wallet: tel input, digits-only state, auto-format '01811 234 567', /^01[3-9]\d{8}$/ validation w/ inline role=alert error (blur or 11-digits), helper 'Demo: any valid BD number works', Continue disabled until valid.
+   337→- Step 2 OTP: dashed amber demo box 'Demo OTP: 12345 (in production this arrives by SMS)' + MessageSquare, 5 single-digit boxes (auto-advance, backspace-back, paste fills across), wrong code → inline error + framer-motion shake (useAnimationControls), 'Resend code' text button with 30s countdown (resets on click and on step re-entry), Verify disabled until 5 digits.
+   338→- Step 3 confirm&PIN: recap card (Merchant MediPlus / wallet / big bold fmtBDT amount), 4-digit password-masked PIN input ('Demo PIN: any 4 digits'), big pink h-12 'Confirm & Pay {fmtBDT(total)}' button.
+   339→- Processing ~1.6s: pink Loader2 + rotating status lines ('Contacting bKash…' → 'Authorizing payment…', aria-live); Success: CheckCircle2 size-16 spring scale-in, 'Payment successful', random 10-char base62 txn id (Bk+8), amount/wallet recap, 'Placing your order…', auto onPaid() after 950ms (closes dialog FIRST, then parent placeOrder() → no double-dialog overlap).
+   340→- A11y: Radix dialog semantics + sr-only Title/Description, aria-labels on all icon buttons & OTP boxes, Escape/interact-outside blocked while locked (processing/success), onFocusOutside always prevented (step transitions unmount focused element — Radix would otherwise auto-abort the payment), flow state resets on reopen via render-phase prop-adjustment pattern (lint-clean, no set-state-in-effect).
+   341→- CheckoutView integration: BKASH_DEMO + canPlace → 'Pay {fmtBDT(total)} with bKash' opens dialog (order NOT placed yet); onPaid → existing placeOrder() unchanged; COD label 'Place order' direct placement; 'Placing order…' loading state kept.
+   342→- Payment section polish: bKash option subtitle → 'Pay instantly with your bKash wallet (demo)' + pink 'bKash' brand badge (bg-[#E2136E] text-white text-[10px] font-bold px-1.5 py-0.5); both COD/bKash cards harmonized to border-primary bg-primary/5 ring-1 ring-primary selected style + transition-all + hover:border-primary/40; heading row gets tiny 'Cash'/'bKash' brand chips; order summary Place button now has ShieldCheck size-3.5 lock note 'SSL encrypted · Demo payments — no real money moves' (text-xs muted, centered); 390px verified no horizontal overflow.
+   343→
+   344→Work Log (Verification results):
+   345→- ESLint src/components/store/{BkashPayDialog,CheckoutView}.tsx: 0 problems. tsc --noEmit src/**: clean. (Note: bunx eslint src/components/store still reports 2 pre-existing react-hooks/set-state-in-effect errors in HomeView.tsx — owned by another agent, not touched.)
+   346→- agent-browser E2E (customer@medplus.com): invalid wallet '12345' rejected w/ inline error; '01811234567' auto-formats '01811 234 567'; wrong OTP 99999 → shake + 'Invalid verification code' alert; 12345 → PIN step shows ৳95 recap; Confirm & Pay → 'Contacting bKash…' → success → auto-close → order success dialog MP-100012; order detail shows bKash (Demo) + PAID, status Confirmed. COD: label reverts to 'Place order', direct placement → MP-100013 (COD, PENDING payment, Confirmed).
+   347→- Dark mode dialog screenshots (steps 1+2): pink header, legible, no glitches (VLM-verified). Mobile 390px: no H-overflow on checkout, wallet & PIN steps. agent-browser errors: empty; dev.log: no errors/warnings.
+   348→- Found+fixed during E2E: Radix Dialog auto-closes when focus escapes during step transitions (AnimatePresence unmounts focused node) — fixed via onFocusOutside preventDefault + focus handoff timed after exit (280ms).
+   349→
+   350→Stage Summary:
+   351→- bKash demo payments now feel like the real app (number → OTP → PIN → processing → success) while the backend still marks Payment PAID with BKASH-DEMO-<ts> transaction ids via the unchanged placeOrder() POST. Orders created during testing (customer@medplus.com): MP-100012 (bKash PAID, ৳95, Vitamin C 500mg Effervescent ×1) and MP-100013 (COD, ৳95, same item) — safe to delete if demo data cleanup is desired.
+   352→
+   353→---
+   354→Task ID: 6-c
+   355→Agent: frontend-styling-expert
+   356→Task: Admin coupons CRUD UI + home recommended section + deals countdown
+   357→
+   358→Work Log:
+   359→- NEW src/components/admin/AdminCoupons.tsx (only file created; matches AdminCategories/AdminMedicines patterns): refresh icon button (spins while fetching) + 'New coupon' primary button toolbar; 4 summary stat cards — Active (emerald, sub-text 'N inactive'), Expired (red, expiresAt < now regardless of isActive), Redemptions (Σ usedCount, teal), Discount given (Σ discountAmount via fmtBDT, amber); table in Card with max-h-[60vh] overflow-auto scrollbar-thin, min-w-[720px], STICKY header (thead sticky top-0 bg-card + hairline shadow), 9 columns: Code (mono bold uppercase), Discount chip (PERCENT → 'N% off' emerald / FIXED → '৳N off' teal), Min order (fmtBDT, '—' when 0), Cap (PERCENT-only maxDiscount or '—'), Expires (fmtDate, 'Never' when null, red 'Expired' mini-badge when past), Used ('N redemptions'), Given (fmtBDT), Active Switch (OPTIMISTIC update via update-coupon {isActive}, revert on error, per-row disabled), Actions (Edit Pencil / Delete Trash2 icon buttons, aria-labels everywhere); skeleton table (header + 4 rows) on first load, error card with Retry button, empty state (Ticket icon + 'No coupons yet' + Create CTA); expired rows muted via opacity-60.
+   360→- Shared create/edit CouponDialog: code input (toUpperCase live, maxLength 20, mono, placeholder SAVE20), type Select (Percentage off / Fixed amount), value number input with visual % / ৳ prefix, minAmount (default 0), maxDiscount shown ONLY for PERCENT (placeholder 'No cap', hint text), expiresAt date input (min=today, optional), isActive Switch edit-only; client validation mirrors server (code ≥3 chars, value > 0, PERCENT ≤ 90, minAmount ≥ 0, maxDiscount > 0 when set); server 400s surfaced via toast.error(err.message) (api helper), dialog stays open; submit shows Loader2 spinner, disabled while pending; titles 'New coupon'/'Edit coupon'.
+   361→- Delete flow: AlertDialog confirm with code-specific copy → delete-coupon → row removed locally + toast 'Coupon ZAZA20 deleted'.
+   362→- AdminDashboard.tsx: 'coupons' added to AdminTab union + NAV (Ticket icon, after categories) + TITLES ('Coupons' / 'Create discount campaigns and track redemptions') + {activeTab === 'coupons' && <AdminCoupons />} render.
+   363→- HomeView.tsx: (a) Deals of the week header now has a LIVE countdown to next Sunday 23:59:59 (nextSundayEnd handles today-is-Sunday before/after 23:59 and week rollover via ref retarget) — 4 tiles Days/Hours/Min/Sec with ':' separators, mono tabular-nums font-bold values on bg-primary/10, compact on mobile (min-w-11/12, text-sm/base), ticks via setInterval 1s with cleanup, initial SSR-safe '--' placeholder then values, tiles aria-hidden + sr-only 'Deals end in …' sentence; (b) NEW 'Recommended for you' section AFTER 'Top rated by customers' — Sparkles icon (text-primary) + subtitle 'Picked from the categories you order most' + outline 'View all' button (resetFilters + setView('catalog')); fetches /api/medicines?recommended=true&limit=4 keyed on user?.id with AbortController; loading state DERIVED from userId key comparison (recState/recErrorFor carry the userId they belong to — no sync setState in effect, passes react-hooks/set-state-in-effect); 4-card MedicineCard grid (grid-cols-2 lg:grid-cols-4) with deal-style skeletons while loading; section renders NOTHING for guests, on error, or when array is empty; (c) category card image hover upgraded to group-hover:scale-105 (was scale-[1.03], overflow-hidden wrapper already present).
+   364→
+   365→Verification (all PASS):
+   366→- bunx eslint on my 3 files → 0 problems; bunx tsc --noEmit → 0 errors under src/ (2 eslint errors exist in src/components/store/BkashPayDialog.tsx — parallel agent's file, not mine; only tsc noise is pre-existing skills/ scaffolding).
+   367→- Browser (agent-browser, isolated session after detecting the default session was shared with the parallel agent): admin login → Coupons tab renders seeded SAVE10 (10% off, min ৳300, cap ৳200, 1 redemption, ৳200 given) / FIRST50 / HEALTH15 with correct stats (Active 3/0 inactive, Expired 0, Redemptions 1, ৳200); created ZAZA20 typed lowercase → stored uppercase PERCENT 20 min 500 → appears; duplicate SAVE10 create → toast 'A coupon with this code already exists' (server 400 surfaced); PERCENT 95 → inline 'Percentage discount cannot exceed 90%'; toggle off → optimistic unchecked + toast, server isActive=false confirmed via curl; edit value 20→25 → row '25% off' + server v=25; toggle on → checked + toast, server active=true; delete → AlertDialog → row gone + toast, final state = 3 seeded coupons only.
+   368→- Customer login → home shows 'Recommended for you' after 'Top rated by customers' with 4 cards (Crepe Bandage, Bisocor 5mg, Sodium Bicarbonate BP, Seclo 20mg — zero overlap with order history, per 6-a endpoint) + Sparkles header + outline View all; guest (storage cleared) → section absent; countdown verified ticking (…30Sec → …28Sec over 2s, '03Days:03Hours' matches Thursday→Sunday) + sr-only text correct.
+   369→- Dark mode + 390px viewport: home overflowX = 0, recommended section fits; admin coupons table scrolls INSIDE max-h-[60vh] overflow-auto wrapper (wrapper 324px, table 720px, page overflowX = 0); VLM screenshot review: no glitches/overlap, columns aligned, coherent dark palette (screenshots: /tmp/admin-coupons-final.png, /tmp/customer-dark.png, /tmp/admin-coupons-390-dark.png, /tmp/customer-recommended-sec.png). agent-browser errors empty; dev.log tail clean (coupon queries 200s, no 500s).
+   370→- nextSundayEnd edge cases unit-checked in node: Sun before/after 23:59:59, Mon 00:00:01 → next Sunday +7d, Sat → +1d (all SUN-OK).
+   371→
+   372→Stage Summary:
+   373→- Coupons are now fully manageable in the admin panel (create/edit/toggle/delete + usage analytics) against 6-a's endpoint, and the storefront has a personalized recommended rail for signed-in users plus a ticking weekly deals countdown. API contract needed NO adjustments — every shape/error message matched 6-a's final implementation (create returns 201 {coupon}, duplicate-code P2002 message, percent ≤ 90, expiry min-today). One session-hygiene note for parallel agents: agent-browser default session was concurrently mutated by another agent (login flips, a bKash dialog opening mid-flow) — use --session <name> for isolation. Deviations (minor): recommended grid uses grid-cols-2 lg:grid-cols-4 (top-rated section is a 2-col list layout, so 'same classes' taken as visual parity for 4 MedicineCards); category hover scale tightened to the requested scale-105.
+   374→
+   375→---
+   376→Task ID: 6 (Round 6 COMPLETE)
+   377→Agent: main (Z.ai Code) + subagents 6-a/6-b/6-c
+   378→Task: Round 6 — QA pass, coupon management, bKash payment simulation, recommended-for-you, styling detail pass
+   379→
+   380→Work Log (Assessment & QA):
+   381→- Full agent-browser sweep (customer/admin/pharmacist/delivery): home, catalog, cart, coupon SAVE10 (−৳200), COD checkout → MP-100011 OK; all 4 dashboards render. Verdict: stable → feature round. One cosmetic issue fixed (see 6-a).
+   382→
+   383→Work Log (6-a backend — general-purpose):
+   384→- Admin coupon CRUD: GET /api/admin?resource=coupons ({coupons:[{...coupon, usedCount, discountAmount}]}, one order.groupBy w/ _count+_sum.discount over non-cancelled orders); PUT actions create-coupon / update-coupon / delete-coupon with validator (code ^[A-Z0-9_-]{1,20}$ auto-uppercase, PERCENT 1-90 / FIXED > 0, minAmount ≥ 0, maxDiscount PERCENT-only > 0, expiresAt not past, P2002 → 'A coupon with this code already exists'). Public POST /api/coupons validate flow untouched.
+   385→- Medicines ?recommended=true&limit=N: optional-auth; user order history → ordered medicineIds + their categoryIds → ACTIVE meds in those categories excluding ordered, else top-rated fallback; response shape identical to list.
+   386→- Demo-data polish: generated realistic Rx photo (public/images/rx-sample.png via z-ai CLI, JPEG→PNG), scripts/fix-rx-images.ts repointed the 2 ugly test prescriptions (MP-100009/MP-100010). Verified in pharmacist UI.
+   387→
+   388→Work Log (6-b frontend — bKash payment simulation):
+   389→- NEW BkashPayDialog.tsx: 4-step state machine (wallet number w/ auto-format + /^01[3-9]\d{8}$/ validation → OTP 5-boxes w/ auto-advance/paste/30s resend countdown, demo code 12345, shake on wrong → PIN step w/ amount recap → processing ~1.6s w/ rotating status → success w/ random txn id, auto onPaid after ~950ms). Pink #E2136E gradient header, 3-seg progress, back arrows, Escape/outside-click blocked while locked, Radix focus-handoff fix (onFocusOutside preventDefault), dark-mode + a11y (sr-only title/desc, aria-labels).
+   390→- CheckoutView: BKASH_DEMO now opens dialog first ('Pay ৳X with bKash'), onPaid → existing placeOrder (backend still marks PAID + BKASH-DEMO-txn); COD unchanged; bKash radio gets pink brand badge + new subtitle; SSL trust note under Place order.
+   391→
+   392→Work Log (6-c frontend — coupons UI + home):
+   393→- NEW AdminCoupons.tsx + AdminDashboard 'coupons' tab (Ticket icon): 4 stat cards (Active/Expired/Redemptions/Discount given), sticky-header table (code mono, %/৳ off chips, min, cap, expiry + Expired badge, used, given, optimistic Active Switch, edit dialog, delete w/ confirm), shared create/edit Dialog (client validation mirrors server, toast errors), skeletons/empty/retry.
+   394→- HomeView: live deals countdown to Sunday 23:59:59 (D/H/M/S mono tiles, 1s tick, SSR-safe); NEW 'Recommended for you' section (Sparkles header, personalized via ?recommended=true, guest/error/empty → hidden); category hover zoom tightened to scale-105.
+   395→
+   396→Work Log (main-agent styling detail pass):
+   397→- Footer: newsletter band (gradient, MailCheck icon, email validation, spinner, success toast) above the 4-col grid.
+   398→- OrdersView detail: pink bKash brand chip next to payment method for BKASH_DEMO orders.
+   399→- Admin stats: +activeCoupons (isActive count) & +couponRedemptions (non-cancelled orders w/ couponCode); AdminOverview 8th 'Active Coupons' rose StatCard (hint 'N redemptions total'); grid 2/3/4-col → even 4×2 on desktop; skeleton 7→8.
+   400→
+   401→Work Log (Verification):
+   402→- bun run lint → 0 problems repo-wide; tsc --noEmit → 0 errors in src/**. agent-browser errors → none; dev.log clean.
+   403→- E2E browser: bKash flow walked end-to-end (invalid number rejected → OTP wrong-then-right → PIN ৳95 → processing → success → order dialog); payment PAID + Confirmed verified via /api/orders; COD still works.
+   404→- Coupons: created MONSOON25 (25%, min 800, cap 400) via UI → server-verified; duplicate rejected w/ toast; deleted → 3 seeded remain. Admin overview: Active Coupons 3 / 1 redemption.
+   405→- Recommended verified customer (4 items, zero overlap w/ history) + guest (hidden section). Rx images now realistic in pharmacist queue.
+   406→- Dark mode + 390px viewport spot-checks pass (no horizontal overflow; bkash dialog + footer newsletter legible in dark).
+   407→- Demo data: kept MP-100011 (COD w/ SAVE10) + MP-100012 (bKash PAID) as payment-variety demos; deleted duplicate test orders MP-100013 (×2, stock restored). Final orders: 10 (MP-100002..MP-100012).
+   408→
+   409→Stage Summary:
+   410→- Round 6 COMPLETE. New capabilities: full coupon marketing CRUD w/ redemption analytics, realistic bKash wallet payment simulation (number→OTP→PIN→success), personalized recommendations, live deals countdown, newsletter signup, coupon stat card, bKash brand chips, realistic Rx demo images.
+   411→- Risks/notes: bKash dialog OTP/PIN are fixed demo values (12345 / any 4 digits) by design; recommended endpoint does 3-4 lightweight queries per call (fine at demo scale); newsletter is client-side demo only (no storage).
+   412→- Next-round ideas: delivery staff performance report in admin, product Q&A, multi-image gallery, stock restock PO suggestions, coupon usage per-order invoice line, customer order-notes field.
+   413→
+   414→---
+   415→Task ID: 7 (QA round, in progress)
+   416→Agent: main (Z.ai Code)
+   417→Task: Status assessment + light agent-browser QA before Round 7
+   418→
+   419→Work Log (QA results — PASS):
+   420→- Guest home renders clean (hero, categories, deals, top-rated, footer newsletter), title correct, zero page errors.
+   421→- Search UX tested: type 'napa' → submit → catalog '1 medicine found' works, but NO autocomplete suggestions → improvement target for 7-b.
+   422→- Delivery performance data exists only implicitly (Order.deliveryStaffId + status; NO separate Delivery model, only createdAt/updatedAt timestamps) → report spec must use per-status counts + createdAt→updatedAt proxy for completion time.
+   423→
+   424→Assessment: STABLE → Round 7 feature round: (a) backend delivery-performance report + CSV, (b) header search autocomplete, (c) admin Reports delivery section; main-agent styling: cart free-delivery progress + expiry freshness badge in detail modal.
+   425→
+   426→---
+   427→Task ID: 7-a
+   428→Agent: general-purpose (backend)
+   429→Task: Delivery performance report API + CSV export
+   430→
+   431→Work Log:
+   432→- src/app/api/admin/route.ts only (owner file, additive changes; no schema/lib changes, dev server NOT restarted):
+   433→  - NEW module-level `async function deliveryPerformance()` (mirrors reportData() pattern) → { staff: [...] }. Base rows: db.user.findMany(role 'DELIVERY', select id/name/email/phone, name asc). Per-staff metrics computed in JS from ONE db.order.findMany over orders where deliveryStaffId IN staffIds (select deliveryStaffId/status/paymentMethod/total/createdAt/updatedAt — no N+1; skipped entirely when no staff). Fields: assigned = orders with staff + status != CANCELLED; active = OUT_FOR_DELIVERY; delivered = DELIVERED; failed = FAILED; deliveredValue = round2(Σ total of DELIVERED); codCollected = round2(Σ total of DELIVERED where paymentMethod 'COD'); avgCompletionHours = round1(mean(updatedAt-createdAt) of DELIVERED in hours) or null when no delivered; lastDeliveryAt = max updatedAt among DELIVERED as ISO, else null. Zero-order staff included with 0s/nulls (acc map pre-seeded per staff). Sorted delivered desc, then name asc (null-safe).
+   434→  - GET ?resource=delivery-performance (ADMIN) → Response.json(await deliveryPerformance()).
+   435→  - GET ?resource=export-delivery (ADMIN) → { filename: 'delivery-YYYYMMDD.csv', csv } reusing the module-level csvDate/csvRow helpers (same pattern as export-orders). Header: name,email,phone,assigned,active,delivered,failed,deliveredValue,codCollected,avgCompletionHours,lastDeliveryAt. Numbers plain (deliveredValue/codCollected as-is via round2 values); avgCompletionHours '' when null; lastDeliveryAt ISO or '' when null. Same deliveryPerformance() data source as the JSON resource.
+   436→  - GET doc-comment updated to list all resources: stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|export-orders|export-medicines|export-users|export-report|export-delivery. All existing branches untouched.
+   437→
+   438→Verification (all PASS):
+   439→- bunx eslint src/app/api → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples/ + skills/ noise).
+   440→- curl E2E (admin@medplus.com token): GET ?resource=delivery-performance → 200, 2 staff rows. Cross-checked against direct Prisma query: delivery@medplus.com (Jamal Uddin) = MP-100002 OUT_FOR_DELIVERY COD ৳282 + MP-100006 DELIVERED COD ৳285 (0.10h) → assigned 2, active 1, delivered 1, failed 0, deliveredValue 285, codCollected 285, avgCompletionHours 0.1, lastDeliveryAt 2026-08-27T17:33:05.526Z — exact match; delivery2@medplus.com (Sohel Rana) = MP-100004 DELIVERED BKASH_DEMO ৳160 (24h) → codCollected 0 (bKash excluded) ✓. Sort: delivered desc then name asc (Jamal > Sohel tie on 1 delivered).
+   441→- Zero-order staff: created temp DELIVERY user via PUT create-staff → appears as 3rd row {assigned:0, active:0, delivered:0, failed:0, deliveredValue:0, codCollected:0, avgCompletionHours:null, lastDeliveryAt:null} in JSON and CSV, sorted last; temp user then deleted via script (0 related rows confirmed first); re-verified 2 rows.
+   442→- GET ?resource=export-delivery → 200, filename delivery-20260827.csv (csvDate format YYYYMMDD); CSV header + every row verified programmatically identical to the JSON staff payload ('' substitutions for null avgCompletionHours/lastDeliveryAt).
+   443→- Non-admin: customer@medplus.com token → 403 {"error":"Requires role: ADMIN"} on BOTH new resources. Unknown resource → 400 'Unknown resource'; regression spot-checks: stats/reports/staff/export-orders shapes untouched → 200.
+   444→- dev.log tail: clean (prisma:query + 200 lines only, no errors/500s). Demo data state unchanged: 10 orders, 2 DELIVERY users, 3 coupons.
+   445→
+   446→Stage Summary (API contract for frontend agent 7-c):
+   447→- GET /api/admin?resource=delivery-performance (ADMIN; requireRole 403 otherwise) → { staff: [{ id, name: string|null, email, phone: string|null, assigned, active, delivered, failed, deliveredValue, codCollected, avgCompletionHours: number|null, lastDeliveryAt: string|null }] }
+   448→  - assigned/active/delivered/failed: integers (assigned excludes CANCELLED; active=OUT_FOR_DELIVERY; failed=FAILED; delivered=DELIVERED).
+   449→  - deliveredValue/codCollected: numbers rounded to 2dp (BDT, no currency symbol).
+   450→  - avgCompletionHours: number rounded to 1dp, or null when staff has no DELIVERED orders.
+   451→  - lastDeliveryAt: ISO 8601 string of latest DELIVERED order updatedAt, or null.
+   452→  - Rows: every user with role 'DELIVERY' (zero-order staff included with 0s/nulls); sorted delivered desc, then name asc.
+   453→- GET /api/admin?resource=export-delivery (ADMIN) → { filename: 'delivery-YYYYMMDD.csv', csv } — csv = header + one row per staff (identical data/order to delivery-performance): name,email,phone,assigned,active,delivered,failed,deliveredValue,codCollected,avgCompletionHours,lastDeliveryAt; numbers plain (2dp where relevant), null avgCompletionHours/lastDeliveryAt → ''. Frontend should trigger a client-side download from {filename, csv} exactly like export-orders.
+   454→- Note: report intentionally reflects only users with role 'DELIVERY' (any orders assigned to non-DELIVERY-role user ids are out of scope per spec).
+   455→
+   456→---
+   457→Task ID: 7-b
+   458→Agent: frontend-styling-expert
+   459→Task: Header search autocomplete (desktop + mobile)
+   460→
+   461→Work Log:
+   462→- Rewrote SearchForm in src/components/store/Header.tsx (ONLY file touched) into a full combobox autocomplete used by BOTH the desktop header and the mobile Sheet menu (same component, per-instance useId for aria ids; sheet instance gets onAction={() => setMobileOpen(false)} so picks/view-all also dismiss the sheet and the product modal is never trapped behind it).
+   463→- Fetch pipeline: min 2 chars → 250ms debounce → GET /api/medicines?search=<q>&limit=6 via api() with per-request AbortController; stale responses ignored (aborted-signal guard in then/catch); cleanup aborts on unmount/next keystroke/close; ALL state updates live inside the timer/promise callbacks (zero sync setState in effect bodies → passes react-hooks/set-state-in-effect). Effect re-runs on focus too, so re-selecting the input re-shows suggestions; blur cancels in-flight requests.
+   464→- Dropdown panel: absolute inset-x-0 top-full mt-2 z-50 Card-style div (bg-card border rounded-xl shadow-lg), framer-motion fade+slide 130ms via AnimatePresence, options wrapper max-h-80 overflow-y-auto scrollbar-thin; onMouseDown preventDefault on panel keeps input focus through option clicks; document-level mousedown listener closes on outside click; error → silent close (no toast).
+   465→- Option rows (motion.button, min-h-11, whileTap scale-[0.99], hover+active bg-primary/5): MedImage size-10 rounded-md thumb (reused from MedicineCard, 404-safe), name line-clamp/truncate with case-insensitive <mark className="bg-primary/20 text-foreground rounded-sm px-0.5"> highlight, sub-line brand-or-genericName (truncate) + fmtBDT(effectivePrice) in text-primary + amber size-3 Star + rating.toFixed(1) when ratingCount>0 + red Rx mini-badge (bg-red-500/10 text-red-600 dark:text-red-400) when requiresPrescription.
+   466→- States: 3 skeleton rows (Skeleton thumb + two text bars) while loading; no-results state with SearchX icon + 'No matches for "xyz" — try another spelling'; footer row 'View all results for "xyz"' (min-h-11, ArrowRight) → setFilters({search: q, page: 1}) + setView('catalog') + close. Picking an option → setDetailMedicine(m) + close (NO catalog navigation); plain Enter with no active option still submits the original catalog search form; empty submit untouched.
+   467→- Keyboard (aria-activedescendant pattern): input role="combobox" aria-autocomplete="list" aria-expanded aria-controls aria-activedescendant; listbox role="listbox" id=<useId>, options role="option" id=<useId>-opt-<i> aria-selected; ↑/↓ wrap, Home/End, Enter opens ACTIVE option, hover syncs active index; Escape closes panel, second Escape blurs.
+   468→- Escape-in-Sheet fix (found in E2E): Radix DismissableLayer listens for Escape on document with capture:true, so a bubble-phase React preventDefault can't stop the Sheet dismissing — while the panel is open a window-level CAPTURE keydown listener intercepts Escape, stopPropagation+preventDefault, closes only the panel; second Escape falls through (blur, and Sheet closes as usual).
+   469→- Styling detail: semantic tokens throughout (bg-card/border/muted-foreground/primary) — dark mode verified via computed styles; no blue/indigo; no horizontal overflow at 390px (documentElement.scrollWidth ≤ 390, also 1280); cart/wishlist/notifications/account/sticky header untouched and re-verified (notifications popover still opens).
+   470→
+   471→Work Log (Verification results — all PASS):
+   472→- bunx eslint src/components/store/Header.tsx → 0 problems; bunx tsc --noEmit → 0 errors in src/** (only pre-existing examples//skills// noise).
+   473→- agent-browser (--session r7b, isolated): GUEST — 'nap' → dropdown after debounce: Napa Extra 500mg+65mg, mark 'Nap' highlighted, Beximco, ৳25, ★4.7, image thumb present; 'zzz' → 'No matches for "zzz"'; 'napa' ↓↓Enter → detail modal opens (single-result wrap-around verified); Escape closes modal then blurs; 'View all results for "napa"' → catalog '1 medicine found' with search applied (input shows napa); empty submit → full catalog 27 medicines, nothing breaks; outside click (logo) closes dropdown; mouse pick of Seclo 20mg → modal + dropdown closed + STILL ON HOME (no catalog navigation). CUSTOMER (customer@medplus.com) — 'vitamin' → 3 rows (Vitamin C ৳35 ★4.0 / Maxpro Vitamin D3 ৳162 ★4.0 / Neuro-B ৳100 ★5.0); ↓↓ → aria-activedescendant opt-1 → Enter → Maxpro Vitamin D3 modal; 'seclo' row shows red Rx mini-badge.
+   474→- Mobile 390×844: hamburger sheet → search dropdown renders INSIDE sheet, geometry-verified fully within sheet bounds (panel 16..303×158..372 vs sheet 0..320×844) and VLM PASS in dark + light; scrollWidth ≤ 390 (no h-overflow); Escape closes only the dropdown (sheet stays), second Escape dismisses sheet; keyboard pick in sheet closes sheet AND opens product modal (onAction wiring).
+   475→- Dark mode: dropdown computed panelBg = dark card token, border white/12, mark bg-primary/20, z-50 — VLM PASS (desktop + mobile sheet). Light mode: VLM PASS (green mark highlight, card border+shadow).
+   476→- agent-browser errors → empty; console → no errors/warnings; dev.log → no 500s/errors (only expected prisma query logs from ?search= calls).
+   477→- Screenshots: /tmp/r7b-guest-nap.png, /tmp/r7b-rx-row.png, /tmp/r7b-customer-vitamin.png, /tmp/r7b-dark-dropdown2.png, /tmp/r7b-light-dropdown2.png, /tmp/r7b-mobile-sheet-dark.png, /tmp/r7b-mobile-sheet-light.png, /tmp/r7b-mobile-final-390.png, /tmp/r7b-guest-modal.png.
+   478→- Session note: dev server was down when I started; started it with `bun run dev` (tee dev.log) — left running.
+   479→
+   480→Stage Summary:
+   481→- Header search (desktop + mobile sheet) is now a polished debounced autocomplete: suggestions with image/brand/price/rating/Rx-badge and match highlighting, full combobox a11y, keyboard pick opens the product modal, footer jumps to catalog search, skeleton/no-results/error states, dark-mode-safe, 390px-safe. Two non-obvious fixes worth remembering: (1) Radix layers listen for Escape in document CAPTURE phase — intercept on window capture if an inner widget must consume it; (2) re-running the debounce effect on focus is the cheap way to re-show suggestions after a pick. Deviations: none functional; only Header.tsx touched (SearchForm rewrite + one onAction prop on the Sheet usage).
+   482→
+   483→---
+   484→Task ID: 7-c
+   485→Agent: frontend-styling-expert
+   486→Task: Admin Reports delivery-performance section + export
+   487→
+   488→Work Log:
+   489→- State note when I started: src/components/admin/AdminReports.tsx already contained an uncommitted, spec-shaped delivery-performance implementation (a prior 7-c attempt evidently died before verification/worklog). I audited every line against the task spec + 7-a's live contract, applied one real fix, then ran the FULL mandatory verification suite fresh (nothing was trusted unverified).
+   490→- ONE code fix (my only edit): sticky delivery table header used `shadow-[0_1px_0_0_hsl(var(--border))]` — invalid here because globals.css defines `--border` as a raw oklch() color (Tailwind 4 theme), so hsl(oklch(...)) never rendered. Changed to `shadow-[0_1px_0_0_var(--border)]`; computed style now shows the hairline `lab(89.2 …) 0 1px 0 0` under the pinned header. ⚠️ Heads-up for main agent: AdminCoupons.tsx line 530 (6-c's file, NOT mine) has the identical broken `hsl(var(--border))` pattern.
+   491→- Final section shape (all in AdminReports.tsx, rendered BELOW the existing charts/tables as its own block, space-y-4/6 rhythm): header row (Truck icon text-primary + 'Delivery performance' + subtitle 'How each delivery partner is doing' + outline 'Export CSV' w/ Download icon → Loader2 while pending, disabled when staff null/empty); team summary strip = 4 StatChips computed via useMemo from staff[] — Total delivered (Σ delivered, emerald PackageCheck), Active on the road (Σ active, teal Bike), COD collected (Σ codCollected, fmtBDT, amber HandCoins), Team size (staff.length, primary Users); staff table in own Card → max-h-[60vh] overflow-auto scrollbar-thin wrapper, min-w-[820px], aria-label, sticky thead (top-0 z-10 bg-card + border hairline): Staff (Avatar initial + name ?? email + truncated email), Assigned, Active (teal chip when >0), Delivered (emerald bold when has orders), Failed (red when >0), Success rate (delivered/assigned % — '—' when assigned=0; Progress h-1.5 w-16 + % label, fill = theme primary emerald oklch(0.55 0.13 168) ✓), COD collected (fmtBDT), Avg completion (X.Xh w/ title 'Avg hours from order placed to delivered', '—' when null), Last delivery (fmtDateTime / 'Never'). Zero-order rows: all numbers shown, row muted via text-muted-foreground. Numeric cells whitespace-nowrap.
+   492→- States: DeliverySkeleton (header bars + button + 4 chip skeletons + table w/ 3 rows) while staffLoading && !staff; error Card (Truck + message + RefreshCw Retry); empty Card (Truck + 'No delivery staff yet'). Fetch: loadDelivery useCallback → api('/api/admin?resource=delivery-performance', {signal}) with per-mount AbortController in useEffect (AbortError swallowed, no setState), runs alongside existing load(); export → GET ?resource=export-delivery → {filename,csv} → downloadCsv → toast.success('Delivery report exported') / toast.error on failure, own staffExportPending spinner.
+   493→- Session quirks worth knowing: (1) fresh `--session r7c` came up ALREADY logged in as admin@medplus.com (named sessions share profile localStorage — verified identity via GET /api/auth before trusting it); (2) default viewport in this env is 390×844, so early 'desktop' shots had to be retaken after `set viewport 1280 800`.
+   494→
+   495→Verification (all PASS):
+   496→- bunx eslint src/components/admin → 0 problems; bunx tsc --noEmit → 0 errors in src/** (pre-existing examples//skills// noise only).
+   497→- curl contract cross-check (admin token): ?resource=delivery-performance → 200, 3 staff rows, sorted delivered desc then name — Jamal Uddin delivery@medplus.com = assigned 2, active 1, delivered 1, failed 0, deliveredValue 285, codCollected 285, avgCompletionHours 0.1, lastDeliveryAt 2026-08-27T17:33:05.526Z (EXACT match to task brief 2/1/1 COD ৳285); Sohel Rana delivery2 = COD ৳0 (bKash order excluded) ✓; delivery3@medplus.com (Rakib Hossain) = zero-order row {all 0s, avg null, lastDeliveryAt null} — NOTE: this 3rd DELIVERY user pre-existed my run (7-a deleted its temp user; someone re-added a persistent delivery3 — I touched no data) and conveniently demos the zero-order row. ?resource=export-delivery → 200, delivery-20260827.csv, header + 3 rows, empty strings for null avg/lastDelivery — matches JSON 1:1.
+   498→- agent-browser (--session r7c): Reports tab renders 'Delivery performance' with live data — Jamal row 2/1/1, 50% success (w-16/h-1.5 bar, indicator 64px, computed fill lab(49.5,-45.7,10) = emerald primary), ৳285, 0.1h, '27 Aug, 17:33'; Sohel 1/0/1 100% ৳0 24h; Rakib row muted (computed color lab(42.3…) gray vs Jamal lab(4.6…) near-black) with '—'/'Never'. Export CSV click → network log `GET /api/admin?resource=export-delivery 200` + toast listitem 'Delivery report exported'. Error state E2E: network route --abort on delivery-performance → Reports tab shows error card 'Failed to fetch' + Retry; after unroute + Retry click → table re-renders Jamal row (recovery ✓). Empty state code-verified only (no live no-staff scenario without mutating demo data).
+   499→- Sticky header: computed position sticky + hairline shadow present (vertical pin not visually exercisable — 3 rows don't overflow 60vh wrapper; CSS verified).
+   500→- 390×844 (light + dark): page documentElement.scrollWidth = 390 exactly (no h-overflow) in both themes; table wrapper 322px wide (x 34..356) with inner scrollWidth 964 → scrolls INSIDE wrapper; VLM on 390 dark: 2×2 stat cards readable, bordered box + h-scrollbar, no spill/overlap/contrast issues. Desktop 1280 dark VLM: header + truck icon + subtitle + outline Export CSV ✓, stat cards 2/1/৳285/3 ✓, all 3 rows + columns + green success bars ✓, Rakib visibly muted ✓, emerald/teal palette only — NO blue/indigo, no overlap/cut-off. Screenshots: /tmp/r7c-delivery-desktop-dark3.png, /tmp/r7c-delivery-390-dark.png, /tmp/r7c-delivery-light.png.
+   501→- agent-browser errors → empty (checked after screenshots AND after route-abort tests); reload leaves clean light state; dev.log → 0 errors/500s, tail is pure prisma:query + 200s.
+   502→
+   503→Stage Summary:
+   504→- Admin Reports now has a full 'Delivery performance' section (summary strip + staff table + CSV export) wired to 7-a's delivery-performance/export-delivery resources. NO contract mismatches: every field/shape/sort/null behavior matched 7-a's documented contract exactly (zero-order rows included w/ 0s/nulls, avgCompletionHours 1dp, lastDeliveryAt ISO → fmtDateTime, CSV identical to JSON). One cosmetics-adjacent fix shipped (hsl(var(--border)) → var(--border)) + same known bug flagged in AdminCoupons.tsx for the owner. Data state: 3 DELIVERY users incl. persistent zero-order delivery3@medplus.com (pre-existing, left untouched — good live demo of the muted row). Deviations from spec: none functional; only additions beyond spec were Retry/empty-card microcopy and the % label beside the success-rate bar.
+   505→
+   506→---
+   507→Task ID: 7 (Round 7 COMPLETE)
+   508→Agent: main (Z.ai Code) + subagents 7-a/7-b/7-c
+   509→Task: Round 7 — QA pass, delivery performance report, header search autocomplete, cart free-delivery progress, expiry freshness chip
+   510→
+   511→Work Log (Assessment & QA):
+   512→- Guest home + search sweep: app healthy, zero page errors; search had NO autocomplete → improvement target. Verdict: stable → feature round.
+   513→
+   514→Work Log (7-a backend — general-purpose):
+   515→- src/app/api/admin/route.ts: module-level deliveryPerformance() (users role DELIVERY + ONE order.findMany grouped in JS, no N+1); GET ?resource=delivery-performance → {staff:[{id,name,email,phone,assigned(non-cancelled),active(OUT_FOR_DELIVERY),delivered,failed,deliveredValue,codCollected(COD+DELIVERED only),avgCompletionHours(updatedAt-createdAt proxy,1dp|null),lastDeliveryAt}]} sorted delivered desc; GET ?resource=export-delivery → {filename:'delivery-YYYYMMDD.csv',csv} via existing csvRow helpers. Verified: Jamal 2/1/1/৳285/0.1h matches DB; Sohel bKash order correctly excluded from COD; zero-order staff row with nulls; customer token → 403; CSV identical to JSON.
+   516→
+   517→Work Log (7-b frontend — header search autocomplete):
+   518→- Header.tsx SearchForm rewritten as combobox (desktop + mobile Sheet): 250ms debounce → /api/medicines?search&q limit 6 (AbortController, stale ignored); dropdown w/ MedImage thumb, name w/ case-insensitive <mark> highlight, brand+price+★+Rx badge; keyboard ↑↓ Home/End wrap, Enter opens active option via setDetailMedicine, Escape closes (capture-phase fix for Radix Sheet conflict); states: 3-row skeleton / SearchX no-match / 'View all results' footer → catalog; silent error close; outside-mousedown close; a11y roles (combobox/listbox/option/aria-activedescendant).
+   519→
+   520→Work Log (7-c frontend — admin delivery report):
+   521→- AdminReports.tsx: new 'Delivery performance' section — header w/ Export CSV (export-delivery → downloadCsv + toast), 4 team chips (Σdelivered/Σactive/COD ৳285/team size), staff table (min-w-[820px], sticky header hairline FIXED to var(--border) — see bug note, Avatar+name+email, teal Active chip, emerald Delivered, red Failed, success-% with emerald Progress bar, COD, avg X.Xh w/ tooltip, fmtDateTime/'Never'), zero-order rows muted; skeleton/error+Retry/empty states. Also fixed same broken hsl(var(--border)) shadow in AdminCoupons.tsx:530 (main-agent applied).
+   522→
+   523→Work Log (main-agent styling detail pass):
+   524→- CartView: FREE-delivery progress block — 'Add ৳X more for FREE delivery' w/ Truck icon + Progress bar, or emerald "You've unlocked FREE delivery" CheckCircle2 state; FREE_DELIVERY_THRESHOLD (2000) now exported from format.ts.
+   525→- MedicineDetailModal: expiry freshness chip next to Expiry date — emerald 'N months left' (≥6mo), amber (3–6mo), red 'Expires soon'/'Expired' (<3mo), w/ title tooltips.
+   526→
+   527→Work Log (Bugs found & fixed this round):
+   528→- PHANTOM BUILD ERROR: interrupted first 7-c attempt left 'TruckOff' (non-existent lucide export) referenced by a stale Turbopack module cache — persisted across page reloads w/ old console entries; resolved via the canonical restart procedure (kill next dev+next-server, rm -rf .next, bun run dev) then fresh navigation → 0 console errors. Lesson repeated: after agent interruptions mid-edit, do a full .next clear before trusting HMR.
+   529→- AdminCoupons sticky-header hairline never rendered (hsl(var(--border)) invalid under Tailwind-4 oklch tokens) → var(--border).
+   530→
+   531→Work Log (Verification):
+   532→- bun run lint → 0 problems repo-wide; tsc --noEmit → 0 errors in src/**; fresh navigation console → 0 errors; dev.log clean after restart.
+   533→- Browser E2E: search 'nap' → Napa row w/ highlighted fragment + price + ★; ↓+Enter opened detail modal; cart progress 'Add ৳1,965 more' @2%; expiry chip '18 months left' emerald on Napa; admin Reports delivery section (Jamal 2/1/1/50%/৳285/0.1h vs curl match, Rakib zero-row muted); Export CSV 200 + toast; mobile 390 scrollWidth=390; dark mode reports+storefront clean.
+   534→- Dev server: was found DOWN at round start (left over from parallel-agent session) — restarted; later full .next clear restart performed for the cache issue. Health 200 confirmed.
+   535→
+   536→Stage Summary:
+   537→- Round 7 COMPLETE. New: per-staff delivery performance report w/ COD collection + CSV export, header autocomplete (desktop+mobile), free-delivery progress nudge in cart, expiry freshness transparency chips. Demo data: delivery3@medplus.com (Rakib Hossain, zero-order) intentionally kept — demos the muted zero-row.
+   538→- Risks/notes: avgCompletionHours uses updatedAt (any order mutation skews it) — fine for demo, document as known proxy; search autocomplete shares the public search endpoint (no extra backend).
+   539→- Next-round ideas: product Q&A, multi-image gallery (schema change), pharmacist restock PO suggestions, coupon line on printable invoice, customer order-notes at checkout, delivery staff mobile-optimized task view.
+   540→

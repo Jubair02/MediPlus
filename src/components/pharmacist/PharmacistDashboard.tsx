@@ -6,6 +6,8 @@ import {
   FileCheck,
   History,
   LayoutDashboard,
+  MessageCircleQuestion,
+  PackagePlus,
   Pill,
   ShoppingBag,
   type LucideIcon,
@@ -14,19 +16,30 @@ import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import type { PharmacistStats } from '@/lib/types'
+import type { PharmacistStats, QuestionCounts } from '@/lib/types'
 import PharmacistOverview from './PharmacistOverview'
 import PharmacistPrescriptions from './PharmacistPrescriptions'
+import PharmacistQA from './PharmacistQA'
 import PharmacistMedicines from './PharmacistMedicines'
+import RestockSuggestions from './RestockSuggestions'
 import StockLog from './StockLog'
 import PharmacistOrders from './PharmacistOrders'
 
-type PharmacistTab = 'overview' | 'prescriptions' | 'medicines' | 'stocklog' | 'orders'
+type PharmacistTab =
+  | 'overview'
+  | 'prescriptions'
+  | 'qa'
+  | 'medicines'
+  | 'restock'
+  | 'stocklog'
+  | 'orders'
 
 const NAV: { id: PharmacistTab; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'prescriptions', label: 'Prescriptions', icon: FileCheck },
+  { id: 'qa', label: 'Q&A', icon: MessageCircleQuestion },
   { id: 'medicines', label: 'Medicines', icon: Pill },
+  { id: 'restock', label: 'Restock', icon: PackagePlus },
   { id: 'stocklog', label: 'Stock Log', icon: History },
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
 ]
@@ -34,7 +47,9 @@ const NAV: { id: PharmacistTab; label: string; icon: LucideIcon }[] = [
 const TITLES: Record<PharmacistTab, { title: string; subtitle: string }> = {
   overview: { title: 'Overview', subtitle: 'Your pharmacy desk at a glance' },
   prescriptions: { title: 'Prescriptions', subtitle: 'Review uploaded prescriptions and approve orders' },
+  qa: { title: 'Customer questions', subtitle: 'Answer product questions from customers' },
   medicines: { title: 'Medicines', subtitle: 'Catalog, pricing and stock management' },
+  restock: { title: 'Restock', subtitle: 'Reorder suggestions from the last 30 days of sales' },
   stocklog: { title: 'Stock Log', subtitle: 'Every stock change with who and why' },
   orders: { title: 'Orders', subtitle: 'Read-only view of incoming orders' },
 }
@@ -45,6 +60,7 @@ export default function PharmacistDashboard() {
   const [activeTab, setActiveTab] = useState<PharmacistTab>('prescriptions')
   const [stats, setStats] = useState<PharmacistStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(true)
+  const [qaCounts, setQaCounts] = useState<QuestionCounts | null>(null)
 
   const refreshStats = useCallback(async () => {
     setStatsLoading(true)
@@ -58,9 +74,23 @@ export default function PharmacistDashboard() {
     }
   }, [])
 
+  // Pending-question badge for the Q&A nav item — counts are global in every
+  // questions response, so fetching the PENDING page is enough to seed them.
+  const refreshQaCounts = useCallback(async () => {
+    try {
+      const d = await api<{ questions: unknown; counts: QuestionCounts }>(
+        '/api/pharmacist?resource=questions&status=PENDING'
+      )
+      setQaCounts(d.counts)
+    } catch {
+      // silent — badge simply stays hidden until a fetch succeeds
+    }
+  }, [])
+
   useEffect(() => {
     void refreshStats()
-  }, [refreshStats])
+    void refreshQaCounts()
+  }, [refreshStats, refreshQaCounts])
 
   // Defensive: dashboards render only for the matching role, but stay safe if user is null
   if (!user) {
@@ -80,18 +110,22 @@ export default function PharmacistDashboard() {
   }
 
   const pending = stats?.pendingPrescriptions ?? 0
+  const pendingQuestions = qaCounts?.PENDING ?? 0
   const meta = TITLES[activeTab]
 
-  const renderBadge = (id: PharmacistTab) =>
-    id === 'prescriptions' && pending > 0 ? (
+  const renderBadge = (id: PharmacistTab) => {
+    const show = (id === 'prescriptions' && pending > 0) || (id === 'qa' && pendingQuestions > 0)
+    if (!show) return null
+    return (
       <span
         className={cn(
           'ml-auto rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white'
         )}
       >
-        {pending}
+        {id === 'qa' ? pendingQuestions : pending}
       </span>
-    ) : null
+    )
+  }
 
   return (
     <div className="flex min-h-[calc(100vh-64px)] flex-col md:flex-row">
@@ -171,7 +205,9 @@ export default function PharmacistDashboard() {
           {activeTab === 'prescriptions' && (
             <PharmacistPrescriptions onStatsChanged={() => void refreshStats()} />
           )}
+          {activeTab === 'qa' && <PharmacistQA onCountsChanged={setQaCounts} />}
           {activeTab === 'medicines' && <PharmacistMedicines />}
+          {activeTab === 'restock' && <RestockSuggestions />}
           {activeTab === 'stocklog' && <StockLog />}
           {activeTab === 'orders' && <PharmacistOrders />}
         </motion.div>

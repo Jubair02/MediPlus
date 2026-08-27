@@ -142,6 +142,7 @@ export interface Order {
   prescription?: Prescription | null
   deliveryStaff?: { id: string; name: string | null; phone: string | null } | null
   statusNote?: string | null
+  notes?: string | null
   createdAt: string
   updatedAt: string
   user?: AuthUser | null
@@ -192,6 +193,67 @@ export interface NotificationItem {
   message: string
   read: boolean
   createdAt: string
+}
+
+// ---------- Product Q&A (Round 8) ----------
+
+export type QuestionStatus = 'PENDING' | 'ANSWERED' | 'REJECTED'
+
+/** Public per-medicine Q&A row — GET /api/questions?medicineId=<id> */
+export interface MedicineQA {
+  id: string
+  question: string
+  answer: string | null
+  status: QuestionStatus
+  createdAt: string
+  answeredAt: string | null
+  askedByName: string
+  answerByName: string | null
+}
+
+/** GET /api/questions?mine=1 — own questions incl. medicine name (all statuses) */
+export interface MyQuestion extends MedicineQA {
+  medicineId: string
+  medicineName: string
+}
+
+/** GET /api/pharmacist?resource=questions — pharmacist queue row */
+export interface PharmacistQuestion {
+  id: string
+  question: string
+  answer: string | null
+  status: QuestionStatus
+  createdAt: string
+  answeredAt: string | null
+  medicineId: string
+  medicineName: string
+  medicineImage: string | null
+  askedByName: string
+  askedByEmail: string
+  answerByName: string | null
+}
+
+export interface QuestionCounts {
+  PENDING: number
+  ANSWERED: number
+  REJECTED: number
+}
+
+/** GET /api/pharmacist?resource=restock-suggestions — reorder suggestion row */
+export interface RestockSuggestion {
+  id: string
+  name: string
+  brand: string | null
+  genericName: string | null
+  unit: string
+  image: string | null
+  stock: number
+  lowStockAt: number
+  soldLast30: number
+  avgDaily: number
+  daysLeft: number | null
+  suggestedQty: number
+  estValue: number
 }
 
 export const ORDER_STATUS_FLOW: OrderStatus[] = [

@@ -91,6 +91,13 @@ export function printInvoice(order: Order, shopName = 'MediPlus Pharmacy') {
     <div class="grand"><span>Total</span><span>${fmtBDT(order.total)}</span></div>
   </div>
 
+  ${
+    order.notes
+      ? `<h2>Delivery notes</h2>
+  <div style="font-size:12px; line-height:1.5; border:1px solid #e5e7eb; background:#f9fafb; padding:9px 10px; border-radius:6px;">${escapeHtml(order.notes)}</div>`
+      : ''
+  }
+
   <div class="foot">
     This is a computer-generated invoice for demo purposes. · ${escapeHtml(shopName)} · Hotline 09611-MEDPLUS
   </div>
