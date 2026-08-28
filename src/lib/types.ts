@@ -64,6 +64,11 @@ export interface Prescription {
   user?: { id: string; name: string | null; email: string; phone?: string | null } | null
   orderNo?: string | null
   orderId?: string | null
+  // Round 10 — approval expiry tracking (APPROVED rows only; null/absent otherwise)
+  reviewedAt?: string | null
+  expiresAt?: string | null
+  daysLeft?: number | null
+  expiringSoon?: boolean
 }
 
 export interface Review {
@@ -185,6 +190,9 @@ export interface PharmacistStats {
   lowStock: Medicine[]
   expiringSoon: Medicine[]
   expiringSoonCount: number
+  // Round 10 (optional — absent in stale responses; always use ?? fallback)
+  rxExpiringSoon?: number
+  openPoCount?: number
 }
 
 export interface NotificationItem {
@@ -260,6 +268,56 @@ export interface RestockSuggestion {
   daysLeft: number | null
   suggestedQty: number
   estValue: number
+  // Round 10 — total qty across this medicine's OPEN (ORDERED) purchase orders
+  openPoQty: number
+}
+
+// ---------- Purchase orders (Round 10) ----------
+
+export type PurchaseOrderStatus = 'ORDERED' | 'RECEIVED' | 'CANCELLED'
+
+/** GET /api/pharmacist?resource=purchase-orders — one row per PO */
+export interface PurchaseOrderRow {
+  id: string
+  qty: number
+  status: PurchaseOrderStatus
+  note: string | null
+  orderedAt: string
+  receivedAt: string | null
+  orderedBy: { id: string; name: string | null }
+  receivedBy: { id: string; name: string | null } | null
+  medicine: { id: string; name: string; unit: string; image: string | null; brand: string | null }
+  currentStock: number
+}
+
+/** GET /api/pharmacist?resource=purchase-orders — payload */
+export interface PurchaseOrdersData {
+  orders: PurchaseOrderRow[]
+  counts: { ORDERED: number; RECEIVED: number; CANCELLED: number }
+}
+
+// ---------- Audit log (Round 10) ----------
+
+export type AuditAction =
+  | 'PAYMENT_STATUS'
+  | 'ORDER_STATUS'
+  | 'RX_REVIEW'
+  | 'PO_CREATE'
+  | 'PO_RECEIVE'
+  | 'PO_CANCEL'
+  | 'USER_STATUS'
+
+/** GET /api/admin?resource=audit-logs — one row per audit entry */
+export interface AuditLogRow {
+  id: string
+  actorName: string
+  actorEmail: string
+  actorRole: string
+  action: AuditAction
+  entityType: string
+  entityRef: string
+  detail: string | null
+  createdAt: string
 }
 
 // ---------- Payments ledger (Round 9) ----------

@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
-import { readJson, optStr, numParam, round2, escapeCsv, buildMedicineData, orderInclude, parseOrder, notify, recordStockMovements, type StockMovementEntry } from '../_lib'
+import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
 
 const RX_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
@@ -10,6 +10,9 @@ const QA_STATUSES = ['PENDING', 'ANSWERED', 'REJECTED']
 const LOW_STOCK_THRESHOLD = 10
 const RESTOCK_WINDOW_DAYS = 30
 const MAX_ANSWER_LENGTH = 1000
+/** Round 10 — purchase order limits. */
+const PO_MAX_QTY = 10000
+const PO_MAX_NOTE_LENGTH = 300
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10
@@ -63,6 +66,30 @@ const questionInclude = {
   _count: { select: { helpfulVotes: true } },
 } satisfies Prisma.QuestionInclude
 
+/** Shared include for purchase-order rows — carries the medicine's live stock for currentStock. */
+const poInclude = {
+  medicine: { select: { id: true, name: true, unit: true, image: true, brand: true, stock: true } },
+  orderedBy: { select: { id: true, name: true } },
+  receivedBy: { select: { id: true, name: true } },
+} satisfies Prisma.PurchaseOrderInclude
+
+type FullPO = Prisma.PurchaseOrderGetPayload<{ include: typeof poInclude }>
+
+function poToRow(po: FullPO) {
+  return {
+    id: po.id,
+    qty: po.qty,
+    status: po.status,
+    note: po.note,
+    orderedAt: po.orderedAt,
+    receivedAt: po.receivedAt,
+    orderedBy: { id: po.orderedBy.id, name: po.orderedBy.name },
+    receivedBy: po.receivedBy ? { id: po.receivedBy.id, name: po.receivedBy.name } : null,
+    medicine: { id: po.medicine.id, name: po.medicine.name, unit: po.medicine.unit, image: po.medicine.image, brand: po.medicine.brand },
+    currentStock: po.medicine.stock,
+  }
+}
+
 /** Low-stock ACTIVE medicines with 30-day sales velocity → reorder suggestions. */
 async function restockSuggestions() {
   const since = new Date(Date.now() - RESTOCK_WINDOW_DAYS * 24 * 60 * 60 * 1000)
@@ -84,6 +111,11 @@ async function restockSuggestions() {
   for (const row of soldRows) {
     if (row.medicineId) soldByMed.set(row.medicineId, (soldByMed.get(row.medicineId) ?? 0) + row.quantity)
   }
+  // Round 10 — total qty across each medicine's OPEN (ORDERED) purchase orders
+  const openPoGroups = ids.length
+    ? await db.purchaseOrder.groupBy({ by: ['medicineId'], where: { medicineId: { in: ids }, status: 'ORDERED' }, _sum: { qty: true } })
+    : []
+  const openPoByMed = new Map(openPoGroups.map((g) => [g.medicineId, g._sum.qty ?? 0]))
 
   const suggestions = medicines.map((m) => {
     const soldLast30 = soldByMed.get(m.id) ?? 0
@@ -109,6 +141,7 @@ async function restockSuggestions() {
       daysLeft,
       suggestedQty,
       estValue: round2(suggestedQty * (m.discountPrice ?? m.price)),
+      openPoQty: openPoByMed.get(m.id) ?? 0,
     }
   })
   // daysLeft asc (nulls last), then stock asc
@@ -123,7 +156,7 @@ async function restockSuggestions() {
 }
 
 /**
- * GET /api/pharmacist?resource=stats|prescriptions|medicines|orders|movements|questions|restock-suggestions|export-restock
+ * GET /api/pharmacist?resource=stats|prescriptions|medicines|orders|movements|questions|restock-suggestions|purchase-orders|export-restock
  */
 export async function GET(request: Request) {
   try {
@@ -136,7 +169,10 @@ export async function GET(request: Request) {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
       const in90Days = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
-      const [pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount] =
+      // APPROVED rx whose approval expires within RX_EXPIRY_WARNING_DAYS (expiresAt = reviewedAt + RX_VALIDITY_DAYS ≤ now + 14d,
+      // i.e. reviewedAt ≤ now − 76d) — includes already-expired approvals.
+      const rxExpiringCutoff = new Date(Date.now() - (RX_VALIDITY_DAYS - RX_EXPIRY_WARNING_DAYS) * 24 * 60 * 60 * 1000)
+      const [pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount, rxExpiringSoon, openPoCount] =
         await Promise.all([
           db.prescription.count({ where: { status: 'PENDING' } }),
           db.prescription.count({ where: { status: 'APPROVED', updatedAt: { gte: todayStart } } }),
@@ -157,9 +193,11 @@ export async function GET(request: Request) {
             take: 10,
           }),
           db.medicine.count({ where: { status: 'ACTIVE', expiryDate: { not: null, lte: in90Days } } }),
+          db.prescription.count({ where: { status: 'APPROVED', reviewedAt: { not: null, lte: rxExpiringCutoff } } }),
+          db.purchaseOrder.count({ where: { status: 'ORDERED' } }),
         ])
       return Response.json({
-        stats: { pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount },
+        stats: { pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount, rxExpiringSoon, openPoCount },
       })
     }
 
@@ -184,6 +222,7 @@ export async function GET(request: Request) {
           createdAt: p.createdAt,
           user: p.user,
           orderNo: p.order?.orderNo ?? null,
+          ...rxExpiryFields(p.status, p.reviewedAt),
         })),
       })
     }
@@ -269,6 +308,19 @@ export async function GET(request: Request) {
       return Response.json(await restockSuggestions())
     }
 
+    if (resource === 'purchase-orders') {
+      const [orders, orderedCount, receivedCount, cancelledCount] = await Promise.all([
+        db.purchaseOrder.findMany({ include: poInclude, orderBy: { orderedAt: 'desc' } }),
+        db.purchaseOrder.count({ where: { status: 'ORDERED' } }),
+        db.purchaseOrder.count({ where: { status: 'RECEIVED' } }),
+        db.purchaseOrder.count({ where: { status: 'CANCELLED' } }),
+      ])
+      return Response.json({
+        orders: orders.map(poToRow),
+        counts: { ORDERED: orderedCount, RECEIVED: receivedCount, CANCELLED: cancelledCount },
+      })
+    }
+
     if (resource === 'export-restock') {
       const { suggestions } = await restockSuggestions()
       const header = ['id', 'name', 'brand', 'genericName', 'unit', 'image', 'stock', 'lowStockAt', 'soldLast30', 'avgDaily', 'daysLeft', 'suggestedQty', 'estValue']
@@ -300,7 +352,10 @@ export async function GET(request: Request) {
 
 /**
  * PUT /api/pharmacist
- *  {action:'review', prescriptionId, decision:'APPROVED'|'REJECTED', reviewNote?}
+ *  {action:'review', prescriptionId, decision:'APPROVED'|'REJECTED', reviewNote?}  — sets reviewedAt + RX_REVIEW audit entry
+ *  {action:'create-po', medicineId, qty, note?}      — create purchase order (PO_CREATE audit entry)
+ *  {action:'receive-po', id, note?}                  — receive PO: stock +qty, StockMovement PO_RECEIVE, audit entry
+ *  {action:'cancel-po', id}                          — cancel an ORDERED purchase order (PO_CANCEL audit entry)
  *  {action:'create-medicine', data:{...}}
  *  {action:'update-medicine', id, data:{...}}
  *  {action:'answer', id, answer}   — answer a Q&A question (re-answer allowed, overwrites)
@@ -341,7 +396,7 @@ export async function PUT(request: Request) {
         await db.$transaction(async (tx) => {
           await tx.prescription.update({
             where: { id: prescription.id },
-            data: { status: 'APPROVED', reviewNote, reviewedById: user.id },
+            data: { status: 'APPROVED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
           })
           const movements: StockMovementEntry[] = []
           for (const item of order.items) {
@@ -375,12 +430,18 @@ export async function PUT(request: Request) {
           await tx.notification.create({
             data: { userId: order.userId, title: 'Order confirmed', message: `Order ${order.orderNo} has been confirmed and is being processed.` },
           })
+          await logAudit(tx, user, {
+            action: 'RX_REVIEW',
+            entityType: 'PRESCRIPTION',
+            entityRef: prescription.id,
+            detail: `Prescription ${decision === 'APPROVED' ? 'approved' : 'rejected'}`,
+          })
         })
       } else if (decision === 'REJECTED' && order) {
         await db.$transaction(async (tx) => {
           await tx.prescription.update({
             where: { id: prescription.id },
-            data: { status: 'REJECTED', reviewNote, reviewedById: user.id },
+            data: { status: 'REJECTED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
           })
           await tx.order.update({ where: { id: order.id }, data: { status: 'CANCELLED', statusNote: 'Prescription rejected' } })
           await tx.notification.create({
@@ -390,11 +451,23 @@ export async function PUT(request: Request) {
               message: `Your prescription was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
             },
           })
+          await logAudit(tx, user, {
+            action: 'RX_REVIEW',
+            entityType: 'PRESCRIPTION',
+            entityRef: prescription.id,
+            detail: 'Prescription rejected',
+          })
         })
       } else {
         await db.prescription.update({
           where: { id: prescription.id },
-          data: { status: decision, reviewNote, reviewedById: user.id },
+          data: { status: decision, reviewNote, reviewedById: user.id, reviewedAt: new Date() },
+        })
+        await logAudit(db, user, {
+          action: 'RX_REVIEW',
+          entityType: 'PRESCRIPTION',
+          entityRef: prescription.id,
+          detail: `Prescription ${decision === 'APPROVED' ? 'approved' : 'rejected'}`,
         })
         await notify(
           prescription.userId,
@@ -421,6 +494,95 @@ export async function PUT(request: Request) {
           orderNo: updated.order?.orderNo ?? null,
         },
       })
+    }
+
+    if (action === 'create-po') {
+      const medicineId = optStr(body.medicineId)?.trim()
+      if (!medicineId) return badRequest('Medicine id is required')
+      const medicine = await db.medicine.findUnique({ where: { id: medicineId } })
+      if (!medicine) return notFound('Medicine not found')
+      const qty = numOr(body.qty, NaN)
+      if (!Number.isInteger(qty) || qty < 1 || qty > PO_MAX_QTY) return badRequest('Quantity must be between 1 and 10000')
+      let note: string | null = null
+      if (typeof body.note === 'string' && body.note.trim() !== '') {
+        note = body.note.trim()
+        if (note.length > PO_MAX_NOTE_LENGTH) return badRequest('Note must be 300 characters or less')
+      }
+      const created = await db.purchaseOrder.create({
+        data: { medicineId: medicine.id, qty, note, orderedById: user.id },
+      })
+      await logAudit(db, user, {
+        action: 'PO_CREATE',
+        entityType: 'PURCHASE_ORDER',
+        entityRef: created.id,
+        detail: `Ordered ${qty} × ${medicine.name}`,
+      })
+      const fresh = await db.purchaseOrder.findUnique({ where: { id: created.id }, include: poInclude })
+      if (!fresh) return notFound('Purchase order not found')
+      return Response.json({ order: poToRow(fresh) })
+    }
+
+    if (action === 'receive-po') {
+      const id = optStr(body.id)
+      if (!id) return badRequest('Purchase order id is required')
+      const po = await db.purchaseOrder.findUnique({
+        where: { id },
+        include: { medicine: { select: { id: true, name: true } } },
+      })
+      if (!po) return notFound('Purchase order not found')
+      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be received')
+      // body.note replaces the note only when provided as a non-empty string; otherwise the note is kept
+      const replacementNote = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
+      await db.$transaction(async (tx) => {
+        await tx.purchaseOrder.update({
+          where: { id: po.id },
+          data: {
+            status: 'RECEIVED',
+            receivedAt: new Date(),
+            receivedById: user.id,
+            ...(replacementNote !== null ? { note: replacementNote } : {}),
+          },
+        })
+        await tx.medicine.update({ where: { id: po.medicineId }, data: { stock: { increment: po.qty } } })
+        await recordStockMovements(tx, [{
+          medicineId: po.medicineId,
+          delta: po.qty,
+          reason: 'PO_RECEIVE',
+          note: `PO received — ${po.qty} × ${po.medicine.name}`,
+          userId: user.id,
+        }])
+        await logAudit(tx, user, {
+          action: 'PO_RECEIVE',
+          entityType: 'PURCHASE_ORDER',
+          entityRef: po.id,
+          detail: `Received ${po.qty} × ${po.medicine.name}`,
+        })
+      })
+      const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
+      const medicine = await db.medicine.findUnique({ where: { id: po.medicineId }, select: { id: true, stock: true } })
+      if (!fresh || !medicine) return notFound('Purchase order not found')
+      return Response.json({ order: poToRow(fresh), medicine: { id: medicine.id, stock: medicine.stock } })
+    }
+
+    if (action === 'cancel-po') {
+      const id = optStr(body.id)
+      if (!id) return badRequest('Purchase order id is required')
+      const po = await db.purchaseOrder.findUnique({
+        where: { id },
+        include: { medicine: { select: { name: true } } },
+      })
+      if (!po) return notFound('Purchase order not found')
+      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be cancelled')
+      await db.purchaseOrder.update({ where: { id: po.id }, data: { status: 'CANCELLED' } })
+      await logAudit(db, user, {
+        action: 'PO_CANCEL',
+        entityType: 'PURCHASE_ORDER',
+        entityRef: po.id,
+        detail: `Cancelled ${po.qty} × ${po.medicine.name}`,
+      })
+      const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
+      if (!fresh) return notFound('Purchase order not found')
+      return Response.json({ order: poToRow(fresh) })
     }
 
     if (action === 'create-medicine') {

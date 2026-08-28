@@ -1,0 +1,1036 @@
+     1→import { Prisma } from '@prisma/client'
+     2→import { db } from '@/lib/db'
+     3→import { requireRole, badRequest, notFound, serverError, hashPassword } from '@/lib/auth'
+     4→import {
+     5→  readJson,
+     6→  optStr,
+     7→  numOr,
+     8→  round2,
+     9→  publicUser,
+    10→  buildMedicineData,
+    11→  parseCategoryInput,
+    12→  slugify,
+    13→  orderInclude,
+    14→  parseOrder,
+    15→  notify,
+    16→  addressFromJson,
+    17→  escapeCsv,
+    18→  recordStockMovements,
+    19→  type StockMovementEntry,
+    20→} from '../_lib'
+    21→import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
+    22→
+    23→const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
+    24→const PAYMENT_STATUSES = ['PENDING', 'PAID', 'FAILED', 'REFUNDED']
+    25→const PAYMENT_METHODS = ['COD', 'BKASH_DEMO']
+    26→const PAYMENTS_PAGE_SIZE = 20
+    27→const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
+    28→const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
+    29→
+    30→function dayKey(d: Date): string {
+    31→  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+    32→}
+    33→
+    34→function csvDate(d: Date): string {
+    35→  const m = String(d.getMonth() + 1).padStart(2, '0')
+    36→  const day = String(d.getDate()).padStart(2, '0')
+    37→  return `${d.getFullYear()}${m}${day}`
+    38→}
+    39→
+    40→function round1(n: number): number {
+    41→  return Math.round(n * 10) / 10
+    42→}
+    43→
+    44→function csvRow(values: unknown[]): string {
+    45→  return values.map(escapeCsv).join(',')
+    46→}
+    47→
+    48→// ---------- coupons (validation shared by create / update) ----------
+    49→
+    50→const COUPON_CODE_RE = /^[A-Z0-9_-]{1,20}$/ // trimmed + uppercased before test
+    51→
+    52→interface CouponWriteData {
+    53→  code?: string
+    54→  type?: string
+    55→  value?: number
+    56→  minAmount?: number
+    57→  maxDiscount?: number | null
+    58→  expiresAt?: Date | null
+    59→  isActive?: boolean
+    60→}
+    61→
+    62→/**
+    63→ * Validate a coupon payload. mode 'create' requires code/type/value; mode 'update'
+    64→ * validates only the provided fields, using `existing` for cross-field checks
+    65→ * (e.g. value ≤ 90 is judged against the row's resulting type).
+    66→ */
+    67→function parseCouponInput(raw: unknown, mode: 'create'): { error: string } | { data: CouponWriteData & { code: string; type: string; value: number } }
+    68→function parseCouponInput(raw: unknown, mode: 'update', existing: { type: string }): { error: string } | { data: CouponWriteData }
+    69→function parseCouponInput(
+    70→  raw: unknown,
+    71→  mode: 'create' | 'update',
+    72→  existing?: { type: string } | null
+    73→): { error: string } | { data: CouponWriteData } {
+    74→  if (typeof raw !== 'object' || raw === null) {
+    75→    return { error: mode === 'create' ? 'Coupon data is required' : 'Nothing to update' }
+    76→  }
+    77→  const d = raw as Record<string, unknown>
+    78→  const data: CouponWriteData = {}
+    79→
+    80→  if (d.code !== undefined || mode === 'create') {
+    81→    const code = typeof d.code === 'string' ? d.code.trim().toUpperCase() : ''
+    82→    if (!code) return { error: 'Coupon code is required' }
+    83→    if (!COUPON_CODE_RE.test(code)) return { error: 'Code must be 1-20 characters using A-Z, 0-9, "_" or "-"' }
+    84→    data.code = code
+    85→  }
+    86→
+    87→  // effective type = provided type, else the row's current type (for cross-field checks on update)
+    88→  const effectiveType = d.type !== undefined ? d.type : existing?.type
+    89→  if (d.type !== undefined || mode === 'create') {
+    90→    if (d.type !== 'PERCENT' && d.type !== 'FIXED') return { error: 'Type must be PERCENT or FIXED' }
+    91→    data.type = d.type
+    92→  }
+    93→
+    94→  if (d.value !== undefined || mode === 'create') {
+    95→    const value = numOr(d.value, NaN)
+    96→    if (!Number.isFinite(value) || value <= 0) return { error: 'Value must be greater than 0' }
+    97→    if (effectiveType === 'PERCENT' && value > 90) return { error: 'Percent value cannot exceed 90' }
+    98→    data.value = round2(value)
+    99→  }
+   100→
+   101→  if (d.minAmount !== undefined) {
+   102→    const minAmount = numOr(d.minAmount, NaN)
+   103→    if (!Number.isFinite(minAmount) || minAmount < 0) return { error: 'Minimum amount must be 0 or greater' }
+   104→    data.minAmount = round2(minAmount)
+   105→  }
+   106→
+   107→  if (d.maxDiscount !== undefined) {
+   108→    if (d.maxDiscount === null || d.maxDiscount === '') {
+   109→      data.maxDiscount = null
+   110→    } else {
+   111→      const maxDiscount = numOr(d.maxDiscount, NaN)
+   112→      if (!Number.isFinite(maxDiscount) || maxDiscount <= 0) return { error: 'Max discount must be greater than 0' }
+   113→      if (effectiveType !== 'PERCENT') return { error: 'Max discount is only allowed for PERCENT coupons' }
+   114→      data.maxDiscount = round2(maxDiscount)
+   115→    }
+   116→  }
+   117→
+   118→  if (d.expiresAt !== undefined) {
+   119→    if (d.expiresAt === null || d.expiresAt === '') {
+   120→      data.expiresAt = null
+   121→    } else if (typeof d.expiresAt === 'string') {
+   122→      const dt = new Date(d.expiresAt)
+   123→      if (Number.isNaN(dt.getTime())) return { error: 'Invalid expiry date' }
+   124→      const dayStart = new Date(dt)
+   125→      dayStart.setHours(0, 0, 0, 0)
+   126→      const todayStart = new Date()
+   127→      todayStart.setHours(0, 0, 0, 0)
+   128→      if (dayStart < todayStart) return { error: 'Expiry date cannot be in the past' }
+   129→      data.expiresAt = dt
+   130→    } else {
+   131→      return { error: 'Invalid expiry date' }
+   132→    }
+   133→  }
+   134→
+   135→  if (d.isActive !== undefined) {
+   136→    if (typeof d.isActive !== 'boolean') return { error: 'isActive must be true or false' }
+   137→    data.isActive = d.isActive
+   138→  }
+   139→
+   140→  return { data }
+   141→}
+   142→
+   143→/** Shared data source for the reports view and the export-report CSV (same shape as GET ?resource=reports). */
+   144→async function reportData(days: number) {
+   145→  const notCancelled = { not: 'CANCELLED' }
+   146→  const start = new Date()
+   147→  start.setHours(0, 0, 0, 0)
+   148→  start.setDate(start.getDate() - (days - 1))
+   149→
+   150→  const [orders, orderItems, lowStock] = await Promise.all([
+   151→    db.order.findMany({
+   152→      where: { status: notCancelled, createdAt: { gte: start } },
+   153→      select: { createdAt: true, total: true },
+   154→    }),
+   155→    db.orderItem.findMany({
+   156→      where: { order: { status: notCancelled } },
+   157→      select: { name: true, price: true, quantity: true, medicine: { select: { category: { select: { name: true } } } } },
+   158→    }),
+   159→    db.medicine.findMany({
+   160→      where: { status: 'ACTIVE', stock: { lte: 10 } },
+   161→      include: { category: true },
+   162→      orderBy: { stock: 'asc' },
+   163→      take: 10,
+   164→    }),
+   165→  ])
+   166→
+   167→  const byDay = new Map<string, { revenue: number; orders: number }>()
+   168→  for (let i = 0; i < days; i++) {
+   169→    const d = new Date(start)
+   170→    d.setDate(start.getDate() + i)
+   171→    byDay.set(dayKey(d), { revenue: 0, orders: 0 })
+   172→  }
+   173→  for (const o of orders) {
+   174→    const entry = byDay.get(dayKey(o.createdAt))
+   175→    if (entry) {
+   176→      entry.revenue = round2(entry.revenue + o.total)
+   177→      entry.orders += 1
+   178→    }
+   179→  }
+   180→  const salesByDay = Array.from(byDay.entries()).map(([key, v]) => {
+   181→    const [y, m, d] = key.split('-').map(Number)
+   182→    const date = new Date(y, m - 1, d)
+   183→    return {
+   184→      date: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+   185→      revenue: v.revenue,
+   186→      orders: v.orders,
+   187→    }
+   188→  })
+   189→
+   190→  const catMap = new Map<string, { qty: number; revenue: number }>()
+   191→  const medMap = new Map<string, { qty: number; revenue: number }>()
+   192→  for (const it of orderItems) {
+   193→    const revenue = round2(it.price * it.quantity)
+   194→    const catName = it.medicine?.category?.name ?? 'Uncategorized'
+   195→    const cat = catMap.get(catName) ?? { qty: 0, revenue: 0 }
+   196→    cat.qty += it.quantity
+   197→    cat.revenue = round2(cat.revenue + revenue)
+   198→    catMap.set(catName, cat)
+   199→    const med = medMap.get(it.name) ?? { qty: 0, revenue: 0 }
+   200→    med.qty += it.quantity
+   201→    med.revenue = round2(med.revenue + revenue)
+   202→    medMap.set(it.name, med)
+   203→  }
+   204→  const categorySales = Array.from(catMap.entries())
+   205→    .map(([category, v]) => ({ category, qty: v.qty, revenue: v.revenue }))
+   206→    .sort((a, b) => b.revenue - a.revenue)
+   207→  const topMedicines = Array.from(medMap.entries())
+   208→    .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
+   209→    .sort((a, b) => b.qty - a.qty)
+   210→    .slice(0, 5)
+   211→
+   212→  return { salesByDay, categorySales, topMedicines, lowStock }
+   213→}
+   214→
+   215→/** Shared data source for the delivery performance view and its CSV export (same shape as GET ?resource=delivery-performance). */
+   216→async function deliveryPerformance() {
+   217→  const staff = await db.user.findMany({
+   218→    where: { role: 'DELIVERY' },
+   219→    select: { id: true, name: true, email: true, phone: true },
+   220→    orderBy: { name: 'asc' },
+   221→  })
+   222→  const staffIds = staff.map((s) => s.id)
+   223→  const orders = staffIds.length
+   224→    ? await db.order.findMany({
+   225→        where: { deliveryStaffId: { in: staffIds } },
+   226→        select: { deliveryStaffId: true, status: true, paymentMethod: true, total: true, createdAt: true, updatedAt: true },
+   227→      })
+   228→    : []
+   229→
+   230→  const acc = new Map<string, {
+   231→    assigned: number
+   232→    active: number
+   233→    delivered: number
+   234→    failed: number
+   235→    deliveredValue: number
+   236→    codCollected: number
+   237→    completionMs: number
+   238→    lastDeliveryAt: Date | null
+   239→  }>()
+   240→  for (const s of staff) {
+   241→    acc.set(s.id, { assigned: 0, active: 0, delivered: 0, failed: 0, deliveredValue: 0, codCollected: 0, completionMs: 0, lastDeliveryAt: null })
+   242→  }
+   243→  for (const o of orders) {
+   244→    const entry = o.deliveryStaffId ? acc.get(o.deliveryStaffId) : undefined
+   245→    if (!entry) continue
+   246→    if (o.status !== 'CANCELLED') entry.assigned += 1
+   247→    if (o.status === 'OUT_FOR_DELIVERY') entry.active += 1
+   248→    if (o.status === 'FAILED') entry.failed += 1
+   249→    if (o.status === 'DELIVERED') {
+   250→      entry.delivered += 1
+   251→      entry.deliveredValue = round2(entry.deliveredValue + o.total)
+   252→      if (o.paymentMethod === 'COD') entry.codCollected = round2(entry.codCollected + o.total)
+   253→      entry.completionMs += o.updatedAt.getTime() - o.createdAt.getTime()
+   254→      if (!entry.lastDeliveryAt || o.updatedAt > entry.lastDeliveryAt) entry.lastDeliveryAt = o.updatedAt
+   255→    }
+   256→  }
+   257→
+   258→  return {
+   259→    staff: staff
+   260→      .map((s) => {
+   261→        const e = acc.get(s.id)
+   262→        return {
+   263→          id: s.id,
+   264→          name: s.name,
+   265→          email: s.email,
+   266→          phone: s.phone,
+   267→          assigned: e?.assigned ?? 0,
+   268→          active: e?.active ?? 0,
+   269→          delivered: e?.delivered ?? 0,
+   270→          failed: e?.failed ?? 0,
+   271→          deliveredValue: e?.deliveredValue ?? 0,
+   272→          codCollected: e?.codCollected ?? 0,
+   273→          avgCompletionHours: e && e.delivered > 0 ? round1(e.completionMs / e.delivered / 3_600_000) : null,
+   274→          lastDeliveryAt: e?.lastDeliveryAt ? e.lastDeliveryAt.toISOString() : null,
+   275→        }
+   276→      })
+   277→      .sort((a, b) => b.delivered - a.delivered || (a.name ?? '').localeCompare(b.name ?? '')),
+   278→  }
+   279→}
+   280→
+   281→/** One ledger row per order (newest first): payment info + customer from the user relation. */
+   282→interface PaymentLedgerRow {
+   283→  orderId: string
+   284→  orderNo: string
+   285→  customerName: string
+   286→  customerEmail: string
+   287→  method: string
+   288→  status: string
+   289→  amount: number
+   290→  orderStatus: string
+   291→  transactionId: string | null
+   292→  paymentId: string | null
+   293→  createdAt: Date
+   294→}
+   295→
+   296→async function paymentsLedger(): Promise<PaymentLedgerRow[]> {
+   297→  const orders = await db.order.findMany({
+   298→    include: { payment: true, user: { select: { id: true, name: true, email: true } } },
+   299→    orderBy: { createdAt: 'desc' },
+   300→  })
+   301→  return orders.map((o) => ({
+   302→    orderId: o.id,
+   303→    orderNo: o.orderNo,
+   304→    customerName: o.user?.name ?? 'Customer',
+   305→    customerEmail: o.user?.email ?? '',
+   306→    method: o.paymentMethod,
+   307→    status: o.paymentStatus,
+   308→    amount: round2(o.total),
+   309→    orderStatus: o.status,
+   310→    transactionId: o.payment?.transactionId ?? null,
+   311→    paymentId: o.payment?.id ?? null,
+   312→    createdAt: o.createdAt,
+   313→  }))
+   314→}
+   315→
+   316→/** Invalid method/status values are ignored (same convention as the orders resource). */
+   317→function filterPayments(rows: PaymentLedgerRow[], method: string | null, status: string | null): PaymentLedgerRow[] {
+   318→  return rows.filter(
+   319→    (r) =>
+   320→      (!method || !PAYMENT_METHODS.includes(method) || r.method === method) &&
+   321→      (!status || !PAYMENT_STATUSES.includes(status) || r.status === status)
+   322→  )
+   323→}
+   324→
+   325→/** Global KPIs — always computed over ALL orders, independent of the method/status filters. */
+   326→function paymentsSummary(rows: PaymentLedgerRow[]) {
+   327→  let totalCollected = 0
+   328→  let codPending = 0
+   329→  let bkashTotal = 0
+   330→  let refunded = 0
+   331→  for (const r of rows) {
+   332→    if (r.status === 'PAID') totalCollected += r.amount
+   333→    if (r.method === 'COD' && r.status === 'PENDING' && !['CANCELLED', 'FAILED'].includes(r.orderStatus)) codPending += r.amount
+   334→    if (r.method === 'BKASH_DEMO' && r.status === 'PAID') bkashTotal += r.amount
+   335→    if (r.status === 'REFUNDED') refunded += r.amount
+   336→  }
+   337→  return {
+   338→    totalCollected: round2(totalCollected),
+   339→    codPending: round2(codPending),
+   340→    bkashTotal: round2(bkashTotal),
+   341→    refunded: round2(refunded),
+   342→    totalCount: rows.length,
+   343→  }
+   344→}
+   345→
+   346→/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|payments|payments-export|export-orders|export-medicines|export-users|export-report|export-delivery */
+   347→export async function GET(request: Request) {
+   348→  try {
+   349→    const user = await requireRole(request, ['ADMIN'])
+   350→    if (user instanceof Response) return user
+   351→    const sp = new URL(request.url).searchParams
+   352→    const resource = sp.get('resource') || 'stats'
+   353→
+   354→    if (resource === 'stats') {
+   355→      const notCancelled = { not: 'CANCELLED' }
+   356→      const todayStart = new Date()
+   357→      todayStart.setHours(0, 0, 0, 0)
+   358→      const weekStart = new Date(todayStart)
+   359→      weekStart.setDate(weekStart.getDate() - 6)
+   360→
+   361→      const [
+   362→        totalUsers,
+   363→        totalOrders,
+   364→        revenueAgg,
+   365→        pendingOrders,
+   366→        lowStockCount,
+   367→        pendingPrescriptions,
+   368→        totalMedicines,
+   369→        weekOrders,
+   370→        statusGroups,
+   371→        orderItems,
+   372→        lowStock,
+   373→        recentOrdersRaw,
+   374→        totalReviews,
+   375→        reviewAgg,
+   376→        activeCoupons,
+   377→        couponRedemptions,
+   378→      ] = await Promise.all([
+   379→        db.user.count({ where: { role: 'CUSTOMER' } }),
+   380→        db.order.count({ where: { status: notCancelled } }),
+   381→        db.order.aggregate({ _sum: { total: true }, where: { status: notCancelled } }),
+   382→        db.order.count({ where: { status: { in: ['PENDING', 'PRESCRIPTION_REVIEW'] } } }),
+   383→        db.medicine.count({ where: { status: 'ACTIVE', stock: { lte: 10 } } }),
+   384→        db.prescription.count({ where: { status: 'PENDING' } }),
+   385→        db.medicine.count(),
+   386→        db.order.findMany({ where: { status: notCancelled, createdAt: { gte: weekStart } }, select: { createdAt: true, total: true } }),
+   387→        db.order.groupBy({ by: ['status'], _count: { _all: true } }),
+   388→        db.orderItem.findMany({
+   389→          where: { order: { status: notCancelled } },
+   390→          select: { name: true, price: true, quantity: true },
+   391→        }),
+   392→        db.medicine.findMany({
+   393→          where: { status: 'ACTIVE', stock: { lte: 10 } },
+   394→          include: { category: true },
+   395→          orderBy: { stock: 'asc' },
+   396→          take: 10,
+   397→        }),
+   398→        db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'desc' }, take: 8 }),
+   399→        db.review.count(),
+   400→        db.review.aggregate({ _avg: { rating: true } }),
+   401→        db.coupon.count({ where: { isActive: true } }),
+   402→        db.order.count({ where: { status: notCancelled, couponCode: { not: null } } }),
+   403→      ])
+   404→
+   405→      // revenue by day (last 7 days)
+   406→      const byDay = new Map<string, { revenue: number; orders: number }>()
+   407→      for (let i = 0; i < 7; i++) {
+   408→        const d = new Date(weekStart)
+   409→        d.setDate(weekStart.getDate() + i)
+   410→        byDay.set(dayKey(d), { revenue: 0, orders: 0 })
+   411→      }
+   412→      for (const o of weekOrders) {
+   413→        const entry = byDay.get(dayKey(o.createdAt))
+   414→        if (entry) {
+   415→          entry.revenue = round2(entry.revenue + o.total)
+   416→          entry.orders += 1
+   417→        }
+   418→      }
+   419→      const revenueByDay = Array.from(byDay.entries()).map(([key, v]) => {
+   420→        const [y, m, d] = key.split('-').map(Number)
+   421→        const date = new Date(y, m - 1, d)
+   422→        return { date: `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${d}`, revenue: v.revenue, orders: v.orders }
+   423→      })
+   424→
+   425→      // top selling (top 5 by qty)
+   426→      const salesMap = new Map<string, { qty: number; revenue: number }>()
+   427→      for (const it of orderItems) {
+   428→        const entry = salesMap.get(it.name) ?? { qty: 0, revenue: 0 }
+   429→        entry.qty += it.quantity
+   430→        entry.revenue = round2(entry.revenue + it.price * it.quantity)
+   431→        salesMap.set(it.name, entry)
+   432→      }
+   433→      const topSelling = Array.from(salesMap.entries())
+   434→        .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue }))
+   435→        .sort((a, b) => b.qty - a.qty)
+   436→        .slice(0, 5)
+   437→
+   438→      return Response.json({
+   439→        stats: {
+   440→          totalUsers,
+   441→          totalOrders,
+   442→          totalRevenue: round2(revenueAgg._sum.total ?? 0),
+   443→          pendingOrders,
+   444→          lowStockCount,
+   445→          pendingPrescriptions,
+   446→          totalMedicines,
+   447→          revenueByDay,
+   448→          statusCounts: statusGroups.map((g) => ({ status: g.status, count: g._count._all })),
+   449→          topSelling,
+   450→          lowStock,
+   451→          recentOrders: recentOrdersRaw.map((o) => parseOrder(o, { prescriptionImage: true })),
+   452→          totalReviews,
+   453→          avgRating: reviewAgg._avg.rating == null ? null : round1(reviewAgg._avg.rating),
+   454→          activeCoupons,
+   455→          couponRedemptions,
+   456→        },
+   457→      })
+   458→    }
+   459→
+   460→    if (resource === 'users') {
+   461→      const search = sp.get('search')?.trim()
+   462→      const role = sp.get('role')
+   463→      const where: { OR?: object[]; role?: string } = {}
+   464→      if (search) where.OR = [{ name: { contains: search } }, { email: { contains: search } }]
+   465→      if (role && ROLES.includes(role)) where.role = role
+   466→      const users = await db.user.findMany({ where, select: USER_SELECT, orderBy: { createdAt: 'desc' } })
+   467→      return Response.json({ users })
+   468→    }
+   469→
+   470→    if (resource === 'medicines') {
+   471→      const search = sp.get('search')?.trim()
+   472→      const [medicines, reviewGroups] = await Promise.all([
+   473→        db.medicine.findMany({
+   474→          where: search
+   475→            ? {
+   476→                OR: [
+   477→                  { name: { contains: search } },
+   478→                  { genericName: { contains: search } },
+   479→                  { brand: { contains: search } },
+   480→                ],
+   481→              }
+   482→            : {},
+   483→          include: { category: true },
+   484→          orderBy: { createdAt: 'desc' },
+   485→        }),
+   486→        db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
+   487→      ])
+   488→      const ratingByMed = new Map(reviewGroups.map((g) => [g.medicineId, g]))
+   489→      return Response.json({
+   490→        medicines: medicines.map((m) => {
+   491→          const g = ratingByMed.get(m.id)
+   492→          return {
+   493→            ...m,
+   494→            rating: g?._avg.rating != null ? round1(g._avg.rating) : null,
+   495→            ratingCount: g?._count._all ?? 0,
+   496→          }
+   497→        }),
+   498→      })
+   499→    }
+   500→
+   501→    if (resource === 'categories') {
+   502→      const categories = await db.category.findMany({
+   503→        orderBy: { name: 'asc' },
+   504→        include: { _count: { select: { medicines: { where: { status: 'ACTIVE' } } } } },
+   505→      })
+   506→      return Response.json({
+   507→        categories: categories.map((c) => ({
+   508→          id: c.id,
+   509→          name: c.name,
+   510→          slug: c.slug,
+   511→          description: c.description,
+   512→          image: c.image,
+   513→          medicineCount: c._count.medicines,
+   514→        })),
+   515→      })
+   516→    }
+   517→
+   518→    if (resource === 'orders') {
+   519→      const status = sp.get('status')
+   520→      const search = sp.get('search')?.trim()
+   521→      const where: { status?: string; OR?: object[] } = {}
+   522→      if (status && ORDER_STATUSES.includes(status)) where.status = status
+   523→      if (search) {
+   524→        where.OR = [
+   525→          { orderNo: { contains: search } },
+   526→          { user: { is: { name: { contains: search } } } },
+   527→          { user: { is: { email: { contains: search } } } },
+   528→        ]
+   529→      }
+   530→      const orders = await db.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' } })
+   531→      return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+   532→    }
+   533→
+   534→    if (resource === 'coupons') {
+   535→      const [coupons, usage] = await Promise.all([
+   536→        db.coupon.findMany({ orderBy: { createdAt: 'desc' } }),
+   537→        // one grouped pass: order count + Σ discount per couponCode over non-cancelled orders
+   538→        db.order.groupBy({
+   539→          by: ['couponCode'],
+   540→          where: { couponCode: { not: null }, status: { not: 'CANCELLED' } },
+   541→          _count: { _all: true },
+   542→          _sum: { discount: true },
+   543→        }),
+   544→      ])
+   545→      const usageByCode = new Map(usage.map((g) => [g.couponCode as string, g]))
+   546→      return Response.json({
+   547→        coupons: coupons.map((c) => {
+   548→          const u = usageByCode.get(c.code)
+   549→          return {
+   550→            id: c.id,
+   551→            code: c.code,
+   552→            type: c.type,
+   553→            value: c.value,
+   554→            minAmount: c.minAmount,
+   555→            maxDiscount: c.maxDiscount,
+   556→            isActive: c.isActive,
+   557→            expiresAt: c.expiresAt,
+   558→            createdAt: c.createdAt,
+   559→            usedCount: u?._count._all ?? 0,
+   560→            discountAmount: round2(u?._sum.discount ?? 0),
+   561→          }
+   562→        }),
+   563→      })
+   564→    }
+   565→
+   566→    if (resource === 'staff') {
+   567→      const [pharmacists, deliveryStaff] = await Promise.all([
+   568→        db.user.findMany({ where: { role: 'PHARMACIST' }, select: USER_SELECT, orderBy: { createdAt: 'asc' } }),
+   569→        db.user.findMany({ where: { role: 'DELIVERY' }, select: USER_SELECT, orderBy: { createdAt: 'asc' } }),
+   570→      ])
+   571→      return Response.json({ pharmacists, deliveryStaff })
+   572→    }
+   573→
+   574→    if (resource === 'reports') {
+   575→      const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
+   576→      return Response.json(await reportData(days))
+   577→    }
+   578→
+   579→    if (resource === 'export-orders') {
+   580→      const orders = await db.order.findMany({ include: orderInclude, orderBy: { createdAt: 'asc' } })
+   581→      const header = ['orderNo', 'createdAt', 'customer', 'email', 'city', 'items', 'subtotal', 'discount', 'deliveryFee', 'total', 'paymentMethod', 'paymentStatus', 'status']
+   582→      const rows = orders.map((o) =>
+   583→        csvRow([
+   584→          o.orderNo,
+   585→          o.createdAt.toISOString(),
+   586→          o.user?.name ?? '',
+   587→          o.user?.email ?? '',
+   588→          addressFromJson(o.addressJson).city,
+   589→          o.items.map((it) => `${it.quantity}x ${it.name}`).join('; '),
+   590→          round2(o.subtotal),
+   591→          round2(o.discount),
+   592→          round2(o.deliveryFee),
+   593→          round2(o.total),
+   594→          o.paymentMethod,
+   595→          o.paymentStatus,
+   596→          o.status,
+   597→        ])
+   598→      )
+   599→      return Response.json({ filename: `orders-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   600→    }
+   601→
+   602→    if (resource === 'export-medicines') {
+   603→      const [medicines, grouped] = await Promise.all([
+   604→        db.medicine.findMany({ include: { category: true }, orderBy: { name: 'asc' } }),
+   605→        db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
+   606→      ])
+   607→      const ratingByMed = new Map(grouped.map((g) => [g.medicineId, g]))
+   608→      const header = ['name', 'genericName', 'brand', 'category', 'price', 'discountPrice', 'effectivePrice', 'stock', 'unit', 'requiresPrescription', 'status', 'expiryDate', 'rating', 'ratingCount']
+   609→      const rows = medicines.map((m) => {
+   610→        const g = ratingByMed.get(m.id)
+   611→        return csvRow([
+   612→          m.name,
+   613→          m.genericName ?? '',
+   614→          m.brand ?? '',
+   615→          m.category?.name ?? '',
+   616→          m.price,
+   617→          m.discountPrice ?? '',
+   618→          m.discountPrice ?? m.price,
+   619→          m.stock,
+   620→          m.unit,
+   621→          m.requiresPrescription ? 'YES' : 'NO',
+   622→          m.status,
+   623→          m.expiryDate ? m.expiryDate.toISOString().slice(0, 10) : '',
+   624→          g?._avg.rating != null ? round1(g._avg.rating) : '',
+   625→          g?._count._all ?? 0,
+   626→        ])
+   627→      })
+   628→      return Response.json({ filename: `medicines-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   629→    }
+   630→
+   631→    if (resource === 'export-users') {
+   632→      const users = await db.user.findMany({
+   633→        select: { ...USER_SELECT, _count: { select: { orders: true } } },
+   634→        orderBy: { createdAt: 'asc' },
+   635→      })
+   636→      const header = ['name', 'email', 'phone', 'role', 'status', 'createdAt', 'ordersCount']
+   637→      const rows = users.map((u) =>
+   638→        csvRow([
+   639→          u.name ?? '',
+   640→          u.email,
+   641→          u.phone ?? '',
+   642→          u.role,
+   643→          u.status,
+   644→          u.createdAt.toISOString(),
+   645→          u._count.orders,
+   646→        ])
+   647→      )
+   648→      return Response.json({ filename: `users-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   649→    }
+   650→
+   651→    if (resource === 'export-report') {
+   652→      const days = numOr(sp.get('days'), 7) === 30 ? 30 : 7
+   653→      const { salesByDay, categorySales, topMedicines, lowStock } = await reportData(days)
+   654→      const lines: string[] = []
+   655→      lines.push('Sales by day', csvRow(['date', 'orders', 'revenue']))
+   656→      for (const s of salesByDay) lines.push(csvRow([s.date, s.orders, s.revenue]))
+   657→      lines.push('', 'Sales by category', csvRow(['category', 'qty', 'revenue']))
+   658→      for (const c of categorySales) lines.push(csvRow([c.category, c.qty, c.revenue]))
+   659→      lines.push('', 'Top medicines', csvRow(['name', 'qty', 'revenue']))
+   660→      for (const t of topMedicines) lines.push(csvRow([t.name, t.qty, t.revenue]))
+   661→      lines.push('', 'Low stock', csvRow(['name', 'stock', 'price']))
+   662→      for (const m of lowStock) lines.push(csvRow([m.name, m.stock, m.discountPrice ?? m.price]))
+   663→      return Response.json({ filename: `report-${csvDate(new Date())}.csv`, csv: lines.join('\n') })
+   664→    }
+   665→
+   666→    if (resource === 'payments') {
+   667→      const all = await paymentsLedger()
+   668→      const filtered = filterPayments(all, sp.get('method'), sp.get('status'))
+   669→      const total = filtered.length
+   670→      const totalPages = Math.max(1, Math.ceil(total / PAYMENTS_PAGE_SIZE))
+   671→      const page = Math.min(Math.max(1, numOr(sp.get('page'), 1)), totalPages)
+   672→      return Response.json({
+   673→        rows: filtered.slice((page - 1) * PAYMENTS_PAGE_SIZE, page * PAYMENTS_PAGE_SIZE),
+   674→        summary: paymentsSummary(all),
+   675→        page,
+   676→        totalPages,
+   677→        total,
+   678→      })
+   679→    }
+   680→
+   681→    if (resource === 'payments-export') {
+   682→      const filtered = filterPayments(await paymentsLedger(), sp.get('method'), sp.get('status'))
+   683→      const header = ['Order No', 'Customer', 'Method', 'Status', 'Amount', 'Order Status', 'Transaction ID', 'Date']
+   684→      const rows = filtered.map((r) =>
+   685→        csvRow([
+   686→          r.orderNo,
+   687→          r.customerName,
+   688→          r.method,
+   689→          r.status,
+   690→          r.amount,
+   691→          r.orderStatus,
+   692→          r.transactionId ?? '',
+   693→          r.createdAt.toISOString(),
+   694→        ])
+   695→      )
+   696→      return Response.json({ filename: `payments-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   697→    }
+   698→
+   699→    if (resource === 'delivery-performance') {
+   700→      return Response.json(await deliveryPerformance())
+   701→    }
+   702→
+   703→    if (resource === 'export-delivery') {
+   704→      const { staff } = await deliveryPerformance()
+   705→      const header = ['name', 'email', 'phone', 'assigned', 'active', 'delivered', 'failed', 'deliveredValue', 'codCollected', 'avgCompletionHours', 'lastDeliveryAt']
+   706→      const rows = staff.map((s) =>
+   707→        csvRow([
+   708→          s.name ?? '',
+   709→          s.email,
+   710→          s.phone ?? '',
+   711→          s.assigned,
+   712→          s.active,
+   713→          s.delivered,
+   714→          s.failed,
+   715→          s.deliveredValue,
+   716→          s.codCollected,
+   717→          s.avgCompletionHours ?? '',
+   718→          s.lastDeliveryAt ?? '',
+   719→        ])
+   720→      )
+   721→      return Response.json({ filename: `delivery-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   722→    }
+   723→
+   724→    return badRequest('Unknown resource')
+   725→  } catch (e) {
+   726→    return serverError(e)
+   727→  }
+   728→}
+   729→
+   730→/**
+   731→ * PUT /api/admin
+   732→ *  {action:'update-user', id, status?, role?}
+   733→ *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...}
+   734→ *  {action:'create-category'|'update-category'|'delete-category', ...}
+   735→ *  {action:'update-order', id, status?, deliveryStaffId?}
+   736→ *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED}
+   737→ *  {action:'create-staff', data:{name,email,password,phone?,role}}
+   738→ *  {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}}
+   739→ *  {action:'update-coupon', id, coupon:{...partial coupon fields}}
+   740→ *  {action:'delete-coupon', id}
+   741→ */
+   742→export async function PUT(request: Request) {
+   743→  try {
+   744→    const user = await requireRole(request, ['ADMIN'])
+   745→    if (user instanceof Response) return user
+   746→    const body = await readJson(request)
+   747→    if (!body) return badRequest('Invalid request body')
+   748→    const action = optStr(body.action)
+   749→
+   750→    // ---- users ----
+   751→    if (action === 'update-user') {
+   752→      const id = optStr(body.id)
+   753→      if (!id) return badRequest('User id is required')
+   754→      const target = await db.user.findUnique({ where: { id } })
+   755→      if (!target) return notFound('User not found')
+   756→      const status = optStr(body.status)
+   757→      const role = optStr(body.role)
+   758→      if (status && status !== 'ACTIVE' && status !== 'INACTIVE') return badRequest('Status must be ACTIVE or INACTIVE')
+   759→      if (role && !ROLES.includes(role)) return badRequest('Invalid role')
+   760→      if (target.id === user.id) {
+   761→        if (role && role !== target.role) return badRequest('You cannot change your own role')
+   762→        if (status && status !== target.status) return badRequest('You cannot deactivate your own account')
+   763→      }
+   764→      const updated = await db.user.update({
+   765→        where: { id },
+   766→        data: {
+   767→          ...(status ? { status } : {}),
+   768→          ...(role ? { role } : {}),
+   769→        },
+   770→      })
+   771→      return Response.json({ user: publicUser(updated) })
+   772→    }
+   773→
+   774→    if (action === 'create-staff') {
+   775→      const data = (typeof body.data === 'object' && body.data !== null ? body.data : {}) as Record<string, unknown>
+   776→      const name = optStr(data.name)?.trim()
+   777→      const email = optStr(data.email)?.trim().toLowerCase()
+   778→      const password = optStr(data.password)
+   779→      const phone = optStr(data.phone)?.trim()
+   780→      const role = optStr(data.role)
+   781→      if (!name) return badRequest('Name is required')
+   782→      if (!email) return badRequest('Email is required')
+   783→      if (!password || password.length < 6) return badRequest('Password must be at least 6 characters')
+   784→      if (role !== 'PHARMACIST' && role !== 'DELIVERY') return badRequest('Role must be PHARMACIST or DELIVERY')
+   785→      const existing = await db.user.findUnique({ where: { email } })
+   786→      if (existing) return badRequest('An account with this email already exists')
+   787→      const created = await db.user.create({
+   788→        data: { name, email, password: hashPassword(password), phone: phone || null, role, status: 'ACTIVE' },
+   789→      })
+   790→      return Response.json({ user: publicUser(created) }, { status: 201 })
+   791→    }
+   792→
+   793→    // ---- medicines ----
+   794→    if (action === 'create-medicine') {
+   795→      const parsed = await buildMedicineData(body.data, 'create')
+   796→      if ('error' in parsed) return badRequest(parsed.error)
+   797→      const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+   798→      if (medicine.stock > 0) {
+   799→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
+   800→      }
+   801→      return Response.json({ medicine }, { status: 201 })
+   802→    }
+   803→
+   804→    if (action === 'update-medicine') {
+   805→      const id = optStr(body.id)
+   806→      if (!id) return badRequest('Medicine id is required')
+   807→      const existing = await db.medicine.findUnique({ where: { id } })
+   808→      if (!existing) return notFound('Medicine not found')
+   809→      const parsed = await buildMedicineData(body.data, 'update')
+   810→      if ('error' in parsed) return badRequest(parsed.error)
+   811→      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
+   812→      const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+   813→      if (newStock !== undefined && newStock !== existing.stock) {
+   814→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+   815→      }
+   816→      return Response.json({ medicine })
+   817→    }
+   818→
+   819→    if (action === 'delete-medicine') {
+   820→      const id = optStr(body.id)
+   821→      if (!id) return badRequest('Medicine id is required')
+   822→      const existing = await db.medicine.findUnique({ where: { id } })
+   823→      if (!existing) return notFound('Medicine not found')
+   824→      await db.medicine.update({ where: { id }, data: { status: 'INACTIVE' } })
+   825→      await db.cartItem.deleteMany({ where: { medicineId: id } })
+   826→      return Response.json({ ok: true })
+   827→    }
+   828→
+   829→    // ---- categories ----
+   830→    if (action === 'create-category') {
+   831→      const parsed = parseCategoryInput(body.data, 'create')
+   832→      if ('error' in parsed) return badRequest(parsed.error)
+   833→      const name = parsed.data.name as string
+   834→      const existing = await db.category.findFirst({ where: { name } })
+   835→      if (existing) return badRequest('A category with this name already exists')
+   836→      let slug = slugify(name)
+   837→      const slugTaken = await db.category.findUnique({ where: { slug } })
+   838→      if (slugTaken) slug = `${slug}-${Date.now().toString(36)}`
+   839→      const category = await db.category.create({ data: { name, slug, description: parsed.data.description ?? null } })
+   840→      return Response.json({ category }, { status: 201 })
+   841→    }
+   842→
+   843→    if (action === 'update-category') {
+   844→      const id = optStr(body.id)
+   845→      if (!id) return badRequest('Category id is required')
+   846→      const existing = await db.category.findUnique({ where: { id } })
+   847→      if (!existing) return notFound('Category not found')
+   848→      const parsed = parseCategoryInput(body.data, 'update')
+   849→      if ('error' in parsed) return badRequest(parsed.error)
+   850→      const name = parsed.data.name ?? existing.name
+   851→      if (parsed.data.name) {
+   852→        const clash = await db.category.findFirst({ where: { name: parsed.data.name, NOT: { id } } })
+   853→        if (clash) return badRequest('A category with this name already exists')
+   854→      }
+   855→      const category = await db.category.update({
+   856→        where: { id },
+   857→        data: { name, slug: slugify(name), description: parsed.data.description !== undefined ? parsed.data.description : existing.description },
+   858→      })
+   859→      return Response.json({ category })
+   860→    }
+   861→
+   862→    if (action === 'delete-category') {
+   863→      const id = optStr(body.id)
+   864→      if (!id) return badRequest('Category id is required')
+   865→      const existing = await db.category.findUnique({ where: { id } })
+   866→      if (!existing) return notFound('Category not found')
+   867→      await db.category.delete({ where: { id } })
+   868→      return Response.json({ ok: true })
+   869→    }
+   870→
+   871→    // ---- coupons ----
+   872→    if (action === 'create-coupon') {
+   873→      const parsed = parseCouponInput(body.coupon, 'create')
+   874→      if ('error' in parsed) return badRequest(parsed.error)
+   875→      try {
+   876→        const coupon = await db.coupon.create({ data: parsed.data })
+   877→        return Response.json({ coupon }, { status: 201 })
+   878→      } catch (e) {
+   879→        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+   880→          return badRequest('A coupon with this code already exists')
+   881→        }
+   882→        throw e
+   883→      }
+   884→    }
+   885→
+   886→    if (action === 'update-coupon') {
+   887→      const id = optStr(body.id)
+   888→      if (!id) return badRequest('Coupon id is required')
+   889→      const existing = await db.coupon.findUnique({ where: { id } })
+   890→      if (!existing) return notFound('Coupon not found')
+   891→      const parsed = parseCouponInput(body.coupon, 'update', existing)
+   892→      if ('error' in parsed) return badRequest(parsed.error)
+   893→      try {
+   894→        const coupon = await db.coupon.update({ where: { id }, data: parsed.data })
+   895→        return Response.json({ coupon })
+   896→      } catch (e) {
+   897→        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+   898→          return badRequest('A coupon with this code already exists')
+   899→        }
+   900→        throw e
+   901→      }
+   902→    }
+   903→
+   904→    if (action === 'delete-coupon') {
+   905→      const id = optStr(body.id)
+   906→      if (!id) return badRequest('Coupon id is required')
+   907→      const existing = await db.coupon.findUnique({ where: { id } })
+   908→      if (!existing) return notFound('Coupon not found')
+   909→      // Orders store couponCode as a plain string (no relation) — safe to delete
+   910→      await db.coupon.delete({ where: { id } })
+   911→      return Response.json({ ok: true })
+   912→    }
+   913→
+   914→    // ---- orders ----
+   915→    if (action === 'update-order') {
+   916→      const id = optStr(body.id)
+   917→      if (!id) return badRequest('Order id is required')
+   918→      const order = await db.order.findUnique({
+   919→        where: { id },
+   920→        include: { ...orderInclude, items: { include: { medicine: true } } },
+   921→      })
+   922→      if (!order) return notFound('Order not found')
+   923→
+   924→      const status = optStr(body.status)
+   925→      const deliveryStaffId = optStr(body.deliveryStaffId)
+   926→
+   927→      if (status && !ORDER_STATUSES.includes(status)) return badRequest('Invalid status')
+   928→      if (deliveryStaffId) {
+   929→        const staff = await db.user.findUnique({ where: { id: deliveryStaffId } })
+   930→        if (!staff || staff.role !== 'DELIVERY') return badRequest('Selected user is not delivery staff')
+   931→      }
+   932→
+   933→      if (status && status !== order.status) {
+   934→        if (status === 'CONFIRMED' && ['PENDING', 'PRESCRIPTION_REVIEW'].includes(order.status)) {
+   935→          for (const item of order.items) {
+   936→            if (!item.medicine || item.medicine.status !== 'ACTIVE' || item.medicine.stock < item.quantity) {
+   937→              return badRequest(`Insufficient stock for ${item.name}`)
+   938→            }
+   939→          }
+   940→          await db.$transaction(async (tx) => {
+   941→            const movements: StockMovementEntry[] = []
+   942→            for (const item of order.items) {
+   943→              if (item.medicineId) {
+   944→                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+   945→                movements.push({
+   946→                  medicineId: item.medicineId,
+   947→                  delta: -item.quantity,
+   948→                  reason: 'ORDER_CONFIRM',
+   949→                  note: `Order ${order.orderNo} confirmed`,
+   950→                  userId: user.id,
+   951→                })
+   952→              }
+   953→            }
+   954→            await recordStockMovements(tx, movements)
+   955→            const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
+   956→            if (!existingPayment) {
+   957→              await tx.payment.create({
+   958→                data: {
+   959→                  orderId: order.id,
+   960→                  method: order.paymentMethod,
+   961→                  status: order.paymentStatus === 'PAID' ? 'PAID' : 'PENDING',
+   962→                  amount: order.total,
+   963→                },
+   964→              })
+   965→            }
+   966→          })
+   967→        }
+   968→        if (status === 'CANCELLED' && ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY'].includes(order.status)) {
+   969→          const movements: StockMovementEntry[] = []
+   970→          await db.$transaction(async (tx) => {
+   971→            for (const item of order.items) {
+   972→              if (item.medicineId) {
+   973→                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { increment: item.quantity } } })
+   974→                movements.push({
+   975→                  medicineId: item.medicineId,
+   976→                  delta: item.quantity,
+   977→                  reason: 'ORDER_CANCEL',
+   978→                  note: `Order ${order.orderNo} cancelled — stock restored`,
+   979→                  userId: user.id,
+   980→                })
+   981→              }
+   982→            }
+   983→            await recordStockMovements(tx, movements)
+   984→          })
+   985→        }
+   986→        if (status === 'CANCELLED' && order.paymentStatus === 'PAID') {
+   987→          if (order.payment) {
+   988→            await db.payment.update({ where: { id: order.payment.id }, data: { status: 'REFUNDED' } })
+   989→          }
+   990→        }
+   991→      }
+   992→
+   993→      const wasPaid = order.paymentStatus === 'PAID'
+   994→      const updated = await db.order.update({
+   995→        where: { id },
+   996→        data: {
+   997→          ...(status ? { status, statusNote: 'Updated by admin' } : {}),
+   998→          ...(status === 'CANCELLED' && wasPaid ? { paymentStatus: 'REFUNDED' } : {}),
+   999→          ...(deliveryStaffId ? { deliveryStaffId } : {}),
+  1000→        },
+  1001→      })
+  1002→
+  1003→      if (status && status !== order.status) {
+  1004→        const label = ORDER_STATUS_LABELS[status as OrderStatus] ?? status
+  1005→        await notify(order.userId, label, `Order ${order.orderNo} status updated to ${label}.`)
+  1006→      }
+  1007→
+  1008→      const full = await db.order.findUnique({ where: { id: updated.id }, include: orderInclude })
+  1009→      if (!full) return notFound('Order not found')
+  1010→      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+  1011→    }
+  1012→
+  1013→    // ---- payments ----
+  1014→    if (action === 'payment-status') {
+  1015→      const orderId = optStr(body.orderId)
+  1016→      const status = optStr(body.status)
+  1017→      if (!orderId) return badRequest('Order id is required')
+  1018→      if (!status || !PAYMENT_STATUSES.includes(status)) return badRequest('Invalid payment status')
+  1019→      const existing = await db.order.findUnique({ where: { id: orderId }, select: { id: true } })
+  1020→      if (!existing) return notFound('Order not found')
+  1021→      await db.$transaction(async (tx) => {
+  1022→        await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } })
+  1023→        const payment = await tx.payment.findUnique({ where: { orderId } })
+  1024→        if (payment) await tx.payment.update({ where: { id: payment.id }, data: { status } })
+  1025→      })
+  1026→      const full = await db.order.findUnique({ where: { id: orderId }, include: orderInclude })
+  1027→      if (!full) return notFound('Order not found')
+  1028→      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+  1029→    }
+  1030→
+  1031→    return badRequest('Invalid action')
+  1032→  } catch (e) {
+  1033→    return serverError(e)
+  1034→  }
+  1035→}
+  1036→

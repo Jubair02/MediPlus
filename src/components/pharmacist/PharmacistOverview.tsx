@@ -7,6 +7,8 @@ import {
   ArrowRight,
   CalendarClock,
   CheckCircle2,
+  ClipboardList,
+  Clock,
   FileCheck,
   History,
   Pill,
@@ -15,6 +17,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { fmtBDT, fmtDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import type { PharmacistStats, StockMovementItem } from '@/lib/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -66,7 +69,7 @@ function StatCard({ icon: Icon, bgClass, iconClass, label, value, hint }: StatCa
         <Icon className={`h-4.5 w-4.5 ${iconClass}`} />
       </div>
       <div>
-        <p className="text-2xl font-bold tracking-tight md:text-3xl">{value}</p>
+        <p className="text-2xl font-bold tracking-tight tabular-nums md:text-3xl">{value}</p>
         <p className="text-xs text-muted-foreground">{label}</p>
       </div>
       {hint && <p className="text-[11px] text-muted-foreground/80">{hint}</p>}
@@ -101,8 +104,8 @@ export default function PharmacistOverview({
   if (loading && !stats) {
     return (
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-          {[...Array(5)].map((_, i) => (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+          {[...Array(7)].map((_, i) => (
             <Skeleton key={i} className="h-32 w-full rounded-xl" />
           ))}
         </div>
@@ -136,7 +139,7 @@ export default function PharmacistOverview({
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <StatCard
           icon={FileCheck}
           bgClass="bg-amber-100"
@@ -177,6 +180,22 @@ export default function PharmacistOverview({
           value={stats.lowStockCount}
           hint="Restock recommended"
         />
+        <StatCard
+          icon={Clock}
+          bgClass="bg-amber-100"
+          iconClass="text-amber-600"
+          label="Rx Expiring Soon"
+          value={stats.rxExpiringSoon ?? 0}
+          hint="Approved, within 14 days"
+        />
+        <StatCard
+          icon={ClipboardList}
+          bgClass="bg-primary/10"
+          iconClass="text-primary"
+          label="Open POs"
+          value={stats.openPoCount ?? 0}
+          hint="Awaiting delivery"
+        />
       </div>
 
       {/* Low stock alert list */}
@@ -216,7 +235,10 @@ export default function PharmacistOverview({
                       Out
                     </Badge>
                   ) : (
-                    <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800">
+                    <Badge
+                      variant="outline"
+                      className="border-amber-300 bg-amber-100 text-amber-800 tabular-nums"
+                    >
                       Low · {m.stock}
                     </Badge>
                   )}
@@ -264,11 +286,12 @@ export default function PharmacistOverview({
                     </div>
                     <Badge
                       variant="outline"
-                      className={
+                      className={cn(
+                        'tabular-nums',
                         soon
                           ? 'border-red-300 bg-red-100 text-red-800'
                           : 'border-amber-300 bg-amber-100 text-amber-800'
-                      }
+                      )}
                     >
                       {days !== null && days < 0 ? 'Expired' : `${days}d left`}
                     </Badge>

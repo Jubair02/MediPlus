@@ -1,0 +1,653 @@
+     1→import { Prisma } from '@prisma/client'
+     2→import { db } from '@/lib/db'
+     3→import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
+     4→import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
+     5→
+     6→const RX_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
+     7→const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
+     8→const QA_STATUSES = ['PENDING', 'ANSWERED', 'REJECTED']
+     9→/** Same low-stock threshold used by pharmacist stats (lowStockCount / lowStock list). */
+    10→const LOW_STOCK_THRESHOLD = 10
+    11→const RESTOCK_WINDOW_DAYS = 30
+    12→const MAX_ANSWER_LENGTH = 1000
+    13→/** Round 10 — purchase order limits. */
+    14→const PO_MAX_QTY = 10000
+    15→const PO_MAX_NOTE_LENGTH = 300
+    16→
+    17→function round1(n: number): number {
+    18→  return Math.round(n * 10) / 10
+    19→}
+    20→
+    21→function csvDate(d: Date): string {
+    22→  const m = String(d.getMonth() + 1).padStart(2, '0')
+    23→  const day = String(d.getDate()).padStart(2, '0')
+    24→  return `${d.getFullYear()}${m}${day}`
+    25→}
+    26→
+    27→function csvRow(values: unknown[]): string {
+    28→  return values.map(escapeCsv).join(',')
+    29→}
+    30→
+    31→interface QuestionRow {
+    32→  id: string
+    33→  question: string
+    34→  answer: string | null
+    35→  status: string
+    36→  createdAt: Date
+    37→  answeredAt: Date | null
+    38→  medicine: { id: string; name: string; image: string | null }
+    39→  user: { name: string | null; email: string }
+    40→  answeredBy: { name: string | null } | null
+    41→  _count: { helpfulVotes: number }
+    42→}
+    43→
+    44→function questionToJson(q: QuestionRow) {
+    45→  return {
+    46→    id: q.id,
+    47→    question: q.question,
+    48→    answer: q.answer,
+    49→    status: q.status,
+    50→    createdAt: q.createdAt,
+    51→    answeredAt: q.answeredAt,
+    52→    medicineId: q.medicine.id,
+    53→    medicineName: q.medicine.name,
+    54→    medicineImage: q.medicine.image,
+    55→    askedByName: q.user.name ?? 'Customer',
+    56→    askedByEmail: q.user.email,
+    57→    answerByName: q.answer ? q.answeredBy?.name ?? 'Pharmacist' : null,
+    58→    helpfulCount: q._count.helpfulVotes,
+    59→  }
+    60→}
+    61→
+    62→const questionInclude = {
+    63→  medicine: { select: { id: true, name: true, image: true } },
+    64→  user: { select: { name: true, email: true } },
+    65→  answeredBy: { select: { name: true } },
+    66→  _count: { select: { helpfulVotes: true } },
+    67→} satisfies Prisma.QuestionInclude
+    68→
+    69→/** Shared include for purchase-order rows — carries the medicine's live stock for currentStock. */
+    70→const poInclude = {
+    71→  medicine: { select: { id: true, name: true, unit: true, image: true, brand: true, stock: true } },
+    72→  orderedBy: { select: { id: true, name: true } },
+    73→  receivedBy: { select: { id: true, name: true } },
+    74→} satisfies Prisma.PurchaseOrderInclude
+    75→
+    76→type FullPO = Prisma.PurchaseOrderGetPayload<{ include: typeof poInclude }>
+    77→
+    78→function poToRow(po: FullPO) {
+    79→  return {
+    80→    id: po.id,
+    81→    qty: po.qty,
+    82→    status: po.status,
+    83→    note: po.note,
+    84→    orderedAt: po.orderedAt,
+    85→    receivedAt: po.receivedAt,
+    86→    orderedBy: { id: po.orderedBy.id, name: po.orderedBy.name },
+    87→    receivedBy: po.receivedBy ? { id: po.receivedBy.id, name: po.receivedBy.name } : null,
+    88→    medicine: { id: po.medicine.id, name: po.medicine.name, unit: po.medicine.unit, image: po.medicine.image, brand: po.medicine.brand },
+    89→    currentStock: po.medicine.stock,
+    90→  }
+    91→}
+    92→
+    93→/** Low-stock ACTIVE medicines with 30-day sales velocity → reorder suggestions. */
+    94→async function restockSuggestions() {
+    95→  const since = new Date(Date.now() - RESTOCK_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    96→  const medicines = await db.medicine.findMany({
+    97→    where: { status: 'ACTIVE', stock: { lte: LOW_STOCK_THRESHOLD } },
+    98→    orderBy: { stock: 'asc' },
+    99→  })
+   100→  const ids = medicines.map((m) => m.id)
+   101→  const soldRows = ids.length
+   102→    ? await db.orderItem.findMany({
+   103→        where: {
+   104→          medicineId: { in: ids },
+   105→          order: { status: { notIn: ['CANCELLED', 'FAILED'] }, createdAt: { gte: since } },
+   106→        },
+   107→        select: { medicineId: true, quantity: true },
+   108→      })
+   109→    : []
+   110→  const soldByMed = new Map<string, number>()
+   111→  for (const row of soldRows) {
+   112→    if (row.medicineId) soldByMed.set(row.medicineId, (soldByMed.get(row.medicineId) ?? 0) + row.quantity)
+   113→  }
+   114→  // Round 10 — total qty across each medicine's OPEN (ORDERED) purchase orders
+   115→  const openPoGroups = ids.length
+   116→    ? await db.purchaseOrder.groupBy({ by: ['medicineId'], where: { medicineId: { in: ids }, status: 'ORDERED' }, _sum: { qty: true } })
+   117→    : []
+   118→  const openPoByMed = new Map(openPoGroups.map((g) => [g.medicineId, g._sum.qty ?? 0]))
+   119→
+   120→  const suggestions = medicines.map((m) => {
+   121→    const soldLast30 = soldByMed.get(m.id) ?? 0
+   122→    const avgDaily = round1(soldLast30 / RESTOCK_WINDOW_DAYS)
+   123→    let daysLeft: number | null
+   124→    if (m.stock <= 0) daysLeft = 0
+   125→    else if (avgDaily <= 0) daysLeft = null
+   126→    else daysLeft = round1(m.stock / avgDaily)
+   127→    const base = Math.max(30, Math.ceil(soldLast30 * 1.5)) - m.stock
+   128→    let suggestedQty = Math.ceil(Math.max(base, 10) / 10) * 10
+   129→    if (m.stock <= 0) suggestedQty = Math.max(suggestedQty, 30)
+   130→    return {
+   131→      id: m.id,
+   132→      name: m.name,
+   133→      brand: m.brand,
+   134→      genericName: m.genericName,
+   135→      unit: m.unit,
+   136→      image: m.image,
+   137→      stock: m.stock,
+   138→      lowStockAt: LOW_STOCK_THRESHOLD,
+   139→      soldLast30,
+   140→      avgDaily,
+   141→      daysLeft,
+   142→      suggestedQty,
+   143→      estValue: round2(suggestedQty * (m.discountPrice ?? m.price)),
+   144→      openPoQty: openPoByMed.get(m.id) ?? 0,
+   145→    }
+   146→  })
+   147→  // daysLeft asc (nulls last), then stock asc
+   148→  suggestions.sort((a, b) => {
+   149→    const an = a.daysLeft === null ? 1 : 0
+   150→    const bn = b.daysLeft === null ? 1 : 0
+   151→    if (an !== bn) return an - bn
+   152→    if (a.daysLeft !== null && b.daysLeft !== null && a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft
+   153→    return a.stock - b.stock
+   154→  })
+   155→  return { suggestions }
+   156→}
+   157→
+   158→/**
+   159→ * GET /api/pharmacist?resource=stats|prescriptions|medicines|orders|movements|questions|restock-suggestions|purchase-orders|export-restock
+   160→ */
+   161→export async function GET(request: Request) {
+   162→  try {
+   163→    const user = await requireRole(request, ['PHARMACIST'])
+   164→    if (user instanceof Response) return user
+   165→    const sp = new URL(request.url).searchParams
+   166→    const resource = sp.get('resource') || 'stats'
+   167→
+   168→    if (resource === 'stats') {
+   169→      const todayStart = new Date()
+   170→      todayStart.setHours(0, 0, 0, 0)
+   171→      const in90Days = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+   172→      // APPROVED rx whose approval expires within RX_EXPIRY_WARNING_DAYS (expiresAt = reviewedAt + RX_VALIDITY_DAYS ≤ now + 14d,
+   173→      // i.e. reviewedAt ≤ now − 76d) — includes already-expired approvals.
+   174→      const rxExpiringCutoff = new Date(Date.now() - (RX_VALIDITY_DAYS - RX_EXPIRY_WARNING_DAYS) * 24 * 60 * 60 * 1000)
+   175→      const [pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount, rxExpiringSoon, openPoCount] =
+   176→        await Promise.all([
+   177→          db.prescription.count({ where: { status: 'PENDING' } }),
+   178→          db.prescription.count({ where: { status: 'APPROVED', updatedAt: { gte: todayStart } } }),
+   179→          db.prescription.count({ where: { status: 'REJECTED', updatedAt: { gte: todayStart } } }),
+   180→          db.medicine.count({ where: { status: 'ACTIVE' } }),
+   181→          db.medicine.count({ where: { status: 'ACTIVE', stock: { lte: 10 } } }),
+   182→          db.medicine.count({ where: { status: 'ACTIVE', requiresPrescription: true } }),
+   183→          db.medicine.findMany({
+   184→            where: { status: 'ACTIVE', stock: { lte: 10 } },
+   185→            include: { category: true },
+   186→            orderBy: { stock: 'asc' },
+   187→            take: 10,
+   188→          }),
+   189→          db.medicine.findMany({
+   190→            where: { status: 'ACTIVE', expiryDate: { not: null, lte: in90Days } },
+   191→            include: { category: true },
+   192→            orderBy: { expiryDate: 'asc' },
+   193→            take: 10,
+   194→          }),
+   195→          db.medicine.count({ where: { status: 'ACTIVE', expiryDate: { not: null, lte: in90Days } } }),
+   196→          db.prescription.count({ where: { status: 'APPROVED', reviewedAt: { not: null, lte: rxExpiringCutoff } } }),
+   197→          db.purchaseOrder.count({ where: { status: 'ORDERED' } }),
+   198→        ])
+   199→      return Response.json({
+   200→        stats: { pendingPrescriptions, approvedToday, rejectedToday, totalMedicines, lowStockCount, prescriptionMedicines, lowStock, expiringSoon, expiringSoonCount, rxExpiringSoon, openPoCount },
+   201→      })
+   202→    }
+   203→
+   204→    if (resource === 'prescriptions') {
+   205→      const status = sp.get('status')
+   206→      const where = status && RX_STATUSES.includes(status) ? { status } : {}
+   207→      const prescriptions = await db.prescription.findMany({
+   208→        where,
+   209→        include: {
+   210→          user: { select: { id: true, name: true, email: true, phone: true } },
+   211→          order: { select: { orderNo: true } },
+   212→        },
+   213→        orderBy: { createdAt: 'desc' },
+   214→      })
+   215→      return Response.json({
+   216→        prescriptions: prescriptions.map((p) => ({
+   217→          id: p.id,
+   218→          image: p.image,
+   219→          note: p.note,
+   220→          status: p.status,
+   221→          reviewNote: p.reviewNote,
+   222→          createdAt: p.createdAt,
+   223→          user: p.user,
+   224→          orderNo: p.order?.orderNo ?? null,
+   225→          ...rxExpiryFields(p.reviewedAt, p.status),
+   226→        })),
+   227→      })
+   228→    }
+   229→
+   230→    if (resource === 'medicines') {
+   231→      const search = sp.get('search')?.trim()
+   232→      const medicines = await db.medicine.findMany({
+   233→        where: search
+   234→          ? {
+   235→              OR: [
+   236→                { name: { contains: search } },
+   237→                { genericName: { contains: search } },
+   238→                { brand: { contains: search } },
+   239→              ],
+   240→            }
+   241→          : {},
+   242→        include: { category: true },
+   243→        orderBy: { createdAt: 'desc' },
+   244→      })
+   245→      return Response.json({ medicines })
+   246→    }
+   247→
+   248→    if (resource === 'orders') {
+   249→      const status = sp.get('status')
+   250→      const where = status && ORDER_STATUSES.includes(status) ? { status } : {}
+   251→      const orders = await db.order.findMany({
+   252→        where,
+   253→        include: orderInclude,
+   254→        orderBy: { createdAt: 'desc' },
+   255→      })
+   256→      // PRESCRIPTION_REVIEW first, then newest first
+   257→      orders.sort((a, b) => {
+   258→        const ap = a.status === 'PRESCRIPTION_REVIEW' ? 0 : 1
+   259→        const bp = b.status === 'PRESCRIPTION_REVIEW' ? 0 : 1
+   260→        if (ap !== bp) return ap - bp
+   261→        return b.createdAt.getTime() - a.createdAt.getTime()
+   262→      })
+   263→      return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+   264→    }
+   265→
+   266→    if (resource === 'movements') {
+   267→      const medicineId = sp.get('medicineId')?.trim()
+   268→      const take = Math.min(100, Math.max(1, Math.trunc(numParam(sp.get('take')) ?? 50)))
+   269→      const movements = await db.stockMovement.findMany({
+   270→        where: medicineId ? { medicineId } : {},
+   271→        include: {
+   272→          medicine: { select: { id: true, name: true, image: true, unit: true } },
+   273→          user: { select: { id: true, name: true } },
+   274→        },
+   275→        orderBy: { createdAt: 'desc' },
+   276→        take,
+   277→      })
+   278→      return Response.json({
+   279→        movements: movements.map((m) => ({
+   280→          id: m.id,
+   281→          delta: m.delta,
+   282→          reason: m.reason,
+   283→          note: m.note,
+   284→          createdAt: m.createdAt,
+   285→          medicine: m.medicine,
+   286→          user: m.user,
+   287→        })),
+   288→      })
+   289→    }
+   290→
+   291→    if (resource === 'questions') {
+   292→      const status = sp.get('status')
+   293→      const st = status && (status === 'ALL' || QA_STATUSES.includes(status)) ? status : 'PENDING'
+   294→      const where = st === 'ALL' ? {} : { status: st }
+   295→      const [questions, pendingCount, answeredCount, rejectedCount] = await Promise.all([
+   296→        db.question.findMany({ where, include: questionInclude, orderBy: { createdAt: 'desc' } }),
+   297→        db.question.count({ where: { status: 'PENDING' } }),
+   298→        db.question.count({ where: { status: 'ANSWERED' } }),
+   299→        db.question.count({ where: { status: 'REJECTED' } }),
+   300→      ])
+   301→      return Response.json({
+   302→        questions: questions.map(questionToJson),
+   303→        counts: { PENDING: pendingCount, ANSWERED: answeredCount, REJECTED: rejectedCount },
+   304→      })
+   305→    }
+   306→
+   307→    if (resource === 'restock-suggestions') {
+   308→      return Response.json(await restockSuggestions())
+   309→    }
+   310→
+   311→    if (resource === 'purchase-orders') {
+   312→      const [orders, orderedCount, receivedCount, cancelledCount] = await Promise.all([
+   313→        db.purchaseOrder.findMany({ include: poInclude, orderBy: { orderedAt: 'desc' } }),
+   314→        db.purchaseOrder.count({ where: { status: 'ORDERED' } }),
+   315→        db.purchaseOrder.count({ where: { status: 'RECEIVED' } }),
+   316→        db.purchaseOrder.count({ where: { status: 'CANCELLED' } }),
+   317→      ])
+   318→      return Response.json({
+   319→        orders: orders.map(poToRow),
+   320→        counts: { ORDERED: orderedCount, RECEIVED: receivedCount, CANCELLED: cancelledCount },
+   321→      })
+   322→    }
+   323→
+   324→    if (resource === 'export-restock') {
+   325→      const { suggestions } = await restockSuggestions()
+   326→      const header = ['id', 'name', 'brand', 'genericName', 'unit', 'image', 'stock', 'lowStockAt', 'soldLast30', 'avgDaily', 'daysLeft', 'suggestedQty', 'estValue']
+   327→      const rows = suggestions.map((s) =>
+   328→        csvRow([
+   329→          s.id,
+   330→          s.name,
+   331→          s.brand ?? '',
+   332→          s.genericName ?? '',
+   333→          s.unit,
+   334→          s.image ?? '',
+   335→          s.stock,
+   336→          s.lowStockAt,
+   337→          s.soldLast30,
+   338→          s.avgDaily,
+   339→          s.daysLeft ?? '',
+   340→          s.suggestedQty,
+   341→          s.estValue,
+   342→        ])
+   343→      )
+   344→      return Response.json({ filename: `restock-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
+   345→    }
+   346→
+   347→    return badRequest('Unknown resource')
+   348→  } catch (e) {
+   349→    return serverError(e)
+   350→  }
+   351→}
+   352→
+   353→/**
+   354→ * PUT /api/pharmacist
+   355→ *  {action:'review', prescriptionId, decision:'APPROVED'|'REJECTED', reviewNote?}  — sets reviewedAt + RX_REVIEW audit entry
+   356→ *  {action:'create-po', medicineId, qty, note?}      — create purchase order (PO_CREATE audit entry)
+   357→ *  {action:'receive-po', id, note?}                  — receive PO: stock +qty, StockMovement PO_RECEIVE, audit entry
+   358→ *  {action:'cancel-po', id}                          — cancel an ORDERED purchase order (PO_CANCEL audit entry)
+   359→ *  {action:'create-medicine', data:{...}}
+   360→ *  {action:'update-medicine', id, data:{...}}
+   361→ *  {action:'answer', id, answer}   — answer a Q&A question (re-answer allowed, overwrites)
+   362→ *  {action:'reject', id}           — reject a Q&A question (answer/answeredBy/answeredAt cleared)
+   363→ */
+   364→export async function PUT(request: Request) {
+   365→  try {
+   366→    const user = await requireRole(request, ['PHARMACIST'])
+   367→    if (user instanceof Response) return user
+   368→    const body = await readJson(request)
+   369→    if (!body) return badRequest('Invalid request body')
+   370→    const action = optStr(body.action)
+   371→
+   372→    if (action === 'review') {
+   373→      const prescriptionId = optStr(body.prescriptionId)
+   374→      if (!prescriptionId) return badRequest('Prescription id is required')
+   375→      const decision = optStr(body.decision)
+   376→      if (decision !== 'APPROVED' && decision !== 'REJECTED') return badRequest('Decision must be APPROVED or REJECTED')
+   377→
+   378→      const prescription = await db.prescription.findUnique({
+   379→        where: { id: prescriptionId },
+   380→        include: { order: { include: { ...orderInclude, items: { include: { medicine: true } } } } },
+   381→      })
+   382→      if (!prescription) return notFound('Prescription not found')
+   383→      if (prescription.status !== 'PENDING') return badRequest('Already reviewed')
+   384→
+   385→      const reviewNote = optStr(body.reviewNote)?.trim() || null
+   386→      const order = prescription.order
+   387→
+   388→      if (decision === 'APPROVED' && order) {
+   389→        // Check stock for all Rx order items BEFORE approving
+   390→        for (const item of order.items) {
+   391→          if (!item.medicine) return badRequest(`Insufficient stock for ${item.name}`)
+   392→          if (item.medicine.status !== 'ACTIVE' || item.medicine.stock < item.quantity) {
+   393→            return badRequest(`Insufficient stock for ${item.name}`)
+   394→          }
+   395→        }
+   396→        await db.$transaction(async (tx) => {
+   397→          await tx.prescription.update({
+   398→            where: { id: prescription.id },
+   399→            data: { status: 'APPROVED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
+   400→          })
+   401→          const movements: StockMovementEntry[] = []
+   402→          for (const item of order.items) {
+   403→            if (item.medicineId) {
+   404→              await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+   405→              movements.push({
+   406→                medicineId: item.medicineId,
+   407→                delta: -item.quantity,
+   408→                reason: 'RX_APPROVE',
+   409→                note: `Order ${order.orderNo} confirmed after prescription approval`,
+   410→                userId: user.id,
+   411→              })
+   412→            }
+   413→          }
+   414→          await recordStockMovements(tx, movements)
+   415→          await tx.order.update({ where: { id: order.id }, data: { status: 'CONFIRMED' } })
+   416→          const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
+   417→          if (!existingPayment) {
+   418→            await tx.payment.create({
+   419→              data: {
+   420→                orderId: order.id,
+   421→                method: order.paymentMethod,
+   422→                status: order.paymentStatus === 'PAID' ? 'PAID' : 'PENDING',
+   423→                amount: order.total,
+   424→              },
+   425→            })
+   426→          }
+   427→          await tx.notification.create({
+   428→            data: { userId: order.userId, title: 'Prescription approved', message: 'Your prescription has been approved.' },
+   429→          })
+   430→          await tx.notification.create({
+   431→            data: { userId: order.userId, title: 'Order confirmed', message: `Order ${order.orderNo} has been confirmed and is being processed.` },
+   432→          })
+   433→          await logAudit(tx, user, {
+   434→            action: 'RX_REVIEW',
+   435→            entityType: 'PRESCRIPTION',
+   436→            entityRef: prescription.id,
+   437→            detail: `Prescription ${decision === 'APPROVED' ? 'approved' : 'rejected'}`,
+   438→          })
+   439→        })
+   440→      } else if (decision === 'REJECTED' && order) {
+   441→        await db.$transaction(async (tx) => {
+   442→          await tx.prescription.update({
+   443→            where: { id: prescription.id },
+   444→            data: { status: 'REJECTED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
+   445→          })
+   446→          await tx.order.update({ where: { id: order.id }, data: { status: 'CANCELLED', statusNote: 'Prescription rejected' } })
+   447→          await tx.notification.create({
+   448→            data: {
+   449→              userId: order.userId,
+   450→              title: 'Prescription rejected',
+   451→              message: `Your prescription was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
+   452→            },
+   453→          })
+   454→          await logAudit(tx, user, {
+   455→            action: 'RX_REVIEW',
+   456→            entityType: 'PRESCRIPTION',
+   457→            entityRef: prescription.id,
+   458→            detail: 'Prescription rejected',
+   459→          })
+   460→        })
+   461→      } else {
+   462→        await db.prescription.update({
+   463→          where: { id: prescription.id },
+   464→          data: { status: decision, reviewNote, reviewedById: user.id, reviewedAt: new Date() },
+   465→        })
+   466→        await logAudit(db, user, {
+   467→          action: 'RX_REVIEW',
+   468→          entityType: 'PRESCRIPTION',
+   469→          entityRef: prescription.id,
+   470→          detail: `Prescription ${decision === 'APPROVED' ? 'approved' : 'rejected'}`,
+   471→        })
+   472→        await notify(
+   473→          prescription.userId,
+   474→          decision === 'APPROVED' ? 'Prescription approved' : 'Prescription rejected',
+   475→          decision === 'APPROVED'
+   476→            ? 'Your prescription has been approved.'
+   477→            : `Your prescription was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`
+   478→        )
+   479→      }
+   480→
+   481→      const updated = await db.prescription.findUnique({
+   482→        where: { id: prescription.id },
+   483→        include: { order: { select: { orderNo: true } } },
+   484→      })
+   485→      if (!updated) return notFound('Prescription not found')
+   486→      return Response.json({
+   487→        prescription: {
+   488→          id: updated.id,
+   489→          image: updated.image,
+   490→          note: updated.note,
+   491→          status: updated.status,
+   492→          reviewNote: updated.reviewNote,
+   493→          createdAt: updated.createdAt,
+   494→          orderNo: updated.order?.orderNo ?? null,
+   495→        },
+   496→      })
+   497→    }
+   498→
+   499→    if (action === 'create-po') {
+   500→      const medicineId = optStr(body.medicineId)?.trim()
+   501→      if (!medicineId) return badRequest('Medicine id is required')
+   502→      const medicine = await db.medicine.findUnique({ where: { id: medicineId } })
+   503→      if (!medicine) return notFound('Medicine not found')
+   504→      const qty = numOr(body.qty, NaN)
+   505→      if (!Number.isInteger(qty) || qty < 1 || qty > PO_MAX_QTY) return badRequest('Quantity must be between 1 and 10000')
+   506→      let note: string | null = null
+   507→      if (typeof body.note === 'string' && body.note.trim() !== '') {
+   508→        note = body.note.trim()
+   509→        if (note.length > PO_MAX_NOTE_LENGTH) return badRequest('Note must be 300 characters or less')
+   510→      }
+   511→      const created = await db.purchaseOrder.create({
+   512→        data: { medicineId: medicine.id, qty, note, orderedById: user.id },
+   513→      })
+   514→      await logAudit(db, user, {
+   515→        action: 'PO_CREATE',
+   516→        entityType: 'PURCHASE_ORDER',
+   517→        entityRef: created.id,
+   518→        detail: `Ordered ${qty} × ${medicine.name}`,
+   519→      })
+   520→      const fresh = await db.purchaseOrder.findUnique({ where: { id: created.id }, include: poInclude })
+   521→      if (!fresh) return notFound('Purchase order not found')
+   522→      return Response.json({ order: poToRow(fresh) })
+   523→    }
+   524→
+   525→    if (action === 'receive-po') {
+   526→      const id = optStr(body.id)
+   527→      if (!id) return badRequest('Purchase order id is required')
+   528→      const po = await db.purchaseOrder.findUnique({
+   529→        where: { id },
+   530→        include: { medicine: { select: { id: true, name: true } } },
+   531→      })
+   532→      if (!po) return notFound('Purchase order not found')
+   533→      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be received')
+   534→      // body.note replaces the note only when provided as a non-empty string; otherwise the note is kept
+   535→      const replacementNote = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
+   536→      await db.$transaction(async (tx) => {
+   537→        await tx.purchaseOrder.update({
+   538→          where: { id: po.id },
+   539→          data: {
+   540→            status: 'RECEIVED',
+   541→            receivedAt: new Date(),
+   542→            receivedById: user.id,
+   543→            ...(replacementNote !== null ? { note: replacementNote } : {}),
+   544→          },
+   545→        })
+   546→        await tx.medicine.update({ where: { id: po.medicineId }, data: { stock: { increment: po.qty } } })
+   547→        await recordStockMovements(tx, [{
+   548→          medicineId: po.medicineId,
+   549→          delta: po.qty,
+   550→          reason: 'PO_RECEIVE',
+   551→          note: `PO received — ${po.qty} × ${po.medicine.name}`,
+   552→          userId: user.id,
+   553→        }])
+   554→        await logAudit(tx, user, {
+   555→          action: 'PO_RECEIVE',
+   556→          entityType: 'PURCHASE_ORDER',
+   557→          entityRef: po.id,
+   558→          detail: `Received ${po.qty} × ${po.medicine.name}`,
+   559→        })
+   560→      })
+   561→      const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
+   562→      const medicine = await db.medicine.findUnique({ where: { id: po.medicineId }, select: { id: true, stock: true } })
+   563→      if (!fresh || !medicine) return notFound('Purchase order not found')
+   564→      return Response.json({ order: poToRow(fresh), medicine: { id: medicine.id, stock: medicine.stock } })
+   565→    }
+   566→
+   567→    if (action === 'cancel-po') {
+   568→      const id = optStr(body.id)
+   569→      if (!id) return badRequest('Purchase order id is required')
+   570→      const po = await db.purchaseOrder.findUnique({
+   571→        where: { id },
+   572→        include: { medicine: { select: { name: true } } },
+   573→      })
+   574→      if (!po) return notFound('Purchase order not found')
+   575→      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be cancelled')
+   576→      await db.purchaseOrder.update({ where: { id: po.id }, data: { status: 'CANCELLED' } })
+   577→      await logAudit(db, user, {
+   578→        action: 'PO_CANCEL',
+   579→        entityType: 'PURCHASE_ORDER',
+   580→        entityRef: po.id,
+   581→        detail: `Cancelled ${po.qty} × ${po.medicine.name}`,
+   582→      })
+   583→      const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
+   584→      if (!fresh) return notFound('Purchase order not found')
+   585→      return Response.json({ order: poToRow(fresh) })
+   586→    }
+   587→
+   588→    if (action === 'create-medicine') {
+   589→      const parsed = await buildMedicineData(body.data, 'create')
+   590→      if ('error' in parsed) return badRequest(parsed.error)
+   591→      const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+   592→      if (medicine.stock > 0) {
+   593→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
+   594→      }
+   595→      return Response.json({ medicine }, { status: 201 })
+   596→    }
+   597→
+   598→    if (action === 'update-medicine') {
+   599→      const id = optStr(body.id)
+   600→      if (!id) return badRequest('Medicine id is required')
+   601→      const existing = await db.medicine.findUnique({ where: { id } })
+   602→      if (!existing) return notFound('Medicine not found')
+   603→      const parsed = await buildMedicineData(body.data, 'update')
+   604→      if ('error' in parsed) return badRequest(parsed.error)
+   605→      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
+   606→      const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+   607→      if (newStock !== undefined && newStock !== existing.stock) {
+   608→        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+   609→      }
+   610→      return Response.json({ medicine })
+   611→    }
+   612→
+   613→    if (action === 'answer' || action === 'reject') {
+   614→      const id = optStr(body.id)
+   615→      if (!id) return badRequest('Question id is required')
+   616→      const existing = await db.question.findUnique({ where: { id } })
+   617→      if (!existing) return notFound('Question not found')
+   618→
+   619→      if (action === 'answer') {
+   620→        const answer = typeof body.answer === 'string' ? body.answer.trim() : ''
+   621→        if (answer.length < 2) return badRequest('Answer must be at least 2 characters')
+   622→        if (answer.length > MAX_ANSWER_LENGTH) return badRequest(`Answer must be ${MAX_ANSWER_LENGTH} characters or less`)
+   623→        await db.question.update({
+   624→          where: { id },
+   625→          data: { answer, status: 'ANSWERED', answeredById: user.id, answeredAt: new Date() },
+   626→        })
+   627→        // Notify the asker so they come back to read the answer (skip on re-answer of same content)
+   628→        const medicineName = existing.medicineId
+   629→          ? (await db.medicine.findUnique({ where: { id: existing.medicineId }, select: { name: true } }))?.name ?? 'a medicine'
+   630→          : 'a medicine'
+   631→        await notify(
+   632→          existing.userId,
+   633→          'Your question was answered',
+   634→          `A pharmacist answered your question about ${medicineName}: "${answer.slice(0, 120)}${answer.length > 120 ? '…' : ''}"`
+   635→        )
+   636→      } else {
+   637→        await db.question.update({
+   638→          where: { id },
+   639→          data: { status: 'REJECTED', answer: null, answeredById: null, answeredAt: null },
+   640→        })
+   641→      }
+   642→
+   643→      const updated = await db.question.findUnique({ where: { id }, include: questionInclude })
+   644→      if (!updated) return notFound('Question not found')
+   645→      return Response.json({ question: questionToJson(updated) })
+   646→    }
+   647→
+   648→    return badRequest('Invalid action')
+   649→  } catch (e) {
+   650→    return serverError(e)
+   651→  }
+   652→}
+   653→

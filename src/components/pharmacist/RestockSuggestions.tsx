@@ -10,6 +10,7 @@ import {
   PackagePlus,
   PackageSearch,
   RefreshCw,
+  ShoppingCart,
   TriangleAlert,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -19,6 +20,16 @@ import { fmtBDT } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { RestockSuggestion } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -71,10 +82,10 @@ function RestockSkeleton() {
       <Card className="gap-0 py-4">
         <CardContent className="px-4">
           <div className="overflow-x-auto rounded-md border scrollbar-thin">
-            <Table className="min-w-[880px]">
+            <Table className="min-w-[940px]">
               <TableHeader>
                 <TableRow>
-                  {[...Array(7)].map((_, i) => (
+                  {[...Array(8)].map((_, i) => (
                     <TableHead key={i}>
                       <Skeleton className="h-4 w-16" />
                     </TableHead>
@@ -84,7 +95,7 @@ function RestockSkeleton() {
               <TableBody>
                 {[...Array(3)].map((_, i) => (
                   <TableRow key={`sk-${i}`}>
-                    <TableCell colSpan={7}>
+                    <TableCell colSpan={8}>
                       <Skeleton className="h-10 w-full" />
                     </TableCell>
                   </TableRow>
@@ -109,13 +120,22 @@ export function buildPoDraft(list: RestockSuggestion[]): string {
   return ['MediPlus restock draft — ' + date, ...lines].join('\n')
 }
 
-export default function RestockSuggestions() {
+interface RestockSuggestionsProps {
+  /** Notify the dashboard so nav badges/stats stay in sync after creating POs. */
+  onStatsChanged?: () => void
+}
+
+export default function RestockSuggestions({ onStatsChanged }: RestockSuggestionsProps) {
   const [suggestions, setSuggestions] = useState<RestockSuggestion[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [exportPending, setExportPending] = useState(false)
   const [copying, setCopying] = useState(false)
+  // Per-row create-po pending ids (Round 10)
+  const [orderingIds, setOrderingIds] = useState<Set<string>>(new Set())
+  const [orderAllPending, setOrderAllPending] = useState(false)
+  const [orderAllConfirm, setOrderAllConfirm] = useState(false)
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true)
@@ -150,6 +170,75 @@ export default function RestockSuggestions() {
       critical: list.filter((s) => s.daysLeft === 0 || s.stock === 0).length,
     }
   }, [suggestions])
+
+  /** Lines that still need a PO (not already covered by an open one). */
+  const needOrdering = useMemo(() => {
+    const list = suggestions ?? []
+    return list.filter((s) => (s.openPoQty ?? 0) < s.suggestedQty)
+  }, [suggestions])
+
+  function openPoQtyOf(s: RestockSuggestion): number {
+    return s.openPoQty ?? 0
+  }
+
+  async function createPo(s: RestockSuggestion): Promise<void> {
+    setOrderingIds((prev) => {
+      const next = new Set(prev)
+      next.add(s.id)
+      return next
+    })
+    try {
+      await api<{ order: unknown }>('/api/pharmacist', {
+        method: 'PUT',
+        body: { action: 'create-po', medicineId: s.id, qty: s.suggestedQty },
+      })
+      toast.success(`PO created — ${s.suggestedQty} × ${s.name}`)
+      onStatsChanged?.()
+      await load(true) // silent refresh so openPoQty / coverage chips update
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create purchase order')
+    } finally {
+      setOrderingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(s.id)
+        return next
+      })
+    }
+  }
+
+  async function orderAll() {
+    if (needOrdering.length === 0) return
+    setOrderAllPending(true)
+    let ok = 0
+    let failed = 0
+    let firstError: string | null = null
+    try {
+      for (const s of needOrdering) {
+        try {
+          await api<{ order: unknown }>('/api/pharmacist', {
+            method: 'PUT',
+            body: { action: 'create-po', medicineId: s.id, qty: s.suggestedQty },
+          })
+          ok++
+        } catch (e) {
+          failed++
+          if (!firstError) firstError = e instanceof Error ? e.message : 'Unknown error'
+        }
+      }
+      if (ok > 0) {
+        toast.success(`Created ${ok} purchase order${ok === 1 ? '' : 's'}${failed > 0 ? ` — ${failed} failed` : ''}`)
+        onStatsChanged?.()
+        await load(true)
+      }
+      if (failed > 0) {
+        toast.error(`Failed ${failed} order${failed === 1 ? '' : 's'} — ${firstError ?? 'unknown error'}`)
+        await load(true)
+      }
+    } finally {
+      setOrderAllPending(false)
+      setOrderAllConfirm(false)
+    }
+  }
 
   async function exportCsv() {
     setExportPending(true)
@@ -219,6 +308,27 @@ export default function RestockSuggestions() {
             )}
             Export CSV
           </Button>
+          {needOrdering.length === 0 && suggestions && suggestions.length > 0 ? (
+            <span title="All lines already covered">
+              <Button variant="default" disabled title="All lines already covered">
+                <PackagePlus className="h-4 w-4" />
+                Order all
+              </Button>
+            </span>
+          ) : (
+            <Button
+              variant="default"
+              onClick={() => setOrderAllConfirm(true)}
+              disabled={orderAllPending || !suggestions || suggestions.length === 0}
+            >
+              {orderAllPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <PackagePlus className="h-4 w-4" />
+              )}
+              Order all
+            </Button>
+          )}
         </div>
       </div>
 
@@ -290,6 +400,7 @@ export default function RestockSuggestions() {
                       <TableHead className="text-right">Days left</TableHead>
                       <TableHead className="text-right">Suggested qty</TableHead>
                       <TableHead className="text-right">Est. value</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -361,6 +472,45 @@ export default function RestockSuggestions() {
                           <TableCell className="whitespace-nowrap text-right text-sm font-medium">
                             {fmtBDT(s.estValue)}
                           </TableCell>
+                          <TableCell className="whitespace-nowrap">
+                            <div className="flex flex-col items-end gap-1">
+                              {openPoQtyOf(s) > 0 && (
+                                <span
+                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 tabular-nums dark:bg-amber-500/15 dark:text-amber-300"
+                                  title={`${openPoQtyOf(s)} units of this line are on an open purchase order`}
+                                >
+                                  PO {openPoQtyOf(s)} on order
+                                </span>
+                              )}
+                              {openPoQtyOf(s) >= s.suggestedQty ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled
+                                  title="This line is already covered by an open PO"
+                                  className="h-8 border-emerald-300! bg-emerald-100! text-emerald-700! dark:border-emerald-700/60! dark:bg-emerald-950/40! dark:text-emerald-300!"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  Ordered ✓
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-8 focus-visible:ring-primary/30"
+                                  disabled={orderingIds.has(s.id)}
+                                  onClick={() => void createPo(s)}
+                                >
+                                  {orderingIds.has(s.id) ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <ShoppingCart className="h-3.5 w-3.5" />
+                                  )}
+                                  Mark as ordered
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
                         </TableRow>
                       )
                     })}
@@ -376,6 +526,33 @@ export default function RestockSuggestions() {
           </p>
         </>
       )}
+
+      {/* Order-all confirm */}
+      <AlertDialog open={orderAllConfirm} onOpenChange={setOrderAllConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Create purchase orders for all suggested lines?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {needOrdering.length} order{needOrdering.length === 1 ? '' : 's'}, ~
+              {fmtBDT(needOrdering.reduce((sum, s) => sum + s.estValue, 0))} total — lines already
+              fully covered by an open PO are skipped.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={orderAllPending}>Go back</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={orderAllPending}
+              onClick={(e) => {
+                e.preventDefault()
+                void orderAll()
+              }}
+            >
+              {orderAllPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Create {needOrdering.length} order{needOrdering.length === 1 ? '' : 's'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

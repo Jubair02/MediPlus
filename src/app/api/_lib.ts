@@ -187,6 +187,66 @@ export async function notify(userId: string, title: string, message: string): Pr
   await db.notification.create({ data: { userId, title, message } })
 }
 
+// ---------- prescription approval expiry (Round 10) ----------
+
+export const RX_VALIDITY_DAYS = 90
+export const RX_EXPIRY_WARNING_DAYS = 14
+
+export interface RxExpiryInfo {
+  reviewedAt: Date | null
+  expiresAt: Date | null
+  daysLeft: number | null
+  expiringSoon: boolean
+}
+
+/**
+ * Approval-expiry math for prescriptions — SINGLE SOURCE used by both the pharmacist
+ * prescriptions resource and the customer GET /api/prescriptions.
+ * An APPROVED prescription is valid for RX_VALIDITY_DAYS days from `reviewedAt`.
+ * daysLeft ≤ 0 means expired; expiringSoon includes already-expired rows
+ * (daysLeft ≤ RX_EXPIRY_WARNING_DAYS). Non-APPROVED rows / missing reviewedAt → nulls + false.
+ */
+export function rxExpiryFields(status: string, reviewedAt: Date | null): RxExpiryInfo {
+  if (status !== 'APPROVED' || !reviewedAt) {
+    return { reviewedAt, expiresAt: null, daysLeft: null, expiringSoon: false }
+  }
+  const expiresAt = new Date(reviewedAt.getTime() + RX_VALIDITY_DAYS * 24 * 60 * 60 * 1000)
+  const daysLeft = Math.ceil((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+  return { reviewedAt, expiresAt, daysLeft, expiringSoon: daysLeft <= RX_EXPIRY_WARNING_DAYS }
+}
+
+// ---------- audit log (Round 10) ----------
+
+export interface AuditEntry {
+  action: string
+  entityType: string
+  entityRef: string
+  detail?: string | null
+}
+
+/**
+ * Append an AuditLog row (actor snapshot: id (nullable) + name/email/role).
+ * Pass a transaction client (tx) to keep it atomic with the caller's writes, or `db` standalone.
+ */
+export async function logAudit(
+  client: Prisma.TransactionClient | typeof db,
+  actor: { id?: string; name?: string | null; email: string; role: string },
+  entry: AuditEntry
+): Promise<void> {
+  await client.auditLog.create({
+    data: {
+      action: entry.action,
+      entityType: entry.entityType,
+      entityRef: entry.entityRef,
+      detail: entry.detail ?? null,
+      actorId: actor.id ?? null,
+      actorName: actor.name ?? 'System',
+      actorEmail: actor.email,
+      actorRole: actor.role,
+    },
+  })
+}
+
 // ---------- coupons ----------
 
 export interface CouponResult {

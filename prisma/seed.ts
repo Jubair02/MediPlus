@@ -39,7 +39,8 @@ async function main() {
   await prisma.cartItem.deleteMany()
   await prisma.address.deleteMany()
   await prisma.coupon.deleteMany()
-  await prisma.medicine.deleteMany()
+  await prisma.auditLog.deleteMany() // audit rows survive user deletes via SetNull — clear them explicitly
+  await prisma.medicine.deleteMany() // cascades PurchaseOrder + StockMovement + HelpfulVote rows
   await prisma.category.deleteMany()
   await prisma.user.deleteMany()
 
@@ -171,6 +172,8 @@ async function main() {
       status: 'APPROVED',
       reviewNote: 'Valid prescription, medicines verified.',
       reviewedById: pharmacist.id,
+      // Round 10 — backdated so the 90-day approval-expiry demo fires (expires in ~5 days)
+      reviewedAt: daysAgo(85),
     },
   })
   await prisma.prescription.create({
@@ -254,6 +257,52 @@ async function main() {
       { userId: customer.id, title: 'Prescription approved', message: 'Your prescription has been approved by our pharmacist.' },
     ],
   })
+
+  // ---------- Purchase Orders (Round 10) ----------
+  console.log('Seeding purchase orders...')
+  const poSeeds = [
+    { medName: 'Amoxin 500mg', qty: 100, status: 'RECEIVED', note: 'Supplier: Square Pharma', orderedAt: daysAgo(7), receivedAt: daysAgo(5) as Date | null },
+    { medName: 'Crepe Bandage 4 inch', qty: 60, status: 'ORDERED', note: 'Supplier: Square Pharma', orderedAt: daysAgo(2), receivedAt: null as Date | null },
+    { medName: 'Digital BP Monitor', qty: 10, status: 'ORDERED', note: 'Supplier: Roche Distributor', orderedAt: daysAgo(1), receivedAt: null as Date | null },
+  ]
+  let receivedPoId: string | null = null
+  for (const s of poSeeds) {
+    const med = medIds[s.medName]
+    if (!med) continue
+    // idempotent guard: skip when an identical (medicineId, qty, status, note) PO already exists
+    const existing = await prisma.purchaseOrder.findFirst({ where: { medicineId: med.id, qty: s.qty, status: s.status, note: s.note } })
+    if (existing) {
+      if (s.status === 'RECEIVED') receivedPoId = existing.id
+      continue
+    }
+    const po = await prisma.purchaseOrder.create({
+      data: {
+        medicineId: med.id,
+        qty: s.qty,
+        status: s.status,
+        note: s.note,
+        orderedById: pharmacist.id,
+        receivedById: s.status === 'RECEIVED' ? pharmacist.id : null,
+        orderedAt: s.orderedAt,
+        receivedAt: s.receivedAt,
+      },
+    })
+    if (s.status === 'RECEIVED') receivedPoId = po.id
+  }
+
+  // ---------- Audit Log samples (Round 10) ----------
+  console.log('Seeding audit log samples...')
+  const auditSeeds = [
+    { actorId: pharmacist.id, actorName: pharmacist.name ?? 'Pharmacist', actorEmail: pharmacist.email, actorRole: pharmacist.role, action: 'RX_REVIEW', entityType: 'PRESCRIPTION', entityRef: rxApproved.id, detail: 'Approved prescription for customer@medplus.com', createdAt: daysAgo(6) },
+    { actorId: admin.id, actorName: admin.name ?? 'Admin', actorEmail: admin.email, actorRole: admin.role, action: 'PAYMENT_STATUS', entityType: 'PAYMENT', entityRef: 'MP-100001', detail: 'Payment status set to PAID', createdAt: daysAgo(4) },
+    ...(receivedPoId ? [{ actorId: pharmacist.id, actorName: pharmacist.name ?? 'Pharmacist', actorEmail: pharmacist.email, actorRole: pharmacist.role, action: 'PO_RECEIVE', entityType: 'PURCHASE_ORDER', entityRef: receivedPoId, detail: 'Received 100 × Amoxin 500mg', createdAt: daysAgo(5) }] : []),
+  ]
+  for (const a of auditSeeds) {
+    // idempotent guard: skip when an identical (action, entityRef, detail) entry already exists
+    const existing = await prisma.auditLog.findFirst({ where: { action: a.action, entityRef: a.entityRef, detail: a.detail } })
+    if (existing) continue
+    await prisma.auditLog.create({ data: a })
+  }
 
   // ---------- Auth tokens for quick demo login (informational) ----------
   const demoAccounts = [

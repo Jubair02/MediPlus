@@ -1,10 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, FileCheck, Loader2, Mail, Phone, XCircle } from 'lucide-react'
+import { CheckCircle2, Clock, FileCheck, Loader2, Mail, Phone, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { fmtDateTime } from '@/lib/format'
+import { fmtDate, fmtDateTime } from '@/lib/format'
 import type { Prescription } from '@/lib/types'
 import {
   AlertDialog,
@@ -46,6 +46,45 @@ function RxStatusBadge({ status }: { status: Prescription['status'] }) {
       className={`border ${RX_STATUS_TONES[status]}`}
     >
       {status}
+    </Badge>
+  )
+}
+
+/** Round 10 — approval validity chip (APPROVED rows; fields may be absent on stale responses). */
+function RxExpiryChip({ rx }: { rx: Prescription }) {
+  const daysLeft = rx.daysLeft ?? null
+  if (rx.status !== 'APPROVED' || daysLeft === null) return null
+  if (daysLeft <= 0) {
+    return (
+      <Badge
+        variant="outline"
+        className="border border-red-300 bg-red-100 text-red-800 dark:text-red-300"
+        title={rx.expiresAt ? `Expired on ${fmtDate(rx.expiresAt)}` : undefined}
+      >
+        Expired
+      </Badge>
+    )
+  }
+  if (daysLeft <= 7) {
+    return (
+      <Badge variant="outline" className="border border-red-300 bg-red-100 text-red-800 dark:text-red-300">
+        Expires in {daysLeft}d
+      </Badge>
+    )
+  }
+  if (daysLeft <= 14) {
+    return (
+      <Badge
+        variant="outline"
+        className="border border-amber-300 bg-amber-100 text-amber-800 dark:text-amber-300"
+      >
+        Expires in {daysLeft}d
+      </Badge>
+    )
+  }
+  return (
+    <Badge variant="outline" className="border-muted bg-muted text-muted-foreground">
+      Valid {daysLeft}d
     </Badge>
   )
 }
@@ -202,12 +241,19 @@ export default function PharmacistPrescriptions({ onStatsChanged }: { onStatsCha
                         )}
                       </div>
                       {p.note && <p className="line-clamp-2 text-xs text-muted-foreground">{p.note}</p>}
+                      {p.status === 'APPROVED' && p.expiresAt && (
+                        <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                          <Clock className="size-3.5" aria-hidden="true" />
+                          Valid until {fmtDate(p.expiresAt)}
+                        </p>
+                      )}
                       <div className="flex flex-wrap items-center gap-1.5">
                         {p.orderNo && (
                           <Badge variant="secondary" className="font-mono text-[10px]">
                             {p.orderNo}
                           </Badge>
                         )}
+                        <RxExpiryChip rx={p} />
                         <span className="text-[11px] text-muted-foreground">
                           {fmtDateTime(p.createdAt)}
                         </span>

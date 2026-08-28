@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { FileText, FileWarning, Info, Loader2, LogIn, UploadCloud } from 'lucide-react'
+import { Clock, FileText, FileWarning, Info, Loader2, LogIn, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, fileToCompressedDataUrl } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
@@ -26,6 +26,20 @@ const statusBadgeClass: Record<Prescription['status'], string> = {
   PENDING: 'bg-amber-100 text-amber-800',
   APPROVED: 'bg-emerald-100 text-emerald-700',
   REJECTED: 'bg-red-100 text-red-700',
+}
+
+/** Approval-validity chip — red when expired/≤7d, amber ≤14d, subtle outline when comfortably valid. */
+function expiryChipClass(daysLeft: number): string {
+  if (daysLeft <= 0) return 'border-red-300 bg-red-100 text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300'
+  if (daysLeft <= 7) return 'border-red-300 bg-red-100 text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300'
+  if (daysLeft <= 14) return 'border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300'
+  return 'border-border bg-muted text-muted-foreground'
+}
+
+function expiryChipLabel(daysLeft: number): string {
+  if (daysLeft <= 0) return 'Expired'
+  if (daysLeft <= 14) return `Expires in ${daysLeft}d`
+  return `Valid ${daysLeft}d`
 }
 
 export default function PrescriptionsView() {
@@ -306,6 +320,30 @@ export default function PrescriptionsView() {
                           {p.status}
                         </Badge>
                       </div>
+                      {p.status === 'APPROVED' && p.expiresAt && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                            <Clock className="size-3.5" aria-hidden="true" />
+                            Valid until {fmtDate(p.expiresAt)}
+                          </span>
+                          {p.daysLeft != null && (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                'rounded-md border tabular-nums',
+                                expiryChipClass(p.daysLeft)
+                              )}
+                              title={
+                                p.daysLeft <= 0 && p.expiresAt
+                                  ? `Expired on ${fmtDate(p.expiresAt)}`
+                                  : `Valid until ${fmtDate(p.expiresAt)}`
+                              }
+                            >
+                              {expiryChipLabel(p.daysLeft)}
+                            </Badge>
+                          )}
+                        </div>
+                      )}
                       {p.note ? (
                         <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{p.note}</p>
                       ) : (

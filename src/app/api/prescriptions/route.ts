@@ -1,8 +1,10 @@
 import { db } from '@/lib/db'
 import { getAuthUser, unauthorized, badRequest, serverError } from '@/lib/auth'
-import { readJson } from '../_lib'
+import { readJson, rxExpiryFields, RX_EXPIRY_WARNING_DAYS } from '../_lib'
 
-/** GET /api/prescriptions (Bearer) → my prescriptions (no image), newest first, with orderNo */
+/** GET /api/prescriptions (Bearer) → my prescriptions (no image), newest first, with orderNo.
+ *  APPROVED rows additionally carry reviewedAt / expiresAt / daysLeft / expiringSoon (90-day validity).
+ *  Read-time side-effect: deduped 'expiring soon / expired' reminder notifications — never fails the GET. */
 export async function GET(request: Request) {
   try {
     const user = await getAuthUser(request)
@@ -14,26 +16,56 @@ export async function GET(request: Request) {
         note: true,
         status: true,
         reviewNote: true,
+        reviewedAt: true,
         createdAt: true,
         updatedAt: true,
         order: { select: { id: true, orderNo: true } },
       },
       orderBy: { createdAt: 'desc' },
     })
-    return Response.json({
-      prescriptions: prescriptions.map((p) => ({
-        id: p.id,
-        note: p.note,
-        status: p.status,
-        reviewNote: p.reviewNote,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-        orderNo: p.order?.orderNo ?? null,
-        orderId: p.order?.id ?? null,
-      })),
-    })
+    const rows = prescriptions.map((p) => ({
+      id: p.id,
+      note: p.note,
+      status: p.status,
+      reviewNote: p.reviewNote,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      orderNo: p.order?.orderNo ?? null,
+      orderId: p.order?.id ?? null,
+      ...rxExpiryFields(p.status, p.reviewedAt),
+    }))
+    await sendExpiryReminders(user.id, rows)
+    return Response.json({ prescriptions: rows })
   } catch (e) {
     return serverError(e)
+  }
+}
+
+/**
+ * Best-effort reminder notifications for APPROVED prescriptions within the warning window
+ * (daysLeft ≤ RX_EXPIRY_WARNING_DAYS, including expired). Deduped per user via title +
+ * message containing the [rx:<id>] token. A failure here must NEVER fail the GET.
+ */
+async function sendExpiryReminders(
+  userId: string,
+  rows: { id: string; status: string; daysLeft: number | null; expiresAt: Date | null }[]
+): Promise<void> {
+  try {
+    for (const p of rows) {
+      if (p.status !== 'APPROVED' || p.daysLeft === null || p.daysLeft > RX_EXPIRY_WARNING_DAYS || !p.expiresAt) continue
+      const title = p.daysLeft <= 0 ? 'Prescription expired' : 'Prescription expiring soon'
+      const dateStr = p.expiresAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+      const message =
+        p.daysLeft <= 0
+          ? `Your approved prescription [rx:${p.id}] expired on ${dateStr}. Please upload a fresh prescription for future orders.`
+          : `Your approved prescription [rx:${p.id}] expires on ${dateStr} (${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left). Please upload a fresh prescription for future orders.`
+      const existing = await db.notification.findFirst({
+        where: { userId, title, message: { contains: `[rx:${p.id}]` } },
+      })
+      if (!existing) await db.notification.create({ data: { userId, title, message } })
+    }
+  } catch {
+    // reminder failure must not fail the GET — intentionally swallowed
   }
 }
 

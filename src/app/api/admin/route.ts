@@ -16,6 +16,7 @@ import {
   addressFromJson,
   escapeCsv,
   recordStockMovements,
+  logAudit,
   type StockMovementEntry,
 } from '../_lib'
 import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
@@ -26,6 +27,9 @@ const PAYMENT_METHODS = ['COD', 'BKASH_DEMO']
 const PAYMENTS_PAGE_SIZE = 20
 const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
 const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
+/** Round 10 — audit log filter values + page size. */
+const AUDIT_ACTIONS = ['PAYMENT_STATUS', 'ORDER_STATUS', 'RX_REVIEW', 'PO_CREATE', 'PO_RECEIVE', 'PO_CANCEL', 'USER_STATUS']
+const AUDIT_PAGE_SIZE = 20
 
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
@@ -343,7 +347,10 @@ function paymentsSummary(rows: PaymentLedgerRow[]) {
   }
 }
 
-/** GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|payments|payments-export|export-orders|export-medicines|export-users|export-report|export-delivery */
+/**
+ * GET /api/admin?resource=stats|users|medicines|categories|orders|coupons|staff|reports|delivery-performance|payments|payments-export|audit-logs|export-orders|export-medicines|export-users|export-report|export-delivery
+ *  audit-logs: ?action=<one of 7 actions or ALL (invalid/ALL ignored)> &search=<actorEmail|actorName|entityRef|detail> &page=<clamped 1..totalPages> (20/page)
+ */
 export async function GET(request: Request) {
   try {
     const user = await requireRole(request, ['ADMIN'])
@@ -696,6 +703,63 @@ export async function GET(request: Request) {
       return Response.json({ filename: `payments-${csvDate(new Date())}.csv`, csv: [csvRow(header), ...rows].join('\n') })
     }
 
+    if (resource === 'audit-logs') {
+      const action = sp.get('action')
+      const search = sp.get('search')?.trim() ?? ''
+      // action must be one of the 7 known values — anything else (incl. 'ALL') is ignored → unfiltered
+      const where: Prisma.AuditLogWhereInput = {}
+      if (action && AUDIT_ACTIONS.includes(action)) where.action = action
+      if (search) {
+        where.OR = [
+          { actorEmail: { contains: search } },
+          { actorName: { contains: search } },
+          { entityRef: { contains: search } },
+          { detail: { contains: search } },
+        ]
+      }
+      const [total, groups] = await Promise.all([
+        db.auditLog.count({ where }),
+        // GLOBAL per-action counts — never affected by the action/search filters
+        db.auditLog.groupBy({ by: ['action'], _count: { _all: true } }),
+      ])
+      const byAction = new Map(groups.map((g) => [g.action, g._count._all]))
+      const counts = {
+        ALL: groups.reduce((s, g) => s + g._count._all, 0),
+        PAYMENT_STATUS: byAction.get('PAYMENT_STATUS') ?? 0,
+        ORDER_STATUS: byAction.get('ORDER_STATUS') ?? 0,
+        RX_REVIEW: byAction.get('RX_REVIEW') ?? 0,
+        PO_CREATE: byAction.get('PO_CREATE') ?? 0,
+        PO_RECEIVE: byAction.get('PO_RECEIVE') ?? 0,
+        PO_CANCEL: byAction.get('PO_CANCEL') ?? 0,
+        USER_STATUS: byAction.get('USER_STATUS') ?? 0,
+      }
+      const totalPages = Math.max(1, Math.ceil(total / AUDIT_PAGE_SIZE))
+      const page = Math.min(Math.max(1, numOr(sp.get('page'), 1)), totalPages)
+      const rows = await db.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * AUDIT_PAGE_SIZE,
+        take: AUDIT_PAGE_SIZE,
+      })
+      return Response.json({
+        rows: rows.map((r) => ({
+          id: r.id,
+          actorName: r.actorName,
+          actorEmail: r.actorEmail,
+          actorRole: r.actorRole,
+          action: r.action,
+          entityType: r.entityType,
+          entityRef: r.entityRef,
+          detail: r.detail,
+          createdAt: r.createdAt,
+        })),
+        page,
+        totalPages,
+        total,
+        counts,
+      })
+    }
+
     if (resource === 'delivery-performance') {
       return Response.json(await deliveryPerformance())
     }
@@ -729,11 +793,11 @@ export async function GET(request: Request) {
 
 /**
  * PUT /api/admin
- *  {action:'update-user', id, status?, role?}
+ *  {action:'update-user', id, status?, role?}          — status change writes a USER_STATUS audit entry
  *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...}
  *  {action:'create-category'|'update-category'|'delete-category', ...}
- *  {action:'update-order', id, status?, deliveryStaffId?}
- *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED}
+ *  {action:'update-order', id, status?, deliveryStaffId?} — status change writes an ORDER_STATUS audit entry
+ *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED} — writes a PAYMENT_STATUS audit entry
  *  {action:'create-staff', data:{name,email,password,phone?,role}}
  *  {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}}
  *  {action:'update-coupon', id, coupon:{...partial coupon fields}}
@@ -768,6 +832,14 @@ export async function PUT(request: Request) {
           ...(role ? { role } : {}),
         },
       })
+      if (status && status !== target.status) {
+        await logAudit(db, user, {
+          action: 'USER_STATUS',
+          entityType: 'USER',
+          entityRef: target.email,
+          detail: `User status set to ${status}`,
+        })
+      }
       return Response.json({ user: publicUser(updated) })
     }
 
@@ -1003,6 +1075,12 @@ export async function PUT(request: Request) {
       if (status && status !== order.status) {
         const label = ORDER_STATUS_LABELS[status as OrderStatus] ?? status
         await notify(order.userId, label, `Order ${order.orderNo} status updated to ${label}.`)
+        await logAudit(db, user, {
+          action: 'ORDER_STATUS',
+          entityType: 'ORDER',
+          entityRef: order.orderNo,
+          detail: `Order status set to ${label}`,
+        })
       }
 
       const full = await db.order.findUnique({ where: { id: updated.id }, include: orderInclude })
@@ -1016,12 +1094,18 @@ export async function PUT(request: Request) {
       const status = optStr(body.status)
       if (!orderId) return badRequest('Order id is required')
       if (!status || !PAYMENT_STATUSES.includes(status)) return badRequest('Invalid payment status')
-      const existing = await db.order.findUnique({ where: { id: orderId }, select: { id: true } })
+      const existing = await db.order.findUnique({ where: { id: orderId }, select: { id: true, orderNo: true } })
       if (!existing) return notFound('Order not found')
       await db.$transaction(async (tx) => {
         await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } })
         const payment = await tx.payment.findUnique({ where: { orderId } })
         if (payment) await tx.payment.update({ where: { id: payment.id }, data: { status } })
+        await logAudit(tx, user, {
+          action: 'PAYMENT_STATUS',
+          entityType: 'PAYMENT',
+          entityRef: existing.orderNo,
+          detail: `Payment status set to ${status}`,
+        })
       })
       const full = await db.order.findUnique({ where: { id: orderId }, include: orderInclude })
       if (!full) return notFound('Order not found')

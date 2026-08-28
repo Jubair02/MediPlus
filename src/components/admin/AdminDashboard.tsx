@@ -8,6 +8,7 @@ import {
   FolderTree,
   LayoutDashboard,
   Pill,
+  ScrollText,
   ShoppingBag,
   Ticket,
   Users,
@@ -26,6 +27,7 @@ import AdminCoupons from './AdminCoupons'
 import AdminUsers from './AdminUsers'
 import AdminStaff from './AdminStaff'
 import AdminReports from './AdminReports'
+import AdminAuditLog from './AdminAuditLog'
 
 type AdminTab =
   | 'overview'
@@ -37,6 +39,7 @@ type AdminTab =
   | 'users'
   | 'staff'
   | 'reports'
+  | 'audit'
 
 const NAV: { id: AdminTab; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -48,6 +51,7 @@ const NAV: { id: AdminTab; label: string; icon: LucideIcon }[] = [
   { id: 'users', label: 'Users', icon: Users },
   { id: 'staff', label: 'Staff', icon: BriefcaseMedical },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
+  { id: 'audit', label: 'Audit Log', icon: ScrollText },
 ]
 
 const TITLES: Record<AdminTab, { title: string; subtitle: string }> = {
@@ -60,6 +64,7 @@ const TITLES: Record<AdminTab, { title: string; subtitle: string }> = {
   users: { title: 'Users', subtitle: 'Accounts, roles and access control' },
   staff: { title: 'Staff', subtitle: 'Pharmacists and delivery personnel' },
   reports: { title: 'Reports', subtitle: 'Sales and performance analytics' },
+  audit: { title: 'Audit Log', subtitle: 'Every sensitive action, with who did it and when.' },
 }
 
 export default function AdminDashboard() {
@@ -156,6 +161,7 @@ export default function AdminDashboard() {
           {activeTab === 'users' && <AdminUsers />}
           {activeTab === 'staff' && <AdminStaff />}
           {activeTab === 'reports' && <AdminReports />}
+          {activeTab === 'audit' && <AdminAuditLog />}
         </motion.div>
       </section>
     </div>

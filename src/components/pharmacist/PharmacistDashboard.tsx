@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
+  ClipboardList,
   FileCheck,
   History,
   LayoutDashboard,
@@ -21,6 +22,7 @@ import PharmacistOverview from './PharmacistOverview'
 import PharmacistPrescriptions from './PharmacistPrescriptions'
 import PharmacistQA from './PharmacistQA'
 import PharmacistMedicines from './PharmacistMedicines'
+import PurchaseOrders from './PurchaseOrders'
 import RestockSuggestions from './RestockSuggestions'
 import StockLog from './StockLog'
 import PharmacistOrders from './PharmacistOrders'
@@ -31,6 +33,7 @@ type PharmacistTab =
   | 'qa'
   | 'medicines'
   | 'restock'
+  | 'purchase-orders'
   | 'stocklog'
   | 'orders'
 
@@ -40,6 +43,7 @@ const NAV: { id: PharmacistTab; label: string; icon: LucideIcon }[] = [
   { id: 'qa', label: 'Q&A', icon: MessageCircleQuestion },
   { id: 'medicines', label: 'Medicines', icon: Pill },
   { id: 'restock', label: 'Restock', icon: PackagePlus },
+  { id: 'purchase-orders', label: 'Purchase Orders', icon: ClipboardList },
   { id: 'stocklog', label: 'Stock Log', icon: History },
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
 ]
@@ -50,6 +54,10 @@ const TITLES: Record<PharmacistTab, { title: string; subtitle: string }> = {
   qa: { title: 'Customer questions', subtitle: 'Answer product questions from customers' },
   medicines: { title: 'Medicines', subtitle: 'Catalog, pricing and stock management' },
   restock: { title: 'Restock', subtitle: 'Reorder suggestions from the last 30 days of sales' },
+  'purchase-orders': {
+    title: 'Purchase Orders',
+    subtitle: 'Track supplier orders — receiving adds stock automatically.',
+  },
   stocklog: { title: 'Stock Log', subtitle: 'Every stock change with who and why' },
   orders: { title: 'Orders', subtitle: 'Read-only view of incoming orders' },
 }
@@ -111,18 +119,26 @@ export default function PharmacistDashboard() {
 
   const pending = stats?.pendingPrescriptions ?? 0
   const pendingQuestions = qaCounts?.PENDING ?? 0
+  const openPos = stats?.openPoCount ?? 0
   const meta = TITLES[activeTab]
 
   const renderBadge = (id: PharmacistTab) => {
-    const show = (id === 'prescriptions' && pending > 0) || (id === 'qa' && pendingQuestions > 0)
-    if (!show) return null
+    const count =
+      id === 'prescriptions'
+        ? pending
+        : id === 'qa'
+          ? pendingQuestions
+          : id === 'purchase-orders'
+            ? openPos
+            : 0
+    if (count <= 0) return null
     return (
       <span
         className={cn(
-          'ml-auto rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white'
+          'ml-auto rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums'
         )}
       >
-        {id === 'qa' ? pendingQuestions : pending}
+        {count}
       </span>
     )
   }
@@ -207,7 +223,15 @@ export default function PharmacistDashboard() {
           )}
           {activeTab === 'qa' && <PharmacistQA onCountsChanged={setQaCounts} />}
           {activeTab === 'medicines' && <PharmacistMedicines />}
-          {activeTab === 'restock' && <RestockSuggestions />}
+          {activeTab === 'restock' && (
+            <RestockSuggestions onStatsChanged={() => void refreshStats()} />
+          )}
+          {activeTab === 'purchase-orders' && (
+            <PurchaseOrders
+              onStatsChanged={() => void refreshStats()}
+              onGoToRestock={() => setActiveTab('restock')}
+            />
+          )}
           {activeTab === 'stocklog' && <StockLog />}
           {activeTab === 'orders' && <PharmacistOrders />}
         </motion.div>
