@@ -1,0 +1,814 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+     4→import { ImagePlus, Loader2, Minus, PackageSearch, Pencil, Plus, Search, X } from 'lucide-react'
+     5→import { toast } from 'sonner'
+     6→import { api, fileToCompressedDataUrl } from '@/lib/api'
+     7→import { effectivePrice, fmtBDT, fmtDate } from '@/lib/format'
+     8→import type { Category, Medicine } from '@/lib/types'
+     9→import { Badge } from '@/components/ui/badge'
+    10→import { Button } from '@/components/ui/button'
+    11→import { Card, CardContent } from '@/components/ui/card'
+    12→import {
+    13→  Dialog,
+    14→  DialogContent,
+    15→  DialogDescription,
+    16→  DialogFooter,
+    17→  DialogHeader,
+    18→  DialogTitle,
+    19→} from '@/components/ui/dialog'
+    20→import { Input } from '@/components/ui/input'
+    21→import { Label } from '@/components/ui/label'
+    22→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    23→import { Skeleton } from '@/components/ui/skeleton'
+    24→import { Switch } from '@/components/ui/switch'
+    25→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    26→import { Textarea } from '@/components/ui/textarea'
+    27→import MedImage from './MedImage'
+    28→
+    29→const UNITS = ['piece', 'strip', 'bottle', 'box', 'tube'] as const
+    30→
+    31→const MAX_EXTRA_IMAGES = 5
+    32→
+    33→interface FormState {
+    34→  name: string
+    35→  genericName: string
+    36→  brand: string
+    37→  manufacturer: string
+    38→  description: string
+    39→  categoryId: string
+    40→  price: string
+    41→  discountPrice: string
+    42→  stock: string
+    43→  unit: string
+    44→  requiresPrescription: boolean
+    45→  expiryDate: string
+    46→  image: string
+    47→  extraImages: string[]
+    48→  status: 'ACTIVE' | 'INACTIVE'
+    49→}
+    50→
+    51→const EMPTY_FORM: FormState = {
+    52→  name: '',
+    53→  genericName: '',
+    54→  brand: '',
+    55→  manufacturer: '',
+    56→  description: '',
+    57→  categoryId: '',
+    58→  price: '',
+    59→  discountPrice: '',
+    60→  stock: '',
+    61→  unit: 'piece',
+    62→  requiresPrescription: false,
+    63→  expiryDate: '',
+    64→  image: '',
+    65→  extraImages: [],
+    66→  status: 'ACTIVE',
+    67→}
+    68→
+    69→function toForm(m: Medicine): FormState {
+    70→  return {
+    71→    name: m.name,
+    72→    genericName: m.genericName ?? '',
+    73→    brand: m.brand ?? '',
+    74→    manufacturer: m.manufacturer ?? '',
+    75→    description: m.description ?? '',
+    76→    categoryId: m.categoryId ?? '',
+    77→    price: String(m.price),
+    78→    discountPrice: m.discountPrice ? String(m.discountPrice) : '',
+    79→    stock: String(m.stock),
+    80→    unit: m.unit || 'piece',
+    81→    requiresPrescription: m.requiresPrescription,
+    82→    expiryDate: m.expiryDate ? m.expiryDate.slice(0, 10) : '',
+    83→    image: m.image ?? '',
+    84→    extraImages: Array.isArray(m.extraImages)
+    85→      ? m.extraImages.map((src) => normalizeImageSrc(src))
+    86→      : [],
+    87→    status: m.status,
+    88→  }
+    89→}
+    90→
+    91→/**
+    92→ * The API contract requires every extra image to start with `data:image` or http(s):// —
+    93→ * origin-relative paths (e.g. seeded '/images/med-napa.png') are normalized to absolute
+    94→ * URLs here so seeded rows round-trip through update-medicine unchanged in appearance.
+    95→ */
+    96→function normalizeImageSrc(src: string): string {
+    97→  const s = src.trim()
+    98→  if (s.startsWith('/') && typeof window !== 'undefined') return `${window.location.origin}${s}`
+    99→  return s
+   100→}
+   101→
+   102→function isValidImageSrc(src: string): boolean {
+   103→  const s = normalizeImageSrc(src)
+   104→  return s.startsWith('data:image') || /^https?:\/\//i.test(s)
+   105→}
+   106→
+   107→/**
+   108→ * Round 11 — extra-image manager: thumbnail grid with remove buttons, file upload
+   109→ * (compressed via fileToCompressedDataUrl) and URL add. Hard cap of MAX_EXTRA_IMAGES.
+   110→ */
+   111→function ExtraImagesField({
+   112→  value,
+   113→  onChange,
+   114→}: {
+   115→  value: string[]
+   116→  onChange: (next: string[]) => void
+   117→}) {
+   118→  const [urlInput, setUrlInput] = useState('')
+   119→  const [processing, setProcessing] = useState(false)
+   120→  const fileRef = useRef<HTMLInputElement>(null)
+   121→
+   122→  const remaining = MAX_EXTRA_IMAGES - value.length
+   123→  const atCap = remaining <= 0
+   124→
+   125→  function resetFileInput() {
+   126→    if (fileRef.current) fileRef.current.value = ''
+   127→  }
+   128→
+   129→  function addUrl() {
+   130→    const src = urlInput.trim()
+   131→    if (!src || processing) return
+   132→    if (!isValidImageSrc(src)) {
+   133→      toast.error('Image must be an http(s) URL or an image data URL')
+   134→      return
+   135→    }
+   136→    onChange([...value, normalizeImageSrc(src)])
+   137→    setUrlInput('')
+   138→  }
+   139→
+   140→  async function onFilesPicked(files: FileList | null) {
+   141→    if (!files || files.length === 0 || processing) {
+   142→      resetFileInput()
+   143→      return
+   144→    }
+   145→    if (atCap) {
+   146→      toast.warning(`Only ${remaining} more image${remaining === 1 ? '' : 's'} allowed`)
+   147→      resetFileInput()
+   148→      return
+   149→    }
+   150→    const picked = Array.from(files)
+   151→    const images = picked.filter((f) => f.type.startsWith('image/'))
+   152→    if (images.length < picked.length) toast.error('Only image files can be added')
+   153→    if (images.length === 0) {
+   154→      resetFileInput()
+   155→      return
+   156→    }
+   157→    const batch = images.slice(0, remaining)
+   158→    if (images.length > remaining) {
+   159→      toast.warning(`Only ${remaining} more image${remaining === 1 ? '' : 's'} allowed`)
+   160→    }
+   161→    setProcessing(true)
+   162→    try {
+   163→      const added: string[] = []
+   164→      for (const file of batch) {
+   165→        try {
+   166→          added.push(await fileToCompressedDataUrl(file))
+   167→        } catch {
+   168→          toast.error(`Could not process "${file.name}"`)
+   169→        }
+   170→      }
+   171→      if (added.length > 0) onChange([...value, ...added])
+   172→    } finally {
+   173→      setProcessing(false)
+   174→      resetFileInput()
+   175→    }
+   176→  }
+   177→
+   178→  function removeAt(index: number) {
+   179→    if (processing) return
+   180→    onChange(value.filter((_, i) => i !== index))
+   181→  }
+   182→
+   183→  return (
+   184→    <div className="space-y-2.5 rounded-lg border p-3 sm:col-span-2">
+   185→      <div className="flex flex-wrap items-start justify-between gap-2">
+   186→        <div className="space-y-0.5">
+   187→          <Label>Extra images</Label>
+   188→          <p className="text-[11px] text-muted-foreground">Shown as a gallery on the product page</p>
+   189→        </div>
+   190→        <span className="text-[11px] text-muted-foreground tabular-nums">
+   191→          {value.length} / {MAX_EXTRA_IMAGES} images · up to {MAX_EXTRA_IMAGES} extra images
+   192→        </span>
+   193→      </div>
+   194→
+   195→      {value.length > 0 && (
+   196→        <div className="flex flex-wrap gap-2">
+   197→          {value.map((src, i) => (
+   198→            <div key={`extra-${i}`} className="relative">
+   199→              <MedImage
+   200→                src={src}
+   201→                alt={`Extra image ${i + 1}`}
+   202→                className="h-20 w-20 rounded-lg border border-border bg-muted object-cover"
+   203→              />
+   204→              <button
+   205→                type="button"
+   206→                onClick={() => removeAt(i)}
+   207→                disabled={processing}
+   208→                className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full border bg-background/90 text-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-primary/30 focus-visible:outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50"
+   209→                aria-label={`Remove image ${i + 1}`}
+   210→                title={`Remove image ${i + 1}`}
+   211→              >
+   212→                <X className="size-3" />
+   213→              </button>
+   214→            </div>
+   215→          ))}
+   216→        </div>
+   217→      )}
+   218→
+   219→      {!atCap && (
+   220→        <div className="flex flex-col gap-2 sm:flex-row">
+   221→          <input
+   222→            ref={fileRef}
+   223→            type="file"
+   224→            accept="image/*"
+   225→            multiple
+   226→            className="sr-only"
+   227→            tabIndex={-1}
+   228→            aria-hidden="true"
+   229→            onChange={(e) => void onFilesPicked(e.target.files)}
+   230→          />
+   231→          <Button
+   232→            type="button"
+   233→            variant="outline"
+   234→            size="sm"
+   235→            className="h-9 shrink-0 focus-visible:ring-primary/30"
+   236→            disabled={processing}
+   237→            onClick={() => fileRef.current?.click()}
+   238→            title="Upload image files (compressed automatically)"
+   239→            aria-label="Upload extra images"
+   240→          >
+   241→            {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
+   242→            {processing ? 'Processing…' : 'Upload'}
+   243→          </Button>
+   244→          <div className="flex flex-1 items-center gap-2">
+   245→            <Input
+   246→              value={urlInput}
+   247→              onChange={(e) => setUrlInput(e.target.value)}
+   248→              onKeyDown={(e) => {
+   249→                if (e.key === 'Enter') {
+   250→                  e.preventDefault()
+   251→                  addUrl()
+   252→                }
+   253→              }}
+   254→              placeholder="https://… or paste image URL"
+   255→              aria-label="Extra image URL"
+   256→              disabled={processing}
+   257→              className="h-9 flex-1"
+   258→            />
+   259→            <Button
+   260→              type="button"
+   261→              variant="outline"
+   262→              size="sm"
+   263→              className="h-9 shrink-0 focus-visible:ring-primary/30"
+   264→              disabled={processing || urlInput.trim() === ''}
+   265→              onClick={addUrl}
+   266→              title="Add image URL"
+   267→            >
+   268→              <Plus className="h-4 w-4" />
+   269→              Add
+   270→            </Button>
+   271→          </div>
+   272→        </div>
+   273→      )}
+   274→      {atCap && (
+   275→        <p className="text-[11px] text-muted-foreground">
+   276→          Maximum of {MAX_EXTRA_IMAGES} extra images — remove one to add another.
+   277→        </p>
+   278→      )}
+   279→    </div>
+   280→  )
+   281→}
+   282→
+   283→function validate(f: FormState): string | null {
+   284→  if (!f.name.trim()) return 'Medicine name is required'
+   285→  const price = Number(f.price)
+   286→  if (!f.price || Number.isNaN(price) || price <= 0) return 'Price must be greater than 0'
+   287→  const stock = Number(f.stock)
+   288→  if (f.stock === '' || Number.isNaN(stock) || stock < 0) return 'Stock must be 0 or more'
+   289→  if (f.discountPrice.trim() !== '') {
+   290→    const d = Number(f.discountPrice)
+   291→    if (Number.isNaN(d) || d < 0) return 'Discount price must be 0 or more'
+   292→    if (d >= price) return 'Discount price must be lower than the regular price'
+   293→  }
+   294→  return null
+   295→}
+   296→
+   297→function StockChip({ stock }: { stock: number }) {
+   298→  if (stock <= 0)
+   299→    return (
+   300→      <Badge variant="outline" className="border-gray-300 bg-gray-100 text-gray-600">
+   301→        Out
+   302→      </Badge>
+   303→    )
+   304→  if (stock <= 10)
+   305→    return (
+   306→      <Badge variant="outline" className="border-red-300 bg-red-100 text-red-800">
+   307→        Low
+   308→      </Badge>
+   309→    )
+   310→  return (
+   311→    <Badge variant="outline" className="border-emerald-300 bg-emerald-100 text-emerald-800">
+   312→      In
+   313→    </Badge>
+   314→  )
+   315→}
+   316→
+   317→interface MedicineDialogProps {
+   318→  open: boolean
+   319→  onOpenChange: (open: boolean) => void
+   320→  categories: Category[]
+   321→  initial: Medicine | null
+   322→  onSaved: () => void
+   323→}
+   324→
+   325→function MedicineDialog({ open, onOpenChange, categories, initial, onSaved }: MedicineDialogProps) {
+   326→  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+   327→  const [error, setError] = useState<string | null>(null)
+   328→  const [saving, setSaving] = useState(false)
+   329→
+   330→  useEffect(() => {
+   331→    if (open) {
+   332→      setForm(initial ? toForm(initial) : EMPTY_FORM)
+   333→      setError(null)
+   334→    }
+   335→  }, [open, initial])
+   336→
+   337→  function set<K extends keyof FormState>(key: K, value: FormState[K]) {
+   338→    setForm((prev) => ({ ...prev, [key]: value }))
+   339→  }
+   340→
+   341→  async function save() {
+   342→    const err = validate(form)
+   343→    if (err) {
+   344→      setError(err)
+   345→      return
+   346→    }
+   347→    setSaving(true)
+   348→    try {
+   349→      const data = {
+   350→        name: form.name.trim(),
+   351→        genericName: form.genericName.trim() || null,
+   352→        brand: form.brand.trim() || null,
+   353→        manufacturer: form.manufacturer.trim() || null,
+   354→        description: form.description.trim() || null,
+   355→        categoryId: form.categoryId || null,
+   356→        price: Number(form.price),
+   357→        discountPrice: form.discountPrice.trim() === '' ? null : Number(form.discountPrice),
+   358→        stock: Number(form.stock),
+   359→        unit: form.unit,
+   360→        requiresPrescription: form.requiresPrescription,
+   361→        expiryDate: form.expiryDate || null,
+   362→        image: form.image.trim() || null,
+   363→        status: form.status,
+   364→        // Round 11: update = REPLACE-ALL (always send so removals persist);
+   365→        // create = include only when non-empty (undefined key is dropped by JSON)
+   366→        extraImages: initial ? form.extraImages : form.extraImages.length > 0 ? form.extraImages : undefined,
+   367→      }
+   368→      const body = initial
+   369→        ? { action: 'update-medicine', id: initial.id, data }
+   370→        : { action: 'create-medicine', data }
+   371→      await api<{ medicine: Medicine }>('/api/pharmacist', { method: 'PUT', body })
+   372→      toast.success(initial ? 'Medicine updated' : 'Medicine created')
+   373→      onOpenChange(false)
+   374→      onSaved()
+   375→    } catch (e) {
+   376→      toast.error(e instanceof Error ? e.message : 'Failed to save medicine')
+   377→    } finally {
+   378→      setSaving(false)
+   379→    }
+   380→  }
+   381→
+   382→  return (
+   383→    <Dialog open={open} onOpenChange={onOpenChange}>
+   384→      <DialogContent className="max-h-[90vh] overflow-y-auto scrollbar-thin sm:max-w-2xl">
+   385→        <DialogHeader>
+   386→          <DialogTitle>{initial ? 'Edit medicine' : 'Add medicine'}</DialogTitle>
+   387→          <DialogDescription>
+   388→            {initial ? 'Update catalog details, pricing and stock.' : 'Create a new catalog item.'}
+   389→          </DialogDescription>
+   390→        </DialogHeader>
+   391→
+   392→        <div className="grid gap-3 sm:grid-cols-2">
+   393→          <div className="space-y-1.5 sm:col-span-2">
+   394→            <Label htmlFor="pmed-name">Name *</Label>
+   395→            <Input
+   396→              id="pmed-name"
+   397→              value={form.name}
+   398→              onChange={(e) => set('name', e.target.value)}
+   399→              placeholder="e.g. Napa Extra 500mg"
+   400→            />
+   401→          </div>
+   402→          <div className="space-y-1.5">
+   403→            <Label htmlFor="pmed-generic">Generic name</Label>
+   404→            <Input
+   405→              id="pmed-generic"
+   406→              value={form.genericName}
+   407→              onChange={(e) => set('genericName', e.target.value)}
+   408→            />
+   409→          </div>
+   410→          <div className="space-y-1.5">
+   411→            <Label htmlFor="pmed-brand">Brand</Label>
+   412→            <Input id="pmed-brand" value={form.brand} onChange={(e) => set('brand', e.target.value)} />
+   413→          </div>
+   414→          <div className="space-y-1.5">
+   415→            <Label htmlFor="pmed-manufacturer">Manufacturer</Label>
+   416→            <Input
+   417→              id="pmed-manufacturer"
+   418→              value={form.manufacturer}
+   419→              onChange={(e) => set('manufacturer', e.target.value)}
+   420→            />
+   421→          </div>
+   422→          <div className="space-y-1.5">
+   423→            <Label htmlFor="pmed-category">Category</Label>
+   424→            <Select
+   425→              value={form.categoryId || 'NONE'}
+   426→              onValueChange={(v) => set('categoryId', v === 'NONE' ? '' : v)}
+   427→            >
+   428→              <SelectTrigger id="pmed-category" className="w-full">
+   429→                <SelectValue placeholder="Select category" />
+   430→              </SelectTrigger>
+   431→              <SelectContent>
+   432→                <SelectItem value="NONE">No category</SelectItem>
+   433→                {categories.map((c) => (
+   434→                  <SelectItem key={c.id} value={c.id}>
+   435→                    {c.name}
+   436→                  </SelectItem>
+   437→                ))}
+   438→              </SelectContent>
+   439→            </Select>
+   440→          </div>
+   441→          <div className="space-y-1.5">
+   442→            <Label htmlFor="pmed-price">Price (৳) *</Label>
+   443→            <Input
+   444→              id="pmed-price"
+   445→              type="number"
+   446→              min={0}
+   447→              step="0.01"
+   448→              value={form.price}
+   449→              onChange={(e) => set('price', e.target.value)}
+   450→            />
+   451→          </div>
+   452→          <div className="space-y-1.5">
+   453→            <Label htmlFor="pmed-discount">Discount price (৳)</Label>
+   454→            <Input
+   455→              id="pmed-discount"
+   456→              type="number"
+   457→              min={0}
+   458→              step="0.01"
+   459→              value={form.discountPrice}
+   460→              onChange={(e) => set('discountPrice', e.target.value)}
+   461→              placeholder="Leave empty for no discount"
+   462→            />
+   463→          </div>
+   464→          <div className="space-y-1.5">
+   465→            <Label htmlFor="pmed-stock">Stock *</Label>
+   466→            <Input
+   467→              id="pmed-stock"
+   468→              type="number"
+   469→              min={0}
+   470→              step="1"
+   471→              value={form.stock}
+   472→              onChange={(e) => set('stock', e.target.value)}
+   473→            />
+   474→          </div>
+   475→          <div className="space-y-1.5">
+   476→            <Label htmlFor="pmed-unit">Unit</Label>
+   477→            <Select value={form.unit} onValueChange={(v) => set('unit', v)}>
+   478→              <SelectTrigger id="pmed-unit" className="w-full">
+   479→                <SelectValue />
+   480→              </SelectTrigger>
+   481→              <SelectContent>
+   482→                {UNITS.map((u) => (
+   483→                  <SelectItem key={u} value={u}>
+   484→                    {u}
+   485→                  </SelectItem>
+   486→                ))}
+   487→              </SelectContent>
+   488→            </Select>
+   489→          </div>
+   490→          <div className="space-y-1.5">
+   491→            <Label htmlFor="pmed-expiry">Expiry date</Label>
+   492→            <Input
+   493→              id="pmed-expiry"
+   494→              type="date"
+   495→              value={form.expiryDate}
+   496→              onChange={(e) => set('expiryDate', e.target.value)}
+   497→            />
+   498→          </div>
+   499→          <div className="space-y-1.5">
+   500→            <Label htmlFor="pmed-image">Image URL</Label>
+   501→            <Input
+   502→              id="pmed-image"
+   503→              value={form.image}
+   504→              onChange={(e) => set('image', e.target.value)}
+   505→              placeholder="/images/med-1.png or https://..."
+   506→            />
+   507→            <p className="text-[11px] text-muted-foreground">Leave empty for placeholder</p>
+   508→          </div>
+   509→          <ExtraImagesField
+   510→            value={form.extraImages}
+   511→            onChange={(next) => set('extraImages', next)}
+   512→          />
+   513→          <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-2">
+   514→            <div>
+   515→              <p className="text-sm font-medium">Requires prescription</p>
+   516→              <p className="text-xs text-muted-foreground">
+   517→                Orders with this item wait for pharmacist approval
+   518→              </p>
+   519→            </div>
+   520→            <Switch
+   521→              checked={form.requiresPrescription}
+   522→              onCheckedChange={(v) => set('requiresPrescription', v)}
+   523→            />
+   524→          </div>
+   525→          <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-2">
+   526→            <div>
+   527→              <p className="text-sm font-medium">Status</p>
+   528→              <p className="text-xs text-muted-foreground">
+   529→                Inactive items are hidden from the storefront
+   530→              </p>
+   531→            </div>
+   532→            <Switch
+   533→              checked={form.status === 'ACTIVE'}
+   534→              onCheckedChange={(v) => set('status', v ? 'ACTIVE' : 'INACTIVE')}
+   535→            />
+   536→          </div>
+   537→          <div className="space-y-1.5 sm:col-span-2">
+   538→            <Label htmlFor="pmed-description">Description</Label>
+   539→            <Textarea
+   540→              id="pmed-description"
+   541→              rows={3}
+   542→              value={form.description}
+   543→              onChange={(e) => set('description', e.target.value)}
+   544→            />
+   545→          </div>
+   546→        </div>
+   547→
+   548→        {error && <p className="text-sm font-medium text-red-600">{error}</p>}
+   549→
+   550→        <DialogFooter className="gap-2">
+   551→          <Button variant="outline" onClick={() => onOpenChange(false)}>
+   552→            Cancel
+   553→          </Button>
+   554→          <Button onClick={() => void save()} disabled={saving}>
+   555→            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+   556→            {initial ? 'Save changes' : 'Create medicine'}
+   557→          </Button>
+   558→        </DialogFooter>
+   559→      </DialogContent>
+   560→    </Dialog>
+   561→  )
+   562→}
+   563→
+   564→export default function PharmacistMedicines() {
+   565→  const [meds, setMeds] = useState<Medicine[]>([])
+   566→  const [categories, setCategories] = useState<Category[]>([])
+   567→  const [loading, setLoading] = useState(true)
+   568→  const [search, setSearch] = useState('')
+   569→  const [dialogOpen, setDialogOpen] = useState(false)
+   570→  const [editing, setEditing] = useState<Medicine | null>(null)
+   571→  const [rowPending, setRowPending] = useState<string | null>(null)
+   572→
+   573→  const load = useCallback(async () => {
+   574→    setLoading(true)
+   575→    try {
+   576→      const [m, c] = await Promise.all([
+   577→        api<{ medicines: Medicine[] }>('/api/pharmacist?resource=medicines'),
+   578→        api<{ categories: Category[] }>('/api/categories'),
+   579→      ])
+   580→      setMeds(m.medicines)
+   581→      setCategories(c.categories)
+   582→    } catch (e) {
+   583→      toast.error(e instanceof Error ? e.message : 'Failed to load medicines')
+   584→    } finally {
+   585→      setLoading(false)
+   586→    }
+   587→  }, [])
+   588→
+   589→  useEffect(() => {
+   590→    void load()
+   591→  }, [load])
+   592→
+   593→  const filtered = useMemo(() => {
+   594→    const q = search.trim().toLowerCase()
+   595→    if (!q) return meds
+   596→    return meds.filter((m) =>
+   597→      `${m.name} ${m.genericName ?? ''} ${m.brand ?? ''}`.toLowerCase().includes(q)
+   598→    )
+   599→  }, [meds, search])
+   600→
+   601→  async function adjustStock(m: Medicine, delta: number) {
+   602→    const next = Math.max(0, m.stock + delta)
+   603→    if (next === m.stock) return
+   604→    setRowPending(m.id)
+   605→    try {
+   606→      const d = await api<{ medicine: Medicine }>('/api/pharmacist', {
+   607→        method: 'PUT',
+   608→        body: { action: 'update-medicine', id: m.id, data: { stock: next } },
+   609→      })
+   610→      setMeds((prev) => prev.map((x) => (x.id === m.id ? d.medicine : x)))
+   611→      toast.success(`${m.name}: stock updated to ${d.medicine.stock}`)
+   612→    } catch (e) {
+   613→      toast.error(e instanceof Error ? e.message : 'Failed to update stock')
+   614→    } finally {
+   615→      setRowPending(null)
+   616→    }
+   617→  }
+   618→
+   619→  async function toggleStatus(m: Medicine, next: boolean) {
+   620→    setRowPending(m.id)
+   621→    try {
+   622→      await api('/api/pharmacist', {
+   623→        method: 'PUT',
+   624→        body: { action: 'update-medicine', id: m.id, data: { status: next ? 'ACTIVE' : 'INACTIVE' } },
+   625→      })
+   626→      setMeds((prev) =>
+   627→        prev.map((x) => (x.id === m.id ? { ...x, status: next ? 'ACTIVE' : 'INACTIVE' } : x))
+   628→      )
+   629→      toast.success(`${m.name} is now ${next ? 'ACTIVE' : 'INACTIVE'}`)
+   630→    } catch (e) {
+   631→      toast.error(e instanceof Error ? e.message : 'Failed to update status')
+   632→    } finally {
+   633→      setRowPending(null)
+   634→    }
+   635→  }
+   636→
+   637→  return (
+   638→    <div className="space-y-4">
+   639→      {/* Toolbar */}
+   640→      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+   641→        <div className="relative flex-1 sm:max-w-xs">
+   642→          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   643→          <Input
+   644→            value={search}
+   645→            onChange={(e) => setSearch(e.target.value)}
+   646→            placeholder="Search name, generic or brand"
+   647→            className="pl-8"
+   648→          />
+   649→        </div>
+   650→        <div className="sm:ml-auto">
+   651→          <Button
+   652→            onClick={() => {
+   653→              setEditing(null)
+   654→              setDialogOpen(true)
+   655→            }}
+   656→          >
+   657→            <Plus className="h-4 w-4" /> Add Medicine
+   658→          </Button>
+   659→        </div>
+   660→      </div>
+   661→
+   662→      {/* Table */}
+   663→      <Card className="gap-0 py-4">
+   664→        <CardContent className="px-4">
+   665→          <div className="overflow-x-auto scrollbar-thin">
+   666→            <Table className="min-w-[880px]">
+   667→              <TableHeader>
+   668→                <TableRow>
+   669→                  <TableHead>Medicine</TableHead>
+   670→                  <TableHead>Category</TableHead>
+   671→                  <TableHead className="text-right">Price</TableHead>
+   672→                  <TableHead className="text-center">Stock</TableHead>
+   673→                  <TableHead className="text-center">Rx</TableHead>
+   674→                  <TableHead className="text-center">Active</TableHead>
+   675→                  <TableHead>Expiry</TableHead>
+   676→                  <TableHead className="text-right">Edit</TableHead>
+   677→                </TableRow>
+   678→              </TableHeader>
+   679→              <TableBody>
+   680→                {loading ? (
+   681→                  [...Array(6)].map((_, i) => (
+   682→                    <TableRow key={`sk-${i}`}>
+   683→                      <TableCell colSpan={8}>
+   684→                        <Skeleton className="h-10 w-full" />
+   685→                      </TableCell>
+   686→                    </TableRow>
+   687→                  ))
+   688→                ) : filtered.length === 0 ? (
+   689→                  <TableRow>
+   690→                    <TableCell colSpan={8}>
+   691→                      <div className="flex flex-col items-center gap-2 py-10 text-center">
+   692→                        <PackageSearch className="h-8 w-8 text-muted-foreground/50" />
+   693→                        <p className="text-sm text-muted-foreground">No medicines found.</p>
+   694→                      </div>
+   695→                    </TableCell>
+   696→                  </TableRow>
+   697→                ) : (
+   698→                  filtered.map((m) => {
+   699→                    const expired = m.expiryDate ? new Date(m.expiryDate) < new Date() : false
+   700→                    return (
+   701→                      <TableRow key={m.id} className="transition-colors hover:bg-accent/40">
+   702→                        <TableCell>
+   703→                          <div className="flex items-center gap-2.5">
+   704→                            <MedImage src={m.image} alt={m.name} className="h-10 w-10 rounded" />
+   705→                            <div className="min-w-0">
+   706→                              <p className="max-w-52 truncate text-sm font-medium">{m.name}</p>
+   707→                              {m.genericName && (
+   708→                                <p className="max-w-52 truncate text-xs text-muted-foreground">
+   709→                                  {m.genericName}
+   710→                                </p>
+   711→                              )}
+   712→                            </div>
+   713→                          </div>
+   714→                        </TableCell>
+   715→                        <TableCell>
+   716→                          <Badge variant="secondary">{m.category?.name ?? 'Uncategorized'}</Badge>
+   717→                        </TableCell>
+   718→                        <TableCell className="whitespace-nowrap text-right">
+   719→                          <span className="font-medium">{fmtBDT(effectivePrice(m))}</span>
+   720→                          {m.discountPrice && m.discountPrice < m.price ? (
+   721→                            <span className="ml-1.5 text-xs text-muted-foreground line-through">
+   722→                              {fmtBDT(m.price)}
+   723→                            </span>
+   724→                          ) : null}
+   725→                        </TableCell>
+   726→                        <TableCell>
+   727→                          <div className="flex items-center justify-center gap-1">
+   728→                            <Button
+   729→                              variant="outline"
+   730→                              size="icon"
+   731→                              className="h-6 w-6"
+   732→                              disabled={rowPending === m.id || m.stock <= 0}
+   733→                              onClick={() => void adjustStock(m, -1)}
+   734→                              title={`Decrease stock of ${m.name}`}
+   735→                              aria-label={`Decrease stock of ${m.name}`}
+   736→                            >
+   737→                              <Minus className="h-3 w-3" />
+   738→                            </Button>
+   739→                            <span className="w-8 text-center text-sm font-medium">{m.stock}</span>
+   740→                            <Button
+   741→                              variant="outline"
+   742→                              size="icon"
+   743→                              className="h-6 w-6"
+   744→                              disabled={rowPending === m.id}
+   745→                              onClick={() => void adjustStock(m, 1)}
+   746→                              title={`Increase stock of ${m.name}`}
+   747→                              aria-label={`Increase stock of ${m.name}`}
+   748→                            >
+   749→                              <Plus className="h-3 w-3" />
+   750→                            </Button>
+   751→                          </div>
+   752→                          <div className="mt-1 flex justify-center">
+   753→                            <StockChip stock={m.stock} />
+   754→                          </div>
+   755→                        </TableCell>
+   756→                        <TableCell className="text-center">
+   757→                          {m.requiresPrescription ? (
+   758→                            <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
+   759→                              Rx
+   760→                            </Badge>
+   761→                          ) : (
+   762→                            <span className="text-xs text-muted-foreground">—</span>
+   763→                          )}
+   764→                        </TableCell>
+   765→                        <TableCell className="text-center">
+   766→                          <Switch
+   767→                            checked={m.status === 'ACTIVE'}
+   768→                            disabled={rowPending === m.id}
+   769→                            onCheckedChange={(v) => void toggleStatus(m, v)}
+   770→                            aria-label={`Toggle ${m.name}`}
+   771→                          />
+   772→                        </TableCell>
+   773→                        <TableCell
+   774→                          className={`whitespace-nowrap text-xs ${expired ? 'font-medium text-red-600' : 'text-muted-foreground'}`}
+   775→                        >
+   776→                          {expired ? 'Expired ' : ''}
+   777→                          {fmtDate(m.expiryDate)}
+   778→                        </TableCell>
+   779→                        <TableCell className="text-right">
+   780→                          <Button
+   781→                            variant="outline"
+   782→                            size="icon"
+   783→                            className="h-8 w-8"
+   784→                            onClick={() => {
+   785→                              setEditing(m)
+   786→                              setDialogOpen(true)
+   787→                            }}
+   788→                            title={`Edit ${m.name}`}
+   789→                            aria-label={`Edit ${m.name}`}
+   790→                          >
+   791→                            <Pencil className="h-3.5 w-3.5" />
+   792→                          </Button>
+   793→                        </TableCell>
+   794→                      </TableRow>
+   795→                    )
+   796→                  })
+   797→                )}
+   798→              </TableBody>
+   799→            </Table>
+   800→          </div>
+   801→        </CardContent>
+   802→      </Card>
+   803→
+   804→      <MedicineDialog
+   805→        open={dialogOpen}
+   806→        onOpenChange={setDialogOpen}
+   807→        categories={categories}
+   808→        initial={editing}
+   809→        onSaved={() => void load()}
+   810→      />
+   811→    </div>
+   812→  )
+   813→}
+   814→

@@ -2,17 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  AlertCircle,
   Ban,
+  Calendar,
   ClipboardList,
   Loader2,
   PackageCheck,
   PackageSearch,
   RefreshCw,
+  Truck,
   XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { fmtDateTime } from '@/lib/format'
+import { fmtDate, fmtDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PurchaseOrderRow, PurchaseOrderStatus, PurchaseOrdersData } from '@/lib/types'
 import {
@@ -33,6 +36,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import MedImage from './MedImage'
 
 type StatusFilter = 'ALL' | PurchaseOrderStatus
+
+/** Parse 'YYYY-MM-DD' (or the date part of an ISO string) as LOCAL midnight. */
+function parseDateOnly(value: string): Date {
+  const m = /^((\d{4})-(\d{2})-(\d{2}))/.exec(value)
+  if (m) return new Date(Number(m[2]), Number(m[3]) - 1, Number(m[4]))
+  return new Date(value)
+}
+
+function startOfToday(): Date {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
 
 const STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
   ORDERED: 'Ordered',
@@ -194,6 +210,7 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
 
   const orders = data?.orders ?? []
   const counts = data?.counts ?? { ORDERED: 0, RECEIVED: 0, CANCELLED: 0 }
+  const todayStart = startOfToday()
 
   const unitsOnOrder = useMemo(
     () =>
@@ -384,7 +401,7 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                         <TableHead className="text-center">Status</TableHead>
                         <TableHead>Ordered</TableHead>
                         <TableHead>Received</TableHead>
-                        <TableHead>Note</TableHead>
+                        <TableHead>Details</TableHead>
                         <TableHead className="text-right">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -392,6 +409,10 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                       {filtered.map((o) => {
                         const isOrdered = o.status === 'ORDERED'
                         const acting = actingId === o.id
+                        const expected = o.expectedAt ? parseDateOnly(o.expectedAt) : null
+                        const overdue =
+                          isOrdered && expected !== null && expected.getTime() < todayStart.getTime()
+                        const hasDetails = Boolean(o.expectedAt || o.supplier || o.note)
                         return (
                           <TableRow key={o.id} className="transition-colors hover:bg-accent/40">
                             <TableCell>
@@ -402,7 +423,12 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                                   className="h-9 w-9 shrink-0 rounded-md border object-cover"
                                 />
                                 <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium">{o.medicine.name}</p>
+                                  <p
+                                    className="max-w-40 truncate text-sm font-medium"
+                                    title={o.medicine.name}
+                                  >
+                                    {o.medicine.name}
+                                  </p>
                                   <p className="max-w-52 truncate text-xs text-muted-foreground">
                                     {[o.medicine.brand, o.medicine.unit].filter(Boolean).join(' · ') ||
                                       '—'}
@@ -439,16 +465,55 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                                 <span className="text-xs text-muted-foreground/60">—</span>
                               )}
                             </TableCell>
-                            <TableCell className="max-w-32">
-                              {o.note ? (
-                                <span
-                                  className="block max-w-32 truncate text-xs text-muted-foreground"
-                                  title={o.note}
-                                >
-                                  {o.note}
-                                </span>
-                              ) : (
+                            <TableCell className="min-w-0 max-w-32">
+                              {!hasDetails ? (
                                 <span className="text-xs text-muted-foreground/60">—</span>
+                              ) : (
+                                <div className="min-w-0 space-y-0.5">
+                                  {expected && (
+                                    <p
+                                      className={cn(
+                                        'flex items-center gap-1 text-xs',
+                                        overdue
+                                          ? 'font-medium text-amber-600 dark:text-amber-400'
+                                          : 'text-muted-foreground'
+                                      )}
+                                      title={
+                                        overdue
+                                          ? `Overdue — expected ${fmtDate(expected)}`
+                                          : `Expected delivery ${fmtDate(expected)}`
+                                      }
+                                    >
+                                      {overdue ? (
+                                        <AlertCircle
+                                          className="size-3.5 shrink-0"
+                                          aria-hidden="true"
+                                        />
+                                      ) : (
+                                        <Calendar className="size-3.5 shrink-0" aria-hidden="true" />
+                                      )}
+                                      <span className="truncate">{fmtDate(expected)}</span>
+                                      {overdue && <span className="sr-only">(overdue)</span>}
+                                    </p>
+                                  )}
+                                  {o.supplier && (
+                                    <p className="flex items-center gap-1 text-xs" title={o.supplier}>
+                                      <Truck
+                                        className="size-3.5 shrink-0 text-muted-foreground"
+                                        aria-hidden="true"
+                                      />
+                                      <span className="max-w-32 truncate">{o.supplier}</span>
+                                    </p>
+                                  )}
+                                  {o.note && (
+                                    <p
+                                      className="max-w-32 truncate text-xs text-muted-foreground"
+                                      title={o.note}
+                                    >
+                                      {o.note}
+                                    </p>
+                                  )}
+                                </div>
                               )}
                             </TableCell>
                             <TableCell className="text-right">

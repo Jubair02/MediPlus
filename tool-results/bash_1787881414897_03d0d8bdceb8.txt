@@ -1,0 +1,1234 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medicine Modal - Dark Mode</title>
+    <style>
+        :root {
+            --bg-body: #0f1419;
+            --bg-modal: #0b1116;
+            --bg-card: #161d26;
+            --bg-input: #0f1419;
+            --text-primary: #ffffff;
+            --text-secondary: #8b949e;
+            --accent: #10b981; /* Emerald green */
+            --accent-hover: #059669;
+            --border-color: #2d3748;
+            --danger: #ef4444;
+            
+            /* Gallery specific */
+            --gallery-bg: #000000;
+            --chip-bg: rgba(0, 0, 0, 0.7);
+            --thumb-border: transparent;
+            --thumb-active-border: var(--accent);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-body);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden; /* Prevent scrolling because of modal */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        /* --- Background UI (Blurred/Dimmed) --- */
+        .app-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            filter: blur(4px) brightness(0.4);
+            pointer-events: none;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            grid-template-rows: 60px 1fr;
+            background: var(--bg-body);
+        }
+        
+        /* Simulating the screenshot background roughly */
+        .header-bg { border-bottom: 1px solid var(--border-color); display: flex; align-items: center; padding: 0 20px; color: white; font-weight: bold; }
+        .sidebar-bg { border-right: 1px solid var(--border-color); padding: 20px; }
+        .main-bg { padding: 20px; display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+        
+        .skeleton-box {
+            background: var(--bg-card);
+            height: 200px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* --- Modal Overlay & Container --- */
+        .modal-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px); /* Slight blur for depth */
+            z-index: 10;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-container {
+            background-color: var(--bg-modal);
+            width: 900px;
+            max-width: 95vw;
+            height: 90vh;
+            max-height: 700px;
+            border-radius: 16px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            overflow: hidden;
+            position: relative;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Close Button (Top Right) */
+        .close-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            z-index: 50;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        .close-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        /* --- Left Column: Image Gallery --- */
+        .gallery-section {
+            flex: 1;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            border-right: 1px solid var(--border-color);
+            background: #080c10; /* Slightly darker for gallery area */
+        }
+
+        .main-image-wrapper {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1 / 1.1; /* Taller rectangle like screenshot */
+            background-color: var(--gallery-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .main-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            /* Using a placeholder that looks like the medicine bottle */
+        }
+
+        /* Navigation Arrows */
+        .nav-arrow {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 36px;
+            height: 36px;
+            background: rgba(30, 41, 59, 0.7); /* Dark semi-transparent */
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 50%;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 5;
+        }
+        .nav-arrow:hover {
+            background: rgba(51, 65, 85, 0.9);
+            transform: translateY(-50%) scale(1.05);
+        }
+        .nav-prev { left: 12px; }
+        .nav-next { right: 12px; }
+
+        /* Counter Chip */
+        .counter-chip {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: var(--chip-bg);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 5;
+            user-select: none;
+        }
+
+        /* Thumbnails Row */
+        .thumbnails-row {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-start;
+            padding-top: 4px;
+        }
+
+        .thumbnail {
+            width: 56px;
+            height: 56px;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            border: 2px solid var(--thumb-border);
+            opacity: 0.6;
+            transition: all 0.2s;
+            background: black;
+        }
+        
+        .thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .thumbnail.active {
+            border-color: var(--thumb-active-border);
+            opacity: 1;
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+        
+        .thumbnail:hover:not(.active) {
+            opacity: 0.9;
+            border-color: rgba(255,255,255,0.3);
+        }
+
+
+        /* --- Right Column: Details --- */
+        .details-section {
+            flex: 1.1;
+            padding: 24px 32px;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        /* Custom Scrollbar for details */
+        .details-section::-webkit-scrollbar {
+            width: 6px;
+        }
+        .details-section::-webkit-scrollbar-thumb {
+            background-color: #333;
+            border-radius: 3px;
+        }
+
+        .product-header h1 {
+            font-size: 22px;
+            margin-bottom: 6px;
+            line-height: 1.3;
+            color: #fff;
+        }
+
+        .brand-subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .generic-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 18px;
+            opacity: 0.8;
+        }
+
+        .price-block {
+            margin-bottom: 18px;
+        }
+        .current-price {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .original-price {
+            text-decoration: line-through;
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-left: 8px;
+        }
+        .discount-badge {
+            color: var(--danger);
+            font-size: 13px;
+            font-weight: 600;
+            margin-left: 6px;
+        }
+
+        .description-text {
+            font-size: 14px;
+            color: #cbd5e1;
+            line-height: 1.5;
+            margin-bottom: 24px;
+        }
+
+        /* Info Grid (Stock, Unit etc) */
+        .info-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            row-gap: 12px;
+            column-gap: 16px;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        .info-label {
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .info-value {
+            color: #fff;
+            font-weight: 500;
+        }
+        .status-in-stock {
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .expiry-tag {
+            color: var(--accent);
+            font-size: 12px;
+            background: rgba(16, 185, 129, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+        }
+
+        /* Quantity Selector */
+        .quantity-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            background: var(--bg-card);
+            padding: 8px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+        .qty-label {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+        .qty-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .qty-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid var(--border-color);
+            background: transparent;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        .qty-btn:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        .qty-val {
+            font-size: 16px;
+            font-weight: bold;
+            min-width: 20px;
+            text-align: center;
+        }
+        .subtotal {
+            text-align: right;
+        }
+        .subtotal-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .subtotal-val {
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        /* Add to Cart Button */
+        .btn-add-cart {
+            width: 100%;
+            background: linear-gradient(to right, #34d399, #10b981);
+            color: #064e3b; /* Dark green text for contrast on light button */
+            border: none;
+            padding: 14px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: filter 0.2s;
+            margin-bottom: 24px;
+        }
+        .btn-add-cart:hover {
+            filter: brightness(1.1);
+        }
+
+        /* Ratings Section */
+        .ratings-container {
+            border-top: 1px solid var(--border-color);
+            padding-top: 20px;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #fff;
+        }
+        
+        .rating-summary {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .big-score {
+            font-size: 36px;
+            font-weight: 800;
+            color: #fff;
+            line-height: 1;
+        }
+        .stars-small {
+            color: #fbbf24;
+            font-size: 14px;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+        .review-count {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .bars-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .bar-track {
+            flex: 1;
+            height: 6px;
+            background: #2d3748;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .bar-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 3px;
+        }
+
+        /* Review Card */
+        .review-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .review-header {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .avatar {
+            width: 32px;
+            height: 32px;
+            background: #334155;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            color: #94a3b8;
+        }
+        .user-info h4 {
+            font-size: 14px;
+            color: #fff;
+            margin-bottom: 2px;
+        }
+        .date {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .review-stars {
+            color: #fbbf24;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        .review-text {
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.4;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .modal-container {
+                flex-direction: column;
+                height: 95vh;
+                overflow-y: auto;
+            }
+            .gallery-section {
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+            }
+            .main-image-wrapper {
+                aspect-ratio: 4/3;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Background Simulation -->
+    <div class="app-background">
+        <div class="header-bg">MediPlus Header</div>
+        <div class="sidebar-bg">
+            <!-- Sidebar items simulation -->
+            <div style="height: 20px; bg: red;"></div>
+        </div>
+        <div class="main-bg">
+            <div class="skeleton-box"></div>
+            <div class="skeleton-box"></div>
+            <div class="skeleton-box"></div>
+        </div>
+    </div>
+
+    <!-- Modal Overlay -->
+    <div class="modal-overlay">
+        <article class="modal-container">
+            
+            <!-- Close Button -->
+            <button class="close-btn" aria-label="Close modal">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+
+            <!-- Left: Gallery -->
+            <aside class="gallery-section">
+                <div class="main-image-wrapper">
+                    <!-- Main Image -->
+                    <img src="https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?q=80&w=800&auto=format&fit=crop" alt="Napa Extra Medicine Bottle" class="main-image">
+
+                    <!-- Nav Arrows -->
+                    <button class="nav-arrow nav-prev" aria-label="Previous image">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                    </button>
+                    <button class="nav-arrow nav-next" aria-label="Next image">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                    </button>
+
+                    <!-- Counter Chip -->
+                    <div class="counter-chip">2 / 3</div>
+                </div>
+
+                <!-- Thumbnails -->
+                <div class="thumbnails-row">
+                    <div class="thumbnail">
+                        <img src="https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=100&h=100&fit=crop" alt="Thumb 1">
+                    </div>
+                    <div class="thumbnail active">
+                        <img src="https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=100&h=100&fit=crop" alt="Thumb 2">
+                    </div>
+                    <div class="thumbnail">
+                        <img src="https://images.unsplash.com/photo-1587854692152-cbe660dbde88?w=100&h=100&fit=crop" alt="Thumb 3">
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Right: Content -->
+            <section class="details-section">
+                
+                <header class="product-header">
+                    <h1>Napa Extra 500mg+65mg</h1>
+                    <p class="brand-subtitle">Beximco • Beximco Pharmaceuticals</p>
+                    <p class="generic-subtitle">Generic: Paracetamol + Caffeine</p>
+                    
+                    <div class="price-block">
+                        <span class="current-price">৳25</span>
+                        <span class="original-price">৳30</span>
+                        <span class="discount-badge">save ৳5</span>
+                    </div>
+
+                    <p class="description-text">
+                        Fast relief for headache, migraine, fever and body pain. Each tablet contains Paracetamol 500mg and Caffeine 65mg.
+                    </p>
+                </header>
+
+                <div class="info-grid">
+                    <div class="info-label">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                        Stock
+                    </div>
+                    <div class="info-value status-in-stock">In Stock</div>
+
+                    <div class="info-label">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                        Unit
+                    </div>
+                    <div class="info-value">strip</div>
+
+                    <div class="info-label">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                        Expiry
+                    </div>
+                    <div class="info-value">
+                        18 Feb 2028 
+                        <span class="expiry-tag">18 months left</span>
+                    </div>
+                </div>
+
+                <div class="quantity-row">
+                    <span class="qty-label">Quantity</span>
+                    <div style="display:flex; align-items:center; gap: 40px;">
+                        <div class="qty-controls">
+                            <button class="qty-btn">-</button>
+                            <span class="qty-val">1</span>
+                            <button class="qty-btn">+</button>
+                        </div>
+                        <div class="subtotal">
+                            <div class="subtotal-label">Subtotal</div>
+                            <div class="subtotal-val">৳25</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn-add-cart">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                    Add to cart
+                </button>
+
+                <div class="ratings-container">
+                    <h3 class="section-title">Ratings & reviews</h3>
+                    
+                    <div class="rating-summary">
+                        <div class="score-col">
+                            <div class="big-score">4.7</div>
+                            <div class="stars-small">★★★★★</div>
+                            <div class="review-count">Based on 3 reviews</div>
+                        </div>
+                        <div class="bars-col">
+                            <div class="bar-row"><span>5</span> <div class="bar-track"><div class="bar-fill" style="width: 100%"></div></div> <span>2</span></div>
+                            <div class="bar-row"><span>4</span> <div class="bar-track"><div class="bar-fill" style="width: 50%"></div></div> <span>1</span></div>
+                            <div class="bar-row"><span>3</span> <div class="bar-track"><div class="bar-fill" style="width: 0%"></div></div> <span>0</span></div>
+                            <div class="bar-row"><span>2</span> <div class="bar-track"><div class="bar-fill" style="width: 0%"></div></div> <span>0</span></div>
+                            <div class="bar-row"><span>1</span> <div class="bar-track"><div class="bar-fill" style="width: 0%"></div></div> <span>0</span></div>
+                        </div>
+                    </div>
+
+                    <div class="review-card">
+                        <div class="review-header">
+                            <div class="avatar">S</div>
+                            <div class="user-info">
+                                <h4>Salma Akter</h4>
+                                <div class="date">25 Aug 2026</div>
+                            </div>
+                        </div>
+                        <div class="review-stars">★★★★★</div>
+                        <p class="review-text">Effective for fever, would buy again.</p>
+                    </div>
+                </div>
+
+            </section>
+        </article>
+    </div>
+
+</body>
+</html>
+```
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medicine Modal</title>
+    <style>
+        :root {
+            --primary-green: #10b981;
+            --bg-color: #f3f4f6;
+            --text-main: #111827;
+            --text-sub: #4b5563;
+            --border-color: #e5e7eb;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: var(--text-main);
+        }
+
+        /* Mobile Container Simulation */
+        .mobile-container {
+            width: 390px;
+            height: 844px; /* iPhone 14 Pro height approx */
+            background-color: white;
+            position: relative;
+            overflow-y: auto;
+            overflow-x: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #fff;
+            border-bottom: 1px solid transparent;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 800;
+            font-size: 18px;
+            color: #065f46;
+        }
+        
+        .logo-icon {
+            width: 24px;
+            height: 24px;
+            background: #10b981;
+            border-radius: 6px;
+            display: grid;
+            place-items: center;
+            color: white;
+            font-size: 14px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            font-size: 20px;
+            color: #374151;
+        }
+
+        .icon-badge {
+            position: relative;
+            cursor: pointer;
+        }
+
+        .badge-count {
+            position: absolute;
+            top: -6px;
+            right: -8px;
+            background: #ef4444;
+            color: white;
+            font-size: 10px;
+            font-weight: bold;
+            min-width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 4px;
+        }
+
+        .avatar-circle {
+            width: 32px;
+            height: 32px;
+            background: #d1fae5;
+            color: #065f46;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        /* Modal Content */
+        .modal-card {
+            margin: 12px;
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            overflow: hidden;
+            position: relative;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 20;
+            width: 28px;
+            height: 28px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #333;
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        /* Gallery Section */
+        .gallery-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1/1; /* Square main image area */
+            background: #f9fafb;
+            overflow: hidden;
+        }
+
+        .main-image-wrapper {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .main-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+            transition: opacity 0.2s;
+        }
+
+        /* Arrows & Counter */
+        .nav-arrow {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 32px;
+            height: 32px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            cursor: pointer;
+            user-select: none;
+            color: #374151;
+            z-index: 10;
+        }
+        
+        .nav-arrow.prev { left: 10px; }
+        .nav-arrow.next { right: 10px; }
+
+        .image-counter {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(255,255,255,0.95);
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        /* Thumbnails */
+        .thumbnail-strip {
+            display: flex;
+            gap: 12px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            scrollbar-width: none; /* Firefox */
+        }
+        .thumbnail-strip::-webkit-scrollbar { 
+            display: none; 
+        }
+
+        .thumb-item {
+            width: 64px;
+            height: 64px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid transparent;
+            cursor: pointer;
+            flex-shrink: 0;
+            background: #f3f4f6;
+            position: relative;
+        }
+
+        .thumb-item.active {
+            border-color: var(--primary-green);
+        }
+
+        .thumb-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Details Section */
+        .details-section {
+            padding: 0 20px 24px 20px;
+            flex: 1;
+        }
+
+        .product-title {
+            font-size: 22px;
+            font-weight: 700;
+            color: #111827;
+            margin-bottom: 6px;
+            line-height: 1.2;
+        }
+
+        .brand-name {
+            font-size: 15px;
+            color: #4b5563;
+            margin-bottom: 4px;
+        }
+
+        .generic-name {
+            font-size: 14px;
+            color: #6b7280;
+            margin-bottom: 20px;
+        }
+
+        .price-block {
+            margin-bottom: 16px;
+        }
+
+        .current-price {
+            font-size: 26px;
+            font-weight: 800;
+            color: #111827;
+        }
+        .current-price span { font-size: 18px; vertical-align: middle; }
+
+        .price-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        .old-price {
+            text-decoration: line-through;
+            color: #9ca3af;
+        }
+
+        .save-badge {
+            color: #ef4444;
+            font-weight: 500;
+        }
+
+        .description {
+            font-size: 15px;
+            color: #374151;
+            line-height: 1.5;
+            margin-bottom: 24px;
+        }
+
+        /* Info Grid */
+        .info-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            border-top: 1px solid #f3f4f6;
+            padding-top: 16px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 15px;
+        }
+
+        .info-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #4b5563;
+        }
+
+        .info-icon {
+            width: 18px;
+            height: 18px;
+            stroke-width: 2;
+            color: #6b7280;
+        }
+
+        .info-value {
+            font-weight: 500;
+            color: #111827;
+            text-align: right;
+        }
+
+        .status-in-stock {
+            color: var(--primary-green);
+            font-weight: 600;
+        }
+
+        .expiry-tag {
+            background: #ecfdf5;
+            color: #047857;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-left: 4px;
+        }
+
+        /* Floating Nav (Bottom) */
+        .bottom-nav {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(4px);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #f3f4f6;
+            font-size: 14px;
+            color: #6b7280;
+            z-index: 40;
+        }
+
+        .nav-btn {
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .nav-btn.disabled { opacity: 0.5; cursor: default; }
+        .page-indicator { font-weight: 600; color: #111827; }
+
+    </style>
+</head>
+<body>
+
+    <!-- Mobile Container -->
+    <div class="mobile-container">
+        
+        <!-- Header -->
+        <div class="header">
+            <div class="logo-area">
+                <div class="logo-icon">M+</div>
+                MediPlus
+            </div>
+            <div class="header-actions">
+                <div class="icon-badge">❤️<span class="badge-count">2</span></div>
+                <div class="icon-badge">🛒<span class="badge-count">1</span></div>
+                <div class="icon-badge">🔔<span class="badge-count">1</span></div>
+                <div class="avatar-circle">T</div>
+            </div>
+        </div>
+
+        <!-- Modal Card -->
+        <div class="modal-card">
+            
+            <!-- Close Button -->
+            <div class="close-btn">×</div>
+
+            <!-- Gallery Area -->
+            <div class="gallery-container">
+                
+                <!-- Main Image Display -->
+                <div class="main-image-wrapper" id="mainImageWrapper">
+                    <!-- Using placeholder images that resemble the screenshot content -->
+                    <img src="https://placehold.co/400x400/f3f4f6/a3a3a3?text=Blister+Pack+Front" alt="Medicine Main" class="main-image" id="mainImg">
+                </div>
+
+                <!-- Navigation Arrows -->
+                <div class="nav-arrow prev" onclick="changeSlide(-1)">‹</div>
+                <div class="nav-arrow next" onclick="changeSlide(1)">›</div>
+
+                <!-- Counter -->
+                <div class="image-counter"><span id="currentIdx">1</span>/3</div>
+
+                <!-- Thumbnails Strip -->
+                <div class="thumbnail-strip">
+                    <div class="thumb-item active" onclick="setSlide(0)">
+                        <img src="https://placehold.co/100x100/e5e7eb/6b7280?text=Pack+1" alt="Thumb 1">
+                    </div>
+                    <div class="thumb-item" onclick="setSlide(1)">
+                        <img src="https://placehold.co/100x100/fef3c7/d97706?text=Bottle" alt="Thumb 2">
+                    </div>
+                    <div class="thumb-item" onclick="setSlide(2)">
+                        <img src="https://placehold.co/100x100/e5e7eb/6b7280?text=Pack+Back" alt="Thumb 3">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Product Details -->
+            <div class="details-section">
+                <h1 class="product-title">Napa Extra 500mg+65mg</h1>
+                <p class="brand-name">Beximco • Beximco Pharmaceuticals</p>
+                <p class="generic-name">Generic: Paracetamol + Caffeine</p>
+
+                <div class="price-block">
+                    <div class="current-price"><span>৳</span>25</div>
+                    <div class="price-meta">
+                        <span class="old-price">৳30</span>
+                        <span class="save-badge">save ৳5</span>
+                    </div>
+                </div>
+
+                <p class="description">
+                    Fast relief for headache, migraine, fever and body pain. Each tablet contains Paracetamol 500mg and Caffeine 65mg.
+                </p>
+
+                <div class="info-grid">
+                    <div class="info-row">
+                        <div class="info-label">
+                            <svg class="info-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                            Stock
+                        </div>
+                        <div class="info-value status-in-stock">In Stock</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">
+                            <svg class="info-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                            Unit
+                        </div>
+                        <div class="info-value">strip</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">
+                            <svg class="info-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                            Expiry
+                        </div>
+                        <div class="info-value">
+                            18 Feb 2028 <span class="expiry-tag">18 months left</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Pagination Overlay -->
+            <div class="bottom-nav">
+                <div class="nav-btn disabled">Previous</div>
+                <div class="page-indicator">Page 1 of 3</div>
+                <div class="nav-btn">Next</div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // Simple gallery logic for the prototype
+        const images = [
+            'https://placehold.co/400x400/f3f4f6/a3a3a3?text=Blister+Pack+Front',
+            'https://placehold.co/400x400/fef3c7/d97706?text=Orange+Bottle',
+            'https://placehold.co/400x400/e5e7eb/6b7280?text=Blister+Pack+Back'
+        ];
+        
+        let currentIndex = 0;
+
+        function updateGallery() {
+            // Update main image with fade effect
+            const mainImg = document.getElementById('mainImg');
+            mainImg.style.opacity = '0';
+            setTimeout(() => {
+                mainImg.src = images[currentIndex];
+                mainImg.style.opacity = '1';
+            }, 150);
+
+            // Update counter
+            document.getElementById('currentIdx').innerText = currentIndex + 1;
+
+            // Update thumbnails active state
+            const thumbs = document.querySelectorAll('.thumb-item');
+            thumbs.forEach((thumb, idx) => {
+                if(idx === currentIndex) thumb.classList.add('active');
+                else thumb.classList.remove('active');
+            });
+        }
+
+        function changeSlide(direction) {
+            currentIndex += direction;
+            if(currentIndex < 0) currentIndex = images.length - 1;
+            if(currentIndex >= images.length) currentIndex = 0;
+            updateGallery();
+        }
+
+        function setSlide(index) {
+            currentIndex = index;
+            updateGallery();
+        }
+    </script>
+</body>
+</html>
+```

@@ -1,0 +1,740 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useState } from 'react'
+     4→import {
+     5→  CheckCircle2,
+     6→  Copy,
+     7→  Download,
+     8→  HandCoins,
+     9→  Loader2,
+    10→  PackagePlus,
+    11→  PackageSearch,
+    12→  RefreshCw,
+    13→  ShoppingCart,
+    14→  TriangleAlert,
+    15→} from 'lucide-react'
+    16→import { toast } from 'sonner'
+    17→import { api } from '@/lib/api'
+    18→import { downloadCsv } from '@/lib/download'
+    19→import { fmtBDT } from '@/lib/format'
+    20→import { cn } from '@/lib/utils'
+    21→import type { RestockSuggestion } from '@/lib/types'
+    22→import { Badge } from '@/components/ui/badge'
+    23→import {
+    24→  AlertDialog,
+    25→  AlertDialogAction,
+    26→  AlertDialogCancel,
+    27→  AlertDialogContent,
+    28→  AlertDialogDescription,
+    29→  AlertDialogFooter,
+    30→  AlertDialogHeader,
+    31→  AlertDialogTitle,
+    32→} from '@/components/ui/alert-dialog'
+    33→import { Button } from '@/components/ui/button'
+    34→import { Card, CardContent } from '@/components/ui/card'
+    35→import {
+    36→  Dialog,
+    37→  DialogContent,
+    38→  DialogDescription,
+    39→  DialogFooter,
+    40→  DialogHeader,
+    41→  DialogTitle,
+    42→} from '@/components/ui/dialog'
+    43→import { Input } from '@/components/ui/input'
+    44→import { Label } from '@/components/ui/label'
+    45→import { Skeleton } from '@/components/ui/skeleton'
+    46→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    47→import MedImage from './MedImage'
+    48→
+    49→/** 1dp when fractional, plain integer otherwise (100 → "100", 2.1 → "2.1"). */
+    50→function fmtNum(n: number): string {
+    51→  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+    52→}
+    53→
+    54→function daysLeftLabel(daysLeft: number | null): string {
+    55→  if (daysLeft === null) return '—'
+    56→  return fmtNum(daysLeft)
+    57→}
+    58→
+    59→/** Today as a local YYYY-MM-DD string (used as the date input min). */
+    60→function todayLocal(): string {
+    61→  const d = new Date()
+    62→  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    63→}
+    64→
+    65→function StatChip({
+    66→  label,
+    67→  value,
+    68→  sub,
+    69→  icon,
+    70→  tone,
+    71→}: {
+    72→  label: string
+    73→  value: string | number
+    74→  sub: string
+    75→  icon: React.ReactNode
+    76→  tone: string
+    77→}) {
+    78→  return (
+    79→    <Card className="gap-1 p-4">
+    80→      <div className="flex items-center gap-2">
+    81→        <span className={cn('flex size-8 items-center justify-center rounded-lg', tone)}>{icon}</span>
+    82→        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+    83→      </div>
+    84→      <p className="text-2xl font-bold tabular-nums">{value}</p>
+    85→      <p className="text-[11px] text-muted-foreground">{sub}</p>
+    86→    </Card>
+    87→  )
+    88→}
+    89→
+    90→function RestockSkeleton() {
+    91→  return (
+    92→    <div className="space-y-4" aria-hidden="true">
+    93→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    94→        {[...Array(4)].map((_, i) => (
+    95→          <Skeleton key={i} className="h-[86px] rounded-xl" />
+    96→        ))}
+    97→      </div>
+    98→      <Card className="gap-0 py-4">
+    99→        <CardContent className="px-4">
+   100→          <div className="overflow-x-auto rounded-md border scrollbar-thin">
+   101→            <Table className="min-w-[940px]">
+   102→              <TableHeader>
+   103→                <TableRow>
+   104→                  {[...Array(8)].map((_, i) => (
+   105→                    <TableHead key={i}>
+   106→                      <Skeleton className="h-4 w-16" />
+   107→                    </TableHead>
+   108→                  ))}
+   109→                </TableRow>
+   110→              </TableHeader>
+   111→              <TableBody>
+   112→                {[...Array(3)].map((_, i) => (
+   113→                  <TableRow key={`sk-${i}`}>
+   114→                    <TableCell colSpan={8}>
+   115→                      <Skeleton className="h-10 w-full" />
+   116→                    </TableCell>
+   117→                  </TableRow>
+   118→                ))}
+   119→              </TableBody>
+   120→            </Table>
+   121→          </div>
+   122→        </CardContent>
+   123→      </Card>
+   124→    </div>
+   125→  )
+   126→}
+   127→
+   128→/** Plain-text PO draft for suppliers — mirrors the table rows. */
+   129→export function buildPoDraft(list: RestockSuggestion[]): string {
+   130→  const date = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+   131→  const lines = list.map((s, i) => {
+   132→    const days = s.daysLeft != null ? `~${fmtNum(s.daysLeft)}d left` : 'no recent sales'
+   133→    const brand = s.brand ? ` (${s.brand})` : ''
+   134→    return `${i + 1}. ${s.name}${brand} (${s.unit}) — suggested ${s.suggestedQty} (stock ${s.stock}, ${days}) — est ${fmtBDT(s.estValue)}`
+   135→  })
+   136→  return ['MediPlus restock draft — ' + date, ...lines].join('\n')
+   137→}
+   138→
+   139→interface RestockSuggestionsProps {
+   140→  /** Notify the dashboard so nav badges/stats stay in sync after creating POs. */
+   141→  onStatsChanged?: () => void
+   142→}
+   143→
+   144→export default function RestockSuggestions({ onStatsChanged }: RestockSuggestionsProps) {
+   145→  const [suggestions, setSuggestions] = useState<RestockSuggestion[] | null>(null)
+   146→  const [loading, setLoading] = useState(true)
+   147→  const [refreshing, setRefreshing] = useState(false)
+   148→  const [error, setError] = useState<string | null>(null)
+   149→  const [exportPending, setExportPending] = useState(false)
+   150→  const [copying, setCopying] = useState(false)
+   151→  // Per-row create-po pending ids (Round 10; the per-row pending state is now
+   152→  // tied to the create-PO dialog submit, Round 11)
+   153→  const [orderingIds, setOrderingIds] = useState<Set<string>>(new Set())
+   154→  const [orderAllPending, setOrderAllPending] = useState(false)
+   155→  const [orderAllConfirm, setOrderAllConfirm] = useState(false)
+   156→  // Round 11 — per-row "Mark as ordered" create-PO dialog state
+   157→  const [poTarget, setPoTarget] = useState<RestockSuggestion | null>(null)
+   158→  const [poQty, setPoQty] = useState('')
+   159→  const [poSupplier, setPoSupplier] = useState('')
+   160→  const [poExpectedAt, setPoExpectedAt] = useState('')
+   161→  const [poNote, setPoNote] = useState('')
+   162→  const [poError, setPoError] = useState<string | null>(null)
+   163→  const [poSubmitting, setPoSubmitting] = useState(false)
+   164→
+   165→  const load = useCallback(async (silent = false) => {
+   166→    if (silent) setRefreshing(true)
+   167→    else {
+   168→      setLoading(true)
+   169→      setError(null)
+   170→    }
+   171→    try {
+   172→      const d = await api<{ suggestions: RestockSuggestion[] }>(
+   173→        '/api/pharmacist?resource=restock-suggestions'
+   174→      )
+   175→      setSuggestions(d.suggestions)
+   176→    } catch (e) {
+   177→      const message = e instanceof Error ? e.message : 'Failed to load restock suggestions'
+   178→      if (silent) toast.error(message)
+   179→      else setError(message)
+   180→    } finally {
+   181→      setLoading(false)
+   182→      setRefreshing(false)
+   183→    }
+   184→  }, [])
+   185→
+   186→  useEffect(() => {
+   187→    void load()
+   188→  }, [load])
+   189→
+   190→  const totals = useMemo(() => {
+   191→    const list = suggestions ?? []
+   192→    return {
+   193→      units: list.reduce((sum, s) => sum + s.suggestedQty, 0),
+   194→      spend: list.reduce((sum, s) => sum + s.estValue, 0),
+   195→      critical: list.filter((s) => s.daysLeft === 0 || s.stock === 0).length,
+   196→    }
+   197→  }, [suggestions])
+   198→
+   199→  /** Lines that still need a PO (not already covered by an open one). */
+   200→  const needOrdering = useMemo(() => {
+   201→    const list = suggestions ?? []
+   202→    return list.filter((s) => (s.openPoQty ?? 0) < s.suggestedQty)
+   203→  }, [suggestions])
+   204→
+   205→  function openPoQtyOf(s: RestockSuggestion): number {
+   206→    return s.openPoQty ?? 0
+   207→  }
+   208→
+   209→  function openPoDialog(s: RestockSuggestion) {
+   210→    setPoTarget(s)
+   211→    setPoQty(String(s.suggestedQty))
+   212→    setPoSupplier('')
+   213→    setPoExpectedAt('')
+   214→    setPoNote('')
+   215→    setPoError(null)
+   216→  }
+   217→
+   218→  function closePoDialog() {
+   219→    setPoTarget(null)
+   220→    setPoQty('')
+   221→    setPoSupplier('')
+   222→    setPoExpectedAt('')
+   223→    setPoNote('')
+   224→    setPoError(null)
+   225→  }
+   226→
+   227→  async function submitPo(): Promise<void> {
+   228→    const s = poTarget
+   229→    if (!s || poSubmitting) return
+   230→    const qty = Number(poQty)
+   231→    if (poQty.trim() === '' || !Number.isInteger(qty) || qty < 1 || qty > 10000) {
+   232→      setPoError('Quantity must be between 1 and 10000')
+   233→      return
+   234→    }
+   235→    setPoError(null)
+   236→    setPoSubmitting(true)
+   237→    setOrderingIds((prev) => {
+   238→      const next = new Set(prev)
+   239→      next.add(s.id)
+   240→      return next
+   241→    })
+   242→    try {
+   243→      const supplier = poSupplier.trim()
+   244→      const note = poNote.trim()
+   245→      await api<{ order: unknown }>('/api/pharmacist', {
+   246→        method: 'PUT',
+   247→        body: {
+   248→          action: 'create-po',
+   249→          medicineId: s.id,
+   250→          qty,
+   251→          ...(supplier !== '' ? { supplier } : {}),
+   252→          ...(poExpectedAt !== '' ? { expectedAt: poExpectedAt } : {}),
+   253→          ...(note !== '' ? { note } : {}),
+   254→        },
+   255→      })
+   256→      toast.success(`PO created — ${qty} × ${s.name}`)
+   257→      closePoDialog()
+   258→      onStatsChanged?.()
+   259→      await load(true) // silent refresh so openPoQty / coverage chips update
+   260→    } catch (e) {
+   261→      // Server 400 (e.g. supplier/date validation) — keep the dialog open
+   262→      toast.error(e instanceof Error ? e.message : 'Failed to create purchase order')
+   263→    } finally {
+   264→      setPoSubmitting(false)
+   265→      setOrderingIds((prev) => {
+   266→        const next = new Set(prev)
+   267→        next.delete(s.id)
+   268→        return next
+   269→      })
+   270→    }
+   271→  }
+   272→
+   273→  async function orderAll() {
+   274→    if (needOrdering.length === 0) return
+   275→    setOrderAllPending(true)
+   276→    let ok = 0
+   277→    let failed = 0
+   278→    let firstError: string | null = null
+   279→    try {
+   280→      for (const s of needOrdering) {
+   281→        try {
+   282→          await api<{ order: unknown }>('/api/pharmacist', {
+   283→            method: 'PUT',
+   284→            body: { action: 'create-po', medicineId: s.id, qty: s.suggestedQty },
+   285→          })
+   286→          ok++
+   287→        } catch (e) {
+   288→          failed++
+   289→          if (!firstError) firstError = e instanceof Error ? e.message : 'Unknown error'
+   290→        }
+   291→      }
+   292→      if (ok > 0) {
+   293→        toast.success(`Created ${ok} purchase order${ok === 1 ? '' : 's'}${failed > 0 ? ` — ${failed} failed` : ''}`)
+   294→        onStatsChanged?.()
+   295→        await load(true)
+   296→      }
+   297→      if (failed > 0) {
+   298→        toast.error(`Failed ${failed} order${failed === 1 ? '' : 's'} — ${firstError ?? 'unknown error'}`)
+   299→        await load(true)
+   300→      }
+   301→    } finally {
+   302→      setOrderAllPending(false)
+   303→      setOrderAllConfirm(false)
+   304→    }
+   305→  }
+   306→
+   307→  async function exportCsv() {
+   308→    setExportPending(true)
+   309→    try {
+   310→      const d = await api<{ filename: string; csv: string }>(
+   311→        '/api/pharmacist?resource=export-restock'
+   312→      )
+   313→      if (typeof d.csv !== 'string' || typeof d.filename !== 'string')
+   314→        throw new Error('Export unavailable')
+   315→      downloadCsv(d.filename, d.csv)
+   316→      toast.success('Restock list exported')
+   317→    } catch (e) {
+   318→      toast.error(e instanceof Error ? e.message : 'Failed to export restock list')
+   319→    } finally {
+   320→      setExportPending(false)
+   321→    }
+   322→  }
+   323→
+   324→  async function copyAsText() {
+   325→    if (!suggestions || suggestions.length === 0) return
+   326→    setCopying(true)
+   327→    try {
+   328→      await navigator.clipboard.writeText(buildPoDraft(suggestions))
+   329→      toast.success('PO draft copied')
+   330→    } catch {
+   331→      toast.error('Could not access the clipboard')
+   332→    } finally {
+   333→      setCopying(false)
+   334→    }
+   335→  }
+   336→
+   337→  return (
+   338→    <div className="space-y-4">
+   339→      {/* Toolbar */}
+   340→      <div className="flex flex-wrap items-center justify-between gap-2">
+   341→        <p className="text-sm text-muted-foreground">
+   342→          Low-stock items with reorder quantities based on recent sales.
+   343→        </p>
+   344→        <div className="flex flex-wrap items-center justify-end gap-2">
+   345→          <Button
+   346→            variant="outline"
+   347→            size="icon"
+   348→            className="h-8 w-8"
+   349→            onClick={() => void load(true)}
+   350→            disabled={refreshing}
+   351→            aria-label="Refresh restock suggestions"
+   352→          >
+   353→            <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
+   354→          </Button>
+   355→          <Button
+   356→            variant="ghost"
+   357→            onClick={() => void copyAsText()}
+   358→            disabled={copying || !suggestions || suggestions.length === 0}
+   359→          >
+   360→            {copying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+   361→            Copy as text
+   362→          </Button>
+   363→          <Button
+   364→            variant="outline"
+   365→            onClick={() => void exportCsv()}
+   366→            disabled={exportPending || !suggestions || suggestions.length === 0}
+   367→          >
+   368→            {exportPending ? (
+   369→              <Loader2 className="h-4 w-4 animate-spin" />
+   370→            ) : (
+   371→              <Download className="h-4 w-4" />
+   372→            )}
+   373→            Export CSV
+   374→          </Button>
+   375→          {needOrdering.length === 0 && suggestions && suggestions.length > 0 ? (
+   376→            <span title="All lines already covered">
+   377→              <Button variant="default" disabled title="All lines already covered">
+   378→                <PackagePlus className="h-4 w-4" />
+   379→                Order all
+   380→              </Button>
+   381→            </span>
+   382→          ) : (
+   383→            <Button
+   384→              variant="default"
+   385→              onClick={() => setOrderAllConfirm(true)}
+   386→              disabled={orderAllPending || !suggestions || suggestions.length === 0}
+   387→            >
+   388→              {orderAllPending ? (
+   389→                <Loader2 className="h-4 w-4 animate-spin" />
+   390→              ) : (
+   391→                <PackagePlus className="h-4 w-4" />
+   392→              )}
+   393→              Order all
+   394→            </Button>
+   395→          )}
+   396→        </div>
+   397→      </div>
+   398→
+   399→      {error ? (
+   400→        <Card className="flex-col items-center gap-2 p-10 text-center">
+   401→          <PackageSearch className="h-8 w-8 text-muted-foreground/50" />
+   402→          <p className="text-sm text-muted-foreground">{error}</p>
+   403→          <Button variant="outline" size="sm" onClick={() => void load()}>
+   404→            <RefreshCw className="h-3.5 w-3.5" /> Retry
+   405→          </Button>
+   406→        </Card>
+   407→      ) : loading && !suggestions ? (
+   408→        <RestockSkeleton />
+   409→      ) : !suggestions || suggestions.length === 0 ? (
+   410→        <Card className="flex-col items-center gap-3 p-10 text-center">
+   411→          <CheckCircle2 className="h-10 w-10 text-emerald-600" />
+   412→          <div>
+   413→            <p className="text-sm font-medium">Nothing to reorder</p>
+   414→            <p className="text-sm text-muted-foreground">
+   415→              No items below the stock threshold — inventory looks healthy.
+   416→            </p>
+   417→          </div>
+   418→        </Card>
+   419→      ) : (
+   420→        <>
+   421→          {/* Summary strip */}
+   422→          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   423→            <StatChip
+   424→              label="Items to reorder"
+   425→              value={suggestions.length}
+   426→              sub="below the stock threshold"
+   427→              tone="bg-amber-100"
+   428→              icon={<PackageSearch className="size-4 text-amber-700" aria-hidden="true" />}
+   429→            />
+   430→            <StatChip
+   431→              label="Units suggested"
+   432→              value={totals.units}
+   433→              sub="across all suggested lines"
+   434→              tone="bg-primary/10"
+   435→              icon={<PackagePlus className="text-primary size-4" aria-hidden="true" />}
+   436→            />
+   437→            <StatChip
+   438→              label="Estimated spend"
+   439→              value={fmtBDT(totals.spend)}
+   440→              sub="if everything is ordered"
+   441→              tone="bg-emerald-100"
+   442→              icon={<HandCoins className="size-4 text-emerald-700" aria-hidden="true" />}
+   443→            />
+   444→            <StatChip
+   445→              label="Critical / out"
+   446→              value={totals.critical}
+   447→              sub="out of stock or zero days left"
+   448→              tone="bg-red-100"
+   449→              icon={<TriangleAlert className="size-4 text-red-600" aria-hidden="true" />}
+   450→            />
+   451→          </div>
+   452→
+   453→          {/* Suggestions table */}
+   454→          <Card className="gap-0 py-4">
+   455→            <CardContent className="px-4">
+   456→              <div className="max-h-[60vh] overflow-auto rounded-md border scrollbar-thin">
+   457→                <Table className="min-w-[880px]" aria-label="Restock suggestions">
+   458→                  <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+   459→                    <TableRow className="hover:bg-transparent">
+   460→                      <TableHead>Medicine</TableHead>
+   461→                      <TableHead className="text-center">Stock</TableHead>
+   462→                      <TableHead className="text-center">Sold 30d</TableHead>
+   463→                      <TableHead className="text-right">Avg/day</TableHead>
+   464→                      <TableHead className="text-right">Days left</TableHead>
+   465→                      <TableHead className="text-right">Suggested qty</TableHead>
+   466→                      <TableHead className="text-right">Est. value</TableHead>
+   467→                      <TableHead className="text-right">Action</TableHead>
+   468→                    </TableRow>
+   469→                  </TableHeader>
+   470→                  <TableBody>
+   471→                    {suggestions.map((s) => {
+   472→                      const out = s.stock === 0
+   473→                      const critical = s.daysLeft !== null && s.daysLeft <= 2
+   474→                      const soon = s.daysLeft !== null && s.daysLeft > 2 && s.daysLeft <= 7
+   475→                      return (
+   476→                        <TableRow key={s.id} className="transition-colors hover:bg-accent/40">
+   477→                          <TableCell>
+   478→                            <div className="flex items-center gap-2.5">
+   479→                              <MedImage
+   480→                                src={s.image}
+   481→                                alt={s.name}
+   482→                                className="h-9 w-9 shrink-0 rounded-md border object-cover"
+   483→                              />
+   484→                              <div className="min-w-0">
+   485→                                <p className="truncate text-sm font-medium">{s.name}</p>
+   486→                                <p className="max-w-52 truncate text-xs text-muted-foreground">
+   487→                                  {[s.brand, s.genericName].filter(Boolean).join(' · ') || s.unit}
+   488→                                </p>
+   489→                              </div>
+   490→                            </div>
+   491→                          </TableCell>
+   492→                          <TableCell className="whitespace-nowrap text-center">
+   493→                            <span className="inline-flex items-center gap-1.5">
+   494→                              <span className="text-sm tabular-nums">{s.stock}</span>
+   495→                              {out ? (
+   496→                                <Badge
+   497→                                  variant="outline"
+   498→                                  className="border-red-300 bg-red-100 text-red-800"
+   499→                                >
+   500→                                  Out
+   501→                                </Badge>
+   502→                              ) : (
+   503→                                s.stock <= s.lowStockAt && (
+   504→                                  <Badge
+   505→                                    variant="outline"
+   506→                                    className="border-amber-300 bg-amber-100 text-amber-800"
+   507→                                  >
+   508→                                    Low
+   509→                                  </Badge>
+   510→                                )
+   511→                              )}
+   512→                            </span>
+   513→                          </TableCell>
+   514→                          <TableCell className="text-center text-sm tabular-nums">
+   515→                            {s.soldLast30}
+   516→                          </TableCell>
+   517→                          <TableCell className="text-right text-sm tabular-nums">
+   518→                            {fmtNum(s.avgDaily)}
+   519→                          </TableCell>
+   520→                          <TableCell
+   521→                            className={cn(
+   522→                              'whitespace-nowrap text-right text-sm tabular-nums',
+   523→                              critical && 'font-bold text-red-600 dark:text-red-400',
+   524→                              soon && 'font-medium text-amber-600 dark:text-amber-400',
+   525→                              s.daysLeft === null && 'text-muted-foreground'
+   526→                            )}
+   527→                          >
+   528→                            {daysLeftLabel(s.daysLeft)}
+   529→                          </TableCell>
+   530→                          <TableCell className="whitespace-nowrap text-right text-sm font-bold text-primary tabular-nums">
+   531→                            {s.suggestedQty}
+   532→                            <span className="ml-1 text-xs font-normal text-muted-foreground">
+   533→                              {s.unit}
+   534→                            </span>
+   535→                          </TableCell>
+   536→                          <TableCell className="whitespace-nowrap text-right text-sm font-medium">
+   537→                            {fmtBDT(s.estValue)}
+   538→                          </TableCell>
+   539→                          <TableCell className="whitespace-nowrap">
+   540→                            <div className="flex flex-col items-end gap-1">
+   541→                              {openPoQtyOf(s) > 0 && (
+   542→                                <span
+   543→                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 tabular-nums dark:bg-amber-500/15 dark:text-amber-300"
+   544→                                  title={`${openPoQtyOf(s)} units of this line are on an open purchase order`}
+   545→                                >
+   546→                                  PO {openPoQtyOf(s)} on order
+   547→                                </span>
+   548→                              )}
+   549→                              {openPoQtyOf(s) >= s.suggestedQty ? (
+   550→                                <Button
+   551→                                  variant="outline"
+   552→                                  size="sm"
+   553→                                  disabled
+   554→                                  title="This line is already covered by an open PO"
+   555→                                  className="h-8 border-emerald-300! bg-emerald-100! text-emerald-700! dark:border-emerald-700/60! dark:bg-emerald-950/40! dark:text-emerald-300!"
+   556→                                >
+   557→                                  <CheckCircle2 className="h-3.5 w-3.5" />
+   558→                                  Ordered ✓
+   559→                                </Button>
+   560→                              ) : (
+   561→                                <Button
+   562→                                  variant="outline"
+   563→                                  size="sm"
+   564→                                  className="h-8 focus-visible:ring-primary/30"
+   565→                                  disabled={orderingIds.has(s.id)}
+   566→                                  onClick={() => openPoDialog(s)}
+   567→                                >
+   568→                                  {orderingIds.has(s.id) ? (
+   569→                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+   570→                                  ) : (
+   571→                                    <ShoppingCart className="h-3.5 w-3.5" />
+   572→                                  )}
+   573→                                  Mark as ordered
+   574→                                </Button>
+   575→                              )}
+   576→                            </div>
+   577→                          </TableCell>
+   578→                        </TableRow>
+   579→                      )
+   580→                    })}
+   581→                  </TableBody>
+   582→                </Table>
+   583→              </div>
+   584→            </CardContent>
+   585→          </Card>
+   586→
+   587→          <p className="text-xs text-muted-foreground">
+   588→            Suggestions use the last 30 days of sales (1.5× coverage, min 30 units) — review before
+   589→            ordering.
+   590→          </p>
+   591→        </>
+   592→      )}
+   593→
+   594→      {/* Order-all confirm */}
+   595→      <AlertDialog open={orderAllConfirm} onOpenChange={setOrderAllConfirm}>
+   596→        <AlertDialogContent>
+   597→          <AlertDialogHeader>
+   598→            <AlertDialogTitle>Create purchase orders for all suggested lines?</AlertDialogTitle>
+   599→            <AlertDialogDescription>
+   600→              {needOrdering.length} order{needOrdering.length === 1 ? '' : 's'}, ~
+   601→              {fmtBDT(needOrdering.reduce((sum, s) => sum + s.estValue, 0))} total — lines already
+   602→              fully covered by an open PO are skipped.
+   603→            </AlertDialogDescription>
+   604→          </AlertDialogHeader>
+   605→          <AlertDialogFooter>
+   606→            <AlertDialogCancel disabled={orderAllPending}>Go back</AlertDialogCancel>
+   607→            <AlertDialogAction
+   608→              disabled={orderAllPending}
+   609→              onClick={(e) => {
+   610→                e.preventDefault()
+   611→                void orderAll()
+   612→              }}
+   613→            >
+   614→              {orderAllPending && <Loader2 className="h-4 w-4 animate-spin" />}
+   615→              Create {needOrdering.length} order{needOrdering.length === 1 ? '' : 's'}
+   616→            </AlertDialogAction>
+   617→          </AlertDialogFooter>
+   618→        </AlertDialogContent>
+   619→      </AlertDialog>
+   620→
+   621→      {/* Round 11 — "Mark as ordered" create-PO dialog (supplier / expected delivery / note) */}
+   622→      <Dialog
+   623→        open={poTarget !== null}
+   624→        onOpenChange={(o) => {
+   625→          if (!o && !poSubmitting) closePoDialog()
+   626→        }}
+   627→      >
+   628→        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-thin sm:max-w-md">
+   629→          <DialogHeader>
+   630→            <DialogTitle>Create purchase order</DialogTitle>
+   631→            <DialogDescription>
+   632→              Confirm the quantity and optionally set a supplier and expected delivery date.
+   633→            </DialogDescription>
+   634→          </DialogHeader>
+   635→
+   636→          {poTarget && (
+   637→            <div className="flex items-center gap-2.5 rounded-lg border bg-muted/40 p-2.5">
+   638→              <MedImage
+   639→                src={poTarget.image}
+   640→                alt={poTarget.name}
+   641→                className="h-10 w-10 shrink-0 rounded-md border border-border bg-muted object-cover"
+   642→              />
+   643→              <div className="min-w-0">
+   644→                <p className="truncate text-sm font-medium">{poTarget.name}</p>
+   645→                <p className="text-xs text-muted-foreground">
+   646→                  Suggested qty:{' '}
+   647→                  <span className="font-medium text-foreground tabular-nums">
+   648→                    {poTarget.suggestedQty}
+   649→                  </span>{' '}
+   650→                  {poTarget.unit}
+   651→                  {openPoQtyOf(poTarget) > 0 && (
+   652→                    <>
+   653→                      {' '}
+   654→                      · <span className="tabular-nums">PO {openPoQtyOf(poTarget)}</span> on order
+   655→                    </>
+   656→                  )}
+   657→                </p>
+   658→              </div>
+   659→            </div>
+   660→          )}
+   661→
+   662→          <div className="space-y-3">
+   663→            <div className="space-y-1.5">
+   664→              <Label htmlFor="po-qty">Quantity *</Label>
+   665→              <Input
+   666→                id="po-qty"
+   667→                type="number"
+   668→                min={1}
+   669→                max={10000}
+   670→                step={1}
+   671→                value={poQty}
+   672→                onChange={(e) => {
+   673→                  setPoQty(e.target.value)
+   674→                  setPoError(null)
+   675→                }}
+   676→                className="tabular-nums"
+   677→              />
+   678→            </div>
+   679→            <div className="space-y-1.5">
+   680→              <div className="flex items-baseline justify-between gap-2">
+   681→                <Label htmlFor="po-supplier">Supplier</Label>
+   682→                {poSupplier.length > 100 && (
+   683→                  <span
+   684→                    className={cn(
+   685→                      'text-[11px] tabular-nums',
+   686→                      poSupplier.length >= 120
+   687→                        ? 'font-medium text-red-600 dark:text-red-400'
+   688→                        : 'text-muted-foreground'
+   689→                    )}
+   690→                  >
+   691→                    {poSupplier.length} / 120
+   692→                  </span>
+   693→                )}
+   694→              </div>
+   695→              <Input
+   696→                id="po-supplier"
+   697→                value={poSupplier}
+   698→                maxLength={120}
+   699→                onChange={(e) => setPoSupplier(e.target.value)}
+   700→                placeholder="e.g. Square Pharmaceuticals Ltd."
+   701→              />
+   702→            </div>
+   703→            <div className="space-y-1.5">
+   704→              <Label htmlFor="po-expected">Expected delivery</Label>
+   705→              <Input
+   706→                id="po-expected"
+   707→                type="date"
+   708→                min={todayLocal()}
+   709→                value={poExpectedAt}
+   710→                onChange={(e) => setPoExpectedAt(e.target.value)}
+   711→              />
+   712→            </div>
+   713→            <div className="space-y-1.5">
+   714→              <Label htmlFor="po-note">Note</Label>
+   715→              <Input
+   716→                id="po-note"
+   717→                value={poNote}
+   718→                maxLength={300}
+   719→                onChange={(e) => setPoNote(e.target.value)}
+   720→                placeholder="Optional note (max 300 characters)"
+   721→              />
+   722→            </div>
+   723→            {poError && <p className="text-sm font-medium text-red-600">{poError}</p>}
+   724→          </div>
+   725→
+   726→          <DialogFooter className="gap-2">
+   727→            <Button variant="ghost" onClick={closePoDialog} disabled={poSubmitting}>
+   728→              Cancel
+   729→            </Button>
+   730→            <Button onClick={() => void submitPo()} disabled={poSubmitting}>
+   731→              {poSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+   732→              Create PO
+   733→            </Button>
+   734→          </DialogFooter>
+   735→        </DialogContent>
+   736→      </Dialog>
+   737→    </div>
+   738→  )
+   739→}
+   740→

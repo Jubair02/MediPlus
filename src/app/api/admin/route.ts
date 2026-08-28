@@ -8,6 +8,7 @@ import {
   round2,
   publicUser,
   buildMedicineData,
+  medicineStaffJson,
   parseCategoryInput,
   slugify,
   orderInclude,
@@ -487,7 +488,7 @@ export async function GET(request: Request) {
                 ],
               }
             : {},
-          include: { category: true },
+          include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
           orderBy: { createdAt: 'desc' },
         }),
         db.review.groupBy({ by: ['medicineId'], _avg: { rating: true }, _count: { _all: true } }),
@@ -497,7 +498,7 @@ export async function GET(request: Request) {
         medicines: medicines.map((m) => {
           const g = ratingByMed.get(m.id)
           return {
-            ...m,
+            ...medicineStaffJson(m),
             rating: g?._avg.rating != null ? round1(g._avg.rating) : null,
             ratingCount: g?._count._all ?? 0,
           }
@@ -794,7 +795,7 @@ export async function GET(request: Request) {
 /**
  * PUT /api/admin
  *  {action:'update-user', id, status?, role?}          — status change writes a USER_STATUS audit entry
- *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...}
+ *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...} — data.extraImages optional gallery urls (Round 11)
  *  {action:'create-category'|'update-category'|'delete-category', ...}
  *  {action:'update-order', id, status?, deliveryStaffId?} — status change writes an ORDER_STATUS audit entry
  *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED} — writes a PAYMENT_STATUS audit entry
@@ -862,15 +863,18 @@ export async function PUT(request: Request) {
       return Response.json({ user: publicUser(created) }, { status: 201 })
     }
 
-    // ---- medicines ----
+    // ---- medicines (data.extraImages optional: ≤5 data:/http(s): urls; on update key present = REPLACE-ALL, absent = untouched) ----
     if (action === 'create-medicine') {
       const parsed = await buildMedicineData(body.data, 'create')
       if ('error' in parsed) return badRequest(parsed.error)
-      const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+      const medicine = await db.medicine.create({
+        data: parsed.data,
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+      })
       if (medicine.stock > 0) {
         await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
       }
-      return Response.json({ medicine }, { status: 201 })
+      return Response.json({ medicine: medicineStaffJson(medicine) }, { status: 201 })
     }
 
     if (action === 'update-medicine') {
@@ -881,11 +885,15 @@ export async function PUT(request: Request) {
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
       const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
-      const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+      const medicine = await db.medicine.update({
+        where: { id },
+        data: parsed.data,
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+      })
       if (newStock !== undefined && newStock !== existing.stock) {
         await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
       }
-      return Response.json({ medicine })
+      return Response.json({ medicine: medicineStaffJson(medicine) })
     }
 
     if (action === 'delete-medicine') {

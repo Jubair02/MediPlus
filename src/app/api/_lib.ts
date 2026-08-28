@@ -289,6 +289,54 @@ export interface MedicineWriteData {
   status?: string
 }
 
+// ---------- medicine gallery (Round 11) ----------
+
+export const MAX_EXTRA_IMAGES = 5
+/** Hard ceiling = primary + MAX_EXTRA_IMAGES extras. */
+export const MAX_TOTAL_IMAGES = 6
+
+/**
+ * Validate the optional `extraImages` key on create/update-medicine (body.data.extraImages).
+ * Must be an array when present; each entry a trimmed non-empty string starting with
+ * `data:image`, `http://` or `https://`; at most MAX_EXTRA_IMAGES entries.
+ * Position errors are 1-based: `Invalid image at position 1` for the first bad entry.
+ */
+export function parseExtraImages(raw: unknown): { error: string } | { data: string[] } {
+  if (raw === undefined) return { data: [] }
+  if (!Array.isArray(raw)) return { error: 'Images must be an array' }
+  if (raw.length > MAX_EXTRA_IMAGES) return { error: `At most ${MAX_EXTRA_IMAGES} extra images are allowed` }
+  const out: string[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const v = typeof raw[i] === 'string' ? (raw[i] as string).trim() : ''
+    if (!v || !(v.startsWith('data:image') || v.startsWith('http://') || v.startsWith('https://'))) {
+      return { error: `Invalid image at position ${i + 1}` }
+    }
+    out.push(v)
+  }
+  return { data: out }
+}
+
+/** Public list-row image count: 1 when only the primary, 1 + extras when both, 0 when neither. */
+export function medicineImageCount(primaryImage: string | null | undefined, extraCount: number): number {
+  return (primaryImage ? 1 : 0) + extraCount
+}
+
+/** Medicine row loaded with its extra images (sorted by sort asc) + category. */
+export type MedicineWithExtras = Prisma.MedicineGetPayload<{ include: { category: true; extraImages: { orderBy: { sort: 'asc' } } } }>
+
+/**
+ * Staff medicine JSON (pharmacist/admin resource=medicines + create/update responses):
+ * full row with `extraImages` collapsed to url strings (sorted asc) and `imageCount` (primary + extras).
+ */
+export function medicineStaffJson(m: MedicineWithExtras) {
+  const extraImages = m.extraImages.map((e) => e.url)
+  return {
+    ...m,
+    extraImages,
+    imageCount: medicineImageCount(m.image, extraImages.length),
+  }
+}
+
 export async function buildMedicineData(raw: unknown, mode: 'create'): Promise<{ error: string } | { data: Prisma.MedicineUncheckedCreateInput }>
 export async function buildMedicineData(raw: unknown, mode: 'update'): Promise<{ error: string } | { data: Prisma.MedicineUncheckedUpdateInput }>
 export async function buildMedicineData(
@@ -301,6 +349,19 @@ export async function buildMedicineData(
   const d = raw as Record<string, unknown>
   const out: MedicineWriteData = {}
   const s = (v: unknown) => (typeof v === 'string' ? v.trim() : undefined)
+
+  // Round 11 — optional `extraImages` key on body.data (validated via parseExtraImages).
+  // create: rows persisted with sort = index. update: key present = REPLACE-ALL (delete + recreate,
+  // empty array clears all); key absent = untouched.
+  let extraImagesWrite: Record<string, unknown> | undefined
+  if (d.extraImages !== undefined) {
+    const imgs = parseExtraImages(d.extraImages)
+    if ('error' in imgs) return { error: imgs.error }
+    extraImagesWrite =
+      mode === 'create'
+        ? { create: imgs.data.map((url, i) => ({ url, sort: i })) }
+        : { deleteMany: {}, create: imgs.data.map((url, i) => ({ url, sort: i })) }
+  }
 
   const name = s(d.name)
   if (name !== undefined && name !== '') out.name = name
@@ -371,7 +432,12 @@ export async function buildMedicineData(
     }
   }
 
-  return { data: out as Prisma.MedicineUncheckedCreateInput | Prisma.MedicineUncheckedUpdateInput }
+  return {
+    data: {
+      ...(out as Record<string, unknown>),
+      ...(extraImagesWrite ? { extraImages: extraImagesWrite } : {}),
+    } as Prisma.MedicineUncheckedCreateInput | Prisma.MedicineUncheckedUpdateInput,
+  }
 }
 
 // ---------- stock movements (audit log) ----------

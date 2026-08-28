@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
-import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
+import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
 
 const RX_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
@@ -13,6 +13,8 @@ const MAX_ANSWER_LENGTH = 1000
 /** Round 10 — purchase order limits. */
 const PO_MAX_QTY = 10000
 const PO_MAX_NOTE_LENGTH = 300
+/** Round 11 — purchase order supplier / expected-delivery limits. */
+const PO_MAX_SUPPLIER_LENGTH = 120
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10
@@ -34,6 +36,7 @@ interface QuestionRow {
   answer: string | null
   status: string
   createdAt: Date
+  updatedAt: Date
   answeredAt: Date | null
   medicine: { id: string; name: string; image: string | null }
   user: { name: string | null; email: string }
@@ -55,6 +58,8 @@ function questionToJson(q: QuestionRow) {
     askedByName: q.user.name ?? 'Customer',
     askedByEmail: q.user.email,
     answerByName: q.answer ? q.answeredBy?.name ?? 'Pharmacist' : null,
+    // Round 11 — question text was edited while PENDING (updatedAt moved >2s past createdAt)
+    edited: q.updatedAt.getTime() - q.createdAt.getTime() > 2000,
     helpfulCount: q._count.helpfulVotes,
   }
 }
@@ -64,6 +69,7 @@ const questionInclude = {
   user: { select: { name: true, email: true } },
   answeredBy: { select: { name: true } },
   _count: { select: { helpfulVotes: true } },
+  // note: updatedAt (needed for the Round 11 `edited` flag) is a scalar — always present on include rows
 } satisfies Prisma.QuestionInclude
 
 /** Shared include for purchase-order rows — carries the medicine's live stock for currentStock. */
@@ -81,6 +87,8 @@ function poToRow(po: FullPO) {
     qty: po.qty,
     status: po.status,
     note: po.note,
+    supplier: po.supplier,
+    expectedAt: po.expectedAt,
     orderedAt: po.orderedAt,
     receivedAt: po.receivedAt,
     orderedBy: { id: po.orderedBy.id, name: po.orderedBy.name },
@@ -157,6 +165,9 @@ async function restockSuggestions() {
 
 /**
  * GET /api/pharmacist?resource=stats|prescriptions|medicines|orders|movements|questions|restock-suggestions|purchase-orders|export-restock
+ *   resource=medicines       — staff rows carry extraImages (urls sorted asc) + imageCount (Round 11 gallery)
+ *   resource=questions       — rows carry edited: true when the text was edited while PENDING (Round 11)
+ *   resource=purchase-orders — rows carry supplier / expectedAt (Round 11)
  */
 export async function GET(request: Request) {
   try {
@@ -239,10 +250,10 @@ export async function GET(request: Request) {
               ],
             }
           : {},
-        include: { category: true },
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
         orderBy: { createdAt: 'desc' },
       })
-      return Response.json({ medicines })
+      return Response.json({ medicines: medicines.map(medicineStaffJson) })
     }
 
     if (resource === 'orders') {
@@ -353,11 +364,14 @@ export async function GET(request: Request) {
 /**
  * PUT /api/pharmacist
  *  {action:'review', prescriptionId, decision:'APPROVED'|'REJECTED', reviewNote?}  — sets reviewedAt + RX_REVIEW audit entry
- *  {action:'create-po', medicineId, qty, note?}      — create purchase order (PO_CREATE audit entry)
+ *  {action:'create-po', medicineId, qty, note?, supplier?, expectedAt?} — create purchase order (PO_CREATE audit entry);
+ *      supplier trimmed, empty → null, ≤120 chars else 400 'Supplier must be 120 characters or less'; expectedAt
+ *      'YYYY-MM-DD' (local midnight) or ISO string, NaN → 400 'Invalid expected date', before today → 400
+ *      'Expected date cannot be in the past'
  *  {action:'receive-po', id, note?}                  — receive PO: stock +qty, StockMovement PO_RECEIVE, audit entry
  *  {action:'cancel-po', id}                          — cancel an ORDERED purchase order (PO_CANCEL audit entry)
- *  {action:'create-medicine', data:{...}}
- *  {action:'update-medicine', id, data:{...}}
+ *  {action:'create-medicine', data:{...}}            — data.extraImages (optional, ≤5 data:/http(s): urls) persisted with sort = index
+ *  {action:'update-medicine', id, data:{...}}        — data.extraImages present = REPLACE-ALL (empty array clears); absent = untouched
  *  {action:'answer', id, answer}   — answer a Q&A question (re-answer allowed, overwrites)
  *  {action:'reject', id}           — reject a Q&A question (answer/answeredBy/answeredAt cleared)
  */
@@ -508,8 +522,30 @@ export async function PUT(request: Request) {
         note = body.note.trim()
         if (note.length > PO_MAX_NOTE_LENGTH) return badRequest('Note must be 300 characters or less')
       }
+      // Round 11 — optional supplier (trimmed, empty → null) + expected delivery date
+      let supplier: string | null = null
+      if (typeof body.supplier === 'string' && body.supplier.trim() !== '') {
+        supplier = body.supplier.trim()
+        if (supplier.length > PO_MAX_SUPPLIER_LENGTH) return badRequest('Supplier must be 120 characters or less')
+      }
+      let expectedAt: Date | null = null
+      if (typeof body.expectedAt === 'string' && body.expectedAt.trim() !== '') {
+        const raw = body.expectedAt.trim()
+        // 'YYYY-MM-DD' is treated as local midnight; anything else parses as an ISO/date string
+        const dt = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+          ? (() => {
+              const [y, m, d] = raw.split('-').map(Number)
+              return new Date(y, m - 1, d)
+            })()
+          : new Date(raw)
+        if (Number.isNaN(dt.getTime())) return badRequest('Invalid expected date')
+        const todayStart = new Date()
+        todayStart.setHours(0, 0, 0, 0)
+        if (dt.getTime() < todayStart.getTime()) return badRequest('Expected date cannot be in the past')
+        expectedAt = dt
+      }
       const created = await db.purchaseOrder.create({
-        data: { medicineId: medicine.id, qty, note, orderedById: user.id },
+        data: { medicineId: medicine.id, qty, note, supplier, expectedAt, orderedById: user.id },
       })
       await logAudit(db, user, {
         action: 'PO_CREATE',
@@ -588,11 +624,14 @@ export async function PUT(request: Request) {
     if (action === 'create-medicine') {
       const parsed = await buildMedicineData(body.data, 'create')
       if ('error' in parsed) return badRequest(parsed.error)
-      const medicine = await db.medicine.create({ data: parsed.data, include: { category: true } })
+      const medicine = await db.medicine.create({
+        data: parsed.data,
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+      })
       if (medicine.stock > 0) {
         await recordStockMovements(db, [{ medicineId: medicine.id, delta: medicine.stock, reason: 'MANUAL_EDIT', note: 'Initial stock', userId: user.id }])
       }
-      return Response.json({ medicine }, { status: 201 })
+      return Response.json({ medicine: medicineStaffJson(medicine) }, { status: 201 })
     }
 
     if (action === 'update-medicine') {
@@ -603,11 +642,15 @@ export async function PUT(request: Request) {
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
       const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
-      const medicine = await db.medicine.update({ where: { id }, data: parsed.data, include: { category: true } })
+      const medicine = await db.medicine.update({
+        where: { id },
+        data: parsed.data,
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+      })
       if (newStock !== undefined && newStock !== existing.stock) {
         await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
       }
-      return Response.json({ medicine })
+      return Response.json({ medicine: medicineStaffJson(medicine) })
     }
 
     if (action === 'answer' || action === 'reject') {

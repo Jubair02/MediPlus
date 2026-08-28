@@ -1,9 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Download, Loader2, PackageSearch, Pencil, Plus, Search, Star, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Download, ImagePlus, Loader2, PackageSearch, Pencil, Plus, Search, Star, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, fileToCompressedDataUrl } from '@/lib/api'
 import { downloadCsv } from '@/lib/download'
 import { effectivePrice, fmtBDT, fmtDate } from '@/lib/format'
 import type { Category, Medicine } from '@/lib/types'
@@ -39,6 +39,8 @@ import MedImage from './MedImage'
 
 const UNITS = ['piece', 'strip', 'bottle', 'box', 'tube'] as const
 
+const MAX_EXTRA_IMAGES = 5
+
 interface FormState {
   name: string
   genericName: string
@@ -53,6 +55,7 @@ interface FormState {
   requiresPrescription: boolean
   expiryDate: string
   image: string
+  extraImages: string[]
   status: 'ACTIVE' | 'INACTIVE'
 }
 
@@ -70,6 +73,7 @@ const EMPTY_FORM: FormState = {
   requiresPrescription: false,
   expiryDate: '',
   image: '',
+  extraImages: [],
   status: 'ACTIVE',
 }
 
@@ -88,8 +92,202 @@ function toForm(m: Medicine): FormState {
     requiresPrescription: m.requiresPrescription,
     expiryDate: m.expiryDate ? m.expiryDate.slice(0, 10) : '',
     image: m.image ?? '',
+    extraImages: Array.isArray(m.extraImages)
+      ? m.extraImages.map((src) => normalizeImageSrc(src))
+      : [],
     status: m.status,
   }
+}
+
+/**
+ * The API contract requires every extra image to start with `data:image` or http(s):// —
+ * origin-relative paths (e.g. seeded '/images/med-napa.png') are normalized to absolute
+ * URLs here so seeded rows round-trip through update-medicine unchanged in appearance.
+ */
+function normalizeImageSrc(src: string): string {
+  const s = src.trim()
+  if (s.startsWith('/') && typeof window !== 'undefined') return `${window.location.origin}${s}`
+  return s
+}
+
+function isValidImageSrc(src: string): boolean {
+  const s = normalizeImageSrc(src)
+  return s.startsWith('data:image') || /^https?:\/\//i.test(s)
+}
+
+/**
+ * Round 11 — extra-image manager: thumbnail grid with remove buttons, file upload
+ * (compressed via fileToCompressedDataUrl) and URL add. Hard cap of MAX_EXTRA_IMAGES.
+ */
+function ExtraImagesField({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  const [urlInput, setUrlInput] = useState('')
+  const [processing, setProcessing] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const remaining = MAX_EXTRA_IMAGES - value.length
+  const atCap = remaining <= 0
+
+  function resetFileInput() {
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  function addUrl() {
+    const src = urlInput.trim()
+    if (!src || processing) return
+    if (!isValidImageSrc(src)) {
+      toast.error('Image must be an http(s) URL or an image data URL')
+      return
+    }
+    onChange([...value, normalizeImageSrc(src)])
+    setUrlInput('')
+  }
+
+  async function onFilesPicked(files: FileList | null) {
+    if (!files || files.length === 0 || processing) {
+      resetFileInput()
+      return
+    }
+    if (atCap) {
+      toast.warning(`Only ${remaining} more image${remaining === 1 ? '' : 's'} allowed`)
+      resetFileInput()
+      return
+    }
+    const picked = Array.from(files)
+    const images = picked.filter((f) => f.type.startsWith('image/'))
+    if (images.length < picked.length) toast.error('Only image files can be added')
+    if (images.length === 0) {
+      resetFileInput()
+      return
+    }
+    const batch = images.slice(0, remaining)
+    if (images.length > remaining) {
+      toast.warning(`Only ${remaining} more image${remaining === 1 ? '' : 's'} allowed`)
+    }
+    setProcessing(true)
+    try {
+      const added: string[] = []
+      for (const file of batch) {
+        try {
+          added.push(await fileToCompressedDataUrl(file))
+        } catch {
+          toast.error(`Could not process "${file.name}"`)
+        }
+      }
+      if (added.length > 0) onChange([...value, ...added])
+    } finally {
+      setProcessing(false)
+      resetFileInput()
+    }
+  }
+
+  function removeAt(index: number) {
+    if (processing) return
+    onChange(value.filter((_, i) => i !== index))
+  }
+
+  return (
+    <div className="space-y-2.5 rounded-lg border p-3 sm:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <Label>Extra images</Label>
+          <p className="text-[11px] text-muted-foreground">Shown as a gallery on the product page</p>
+        </div>
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {value.length} / {MAX_EXTRA_IMAGES} images · up to {MAX_EXTRA_IMAGES} extra images
+        </span>
+      </div>
+
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {value.map((src, i) => (
+            <div key={`extra-${i}`} className="relative">
+              <MedImage
+                src={src}
+                alt={`Extra image ${i + 1}`}
+                className="h-20 w-20 rounded-lg border border-border bg-muted object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => removeAt(i)}
+                disabled={processing}
+                className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full border bg-background/90 text-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-primary/30 focus-visible:outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50"
+                aria-label={`Remove image ${i + 1}`}
+                title={`Remove image ${i + 1}`}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add paths — always rendered so the cap state reads as disabled (not missing) */}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => void onFilesPicked(e.target.files)}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-9 shrink-0 focus-visible:ring-primary/30"
+          disabled={processing || atCap}
+          onClick={() => fileRef.current?.click()}
+          title="Upload image files (compressed automatically)"
+          aria-label="Upload extra images"
+        >
+          {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
+          {processing ? 'Processing…' : 'Upload'}
+        </Button>
+        <div className="flex flex-1 items-center gap-2">
+          <Input
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                addUrl()
+              }
+            }}
+            placeholder="https://… or paste image URL"
+            aria-label="Extra image URL"
+            disabled={processing || atCap}
+            className="h-9 flex-1"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 shrink-0 focus-visible:ring-primary/30"
+            disabled={processing || atCap || urlInput.trim() === ''}
+            onClick={addUrl}
+            title="Add image URL"
+          >
+            <Plus className="h-4 w-4" />
+            Add
+          </Button>
+        </div>
+      </div>
+      {atCap && (
+        <p className="text-[11px] text-muted-foreground">
+          Maximum of {MAX_EXTRA_IMAGES} extra images — remove one to add another.
+        </p>
+      )}
+    </div>
+  )
 }
 
 function StockChip({ stock }: { stock: number }) {
@@ -173,6 +371,9 @@ function MedicineDialog({ open, onOpenChange, categories, initial, onSaved }: Me
         expiryDate: form.expiryDate || null,
         image: form.image.trim() || null,
         status: form.status,
+        // Round 11: update = REPLACE-ALL (always send so removals persist);
+        // create = include only when non-empty (undefined key is dropped by JSON)
+        extraImages: initial ? form.extraImages : form.extraImages.length > 0 ? form.extraImages : undefined,
       }
       const body = initial
         ? { action: 'update-medicine', id: initial.id, data }
@@ -321,6 +522,10 @@ function MedicineDialog({ open, onOpenChange, categories, initial, onSaved }: Me
             />
             <p className="text-[11px] text-muted-foreground">Leave empty for placeholder</p>
           </div>
+          <ExtraImagesField
+            value={form.extraImages}
+            onChange={(next) => set('extraImages', next)}
+          />
           <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-2">
             <div>
               <p className="text-sm font-medium">Requires prescription</p>

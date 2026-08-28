@@ -32,6 +32,16 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import MedImage from './MedImage'
@@ -44,6 +54,12 @@ function fmtNum(n: number): string {
 function daysLeftLabel(daysLeft: number | null): string {
   if (daysLeft === null) return '—'
   return fmtNum(daysLeft)
+}
+
+/** Today as a local YYYY-MM-DD string (used as the date input min). */
+function todayLocal(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function StatChip({
@@ -132,10 +148,19 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
   const [error, setError] = useState<string | null>(null)
   const [exportPending, setExportPending] = useState(false)
   const [copying, setCopying] = useState(false)
-  // Per-row create-po pending ids (Round 10)
+  // Per-row create-po pending ids (Round 10; the per-row pending state is now
+  // tied to the create-PO dialog submit, Round 11)
   const [orderingIds, setOrderingIds] = useState<Set<string>>(new Set())
   const [orderAllPending, setOrderAllPending] = useState(false)
   const [orderAllConfirm, setOrderAllConfirm] = useState(false)
+  // Round 11 — per-row "Mark as ordered" create-PO dialog state
+  const [poTarget, setPoTarget] = useState<RestockSuggestion | null>(null)
+  const [poQty, setPoQty] = useState('')
+  const [poSupplier, setPoSupplier] = useState('')
+  const [poExpectedAt, setPoExpectedAt] = useState('')
+  const [poNote, setPoNote] = useState('')
+  const [poError, setPoError] = useState<string | null>(null)
+  const [poSubmitting, setPoSubmitting] = useState(false)
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true)
@@ -181,23 +206,62 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
     return s.openPoQty ?? 0
   }
 
-  async function createPo(s: RestockSuggestion): Promise<void> {
+  function openPoDialog(s: RestockSuggestion) {
+    setPoTarget(s)
+    setPoQty(String(s.suggestedQty))
+    setPoSupplier('')
+    setPoExpectedAt('')
+    setPoNote('')
+    setPoError(null)
+  }
+
+  function closePoDialog() {
+    setPoTarget(null)
+    setPoQty('')
+    setPoSupplier('')
+    setPoExpectedAt('')
+    setPoNote('')
+    setPoError(null)
+  }
+
+  async function submitPo(): Promise<void> {
+    const s = poTarget
+    if (!s || poSubmitting) return
+    const qty = Number(poQty)
+    if (poQty.trim() === '' || !Number.isInteger(qty) || qty < 1 || qty > 10000) {
+      setPoError('Quantity must be between 1 and 10000')
+      return
+    }
+    setPoError(null)
+    setPoSubmitting(true)
     setOrderingIds((prev) => {
       const next = new Set(prev)
       next.add(s.id)
       return next
     })
     try {
+      const supplier = poSupplier.trim()
+      const note = poNote.trim()
       await api<{ order: unknown }>('/api/pharmacist', {
         method: 'PUT',
-        body: { action: 'create-po', medicineId: s.id, qty: s.suggestedQty },
+        body: {
+          action: 'create-po',
+          medicineId: s.id,
+          qty,
+          ...(supplier !== '' ? { supplier } : {}),
+          ...(poExpectedAt !== '' ? { expectedAt: poExpectedAt } : {}),
+          ...(note !== '' ? { note } : {}),
+        },
       })
-      toast.success(`PO created — ${s.suggestedQty} × ${s.name}`)
+      toast.success(`PO created — ${qty} × ${s.name}`)
+      closePoDialog()
       onStatsChanged?.()
       await load(true) // silent refresh so openPoQty / coverage chips update
     } catch (e) {
+      // Server 400 (e.g. supplier/date validation) — keep the dialog open
       toast.error(e instanceof Error ? e.message : 'Failed to create purchase order')
     } finally {
+      setPoSubmitting(false)
       setOrderingIds((prev) => {
         const next = new Set(prev)
         next.delete(s.id)
@@ -277,7 +341,7 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
         <p className="text-sm text-muted-foreground">
           Low-stock items with reorder quantities based on recent sales.
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
             variant="outline"
             size="icon"
@@ -499,7 +563,7 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
                                   size="sm"
                                   className="h-8 focus-visible:ring-primary/30"
                                   disabled={orderingIds.has(s.id)}
-                                  onClick={() => void createPo(s)}
+                                  onClick={() => openPoDialog(s)}
                                 >
                                   {orderingIds.has(s.id) ? (
                                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -553,6 +617,123 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Round 11 — "Mark as ordered" create-PO dialog (supplier / expected delivery / note) */}
+      <Dialog
+        open={poTarget !== null}
+        onOpenChange={(o) => {
+          if (!o && !poSubmitting) closePoDialog()
+        }}
+      >
+        <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-thin sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create purchase order</DialogTitle>
+            <DialogDescription>
+              Confirm the quantity and optionally set a supplier and expected delivery date.
+            </DialogDescription>
+          </DialogHeader>
+
+          {poTarget && (
+            <div className="flex items-center gap-2.5 rounded-lg border bg-muted/40 p-2.5">
+              <MedImage
+                src={poTarget.image}
+                alt={poTarget.name}
+                className="h-10 w-10 shrink-0 rounded-md border border-border bg-muted object-cover"
+              />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{poTarget.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  Suggested qty:{' '}
+                  <span className="font-medium text-foreground tabular-nums">
+                    {poTarget.suggestedQty}
+                  </span>{' '}
+                  {poTarget.unit}
+                  {openPoQtyOf(poTarget) > 0 && (
+                    <>
+                      {' '}
+                      · <span className="tabular-nums">PO {openPoQtyOf(poTarget)}</span> on order
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="po-qty">Quantity *</Label>
+              <Input
+                id="po-qty"
+                type="number"
+                min={1}
+                max={10000}
+                step={1}
+                value={poQty}
+                onChange={(e) => {
+                  setPoQty(e.target.value)
+                  setPoError(null)
+                }}
+                className="tabular-nums"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <Label htmlFor="po-supplier">Supplier</Label>
+                {poSupplier.length > 100 && (
+                  <span
+                    className={cn(
+                      'text-[11px] tabular-nums',
+                      poSupplier.length >= 120
+                        ? 'font-medium text-red-600 dark:text-red-400'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {poSupplier.length} / 120
+                  </span>
+                )}
+              </div>
+              <Input
+                id="po-supplier"
+                value={poSupplier}
+                maxLength={120}
+                onChange={(e) => setPoSupplier(e.target.value)}
+                placeholder="e.g. Square Pharmaceuticals Ltd."
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="po-expected">Expected delivery</Label>
+              <Input
+                id="po-expected"
+                type="date"
+                min={todayLocal()}
+                value={poExpectedAt}
+                onChange={(e) => setPoExpectedAt(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="po-note">Note</Label>
+              <Input
+                id="po-note"
+                value={poNote}
+                maxLength={300}
+                onChange={(e) => setPoNote(e.target.value)}
+                placeholder="Optional note (max 300 characters)"
+              />
+            </div>
+            {poError && <p className="text-sm font-medium text-red-600">{poError}</p>}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={closePoDialog} disabled={poSubmitting}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitPo()} disabled={poSubmitting}>
+              {poSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              Create PO
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

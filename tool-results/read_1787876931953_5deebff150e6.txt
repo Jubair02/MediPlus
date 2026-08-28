@@ -1,0 +1,704 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useState } from 'react'
+     4→import { motion } from 'framer-motion'
+     5→import {
+     6→  BadgeCheck,
+     7→  CalendarClock,
+     8→  Clock3,
+     9→  FileWarning,
+    10→  Loader2,
+    11→  MessageCircleQuestion,
+    12→  MessageSquarePlus,
+    13→  Minus,
+    14→  Package,
+    15→  Plus,
+    16→  ShoppingCart,
+    17→  Tags,
+    18→  ThumbsUp,
+    19→} from 'lucide-react'
+    20→import { toast } from 'sonner'
+    21→import { api } from '@/lib/api'
+    22→import { useAppStore } from '@/lib/store'
+    23→import { effectivePrice, fmtBDT, fmtDate, stockLabel } from '@/lib/format'
+    24→import type { Medicine, MedicineQA } from '@/lib/types'
+    25→import {
+    26→  Dialog,
+    27→  DialogContent,
+    28→  DialogDescription,
+    29→  DialogHeader,
+    30→  DialogTitle,
+    31→} from '@/components/ui/dialog'
+    32→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    33→import { Button } from '@/components/ui/button'
+    34→import { Separator } from '@/components/ui/separator'
+    35→import { Skeleton } from '@/components/ui/skeleton'
+    36→import { Textarea } from '@/components/ui/textarea'
+    37→import { MedImage, addToCart } from '@/components/store/MedicineCard'
+    38→import ReviewsSection from '@/components/store/ReviewsSection'
+    39→import { cn } from '@/lib/utils'
+    40→
+    41→const stockToneClass: Record<string, string> = {
+    42→  in: 'text-emerald-600',
+    43→  low: 'text-amber-600',
+    44→  out: 'text-red-600',
+    45→}
+    46→
+    47→const MIN_QUESTION = 5
+    48→const MAX_QUESTION = 600
+    49→
+    50→/** Compact relative time for Q&A meta lines ("3 days ago") */
+    51→function timeAgo(iso: string): string {
+    52→  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+    53→  if (s < 60) return 'just now'
+    54→  const m = Math.floor(s / 60)
+    55→  if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`
+    56→  const h = Math.floor(m / 60)
+    57→  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
+    58→  const d = Math.floor(h / 24)
+    59→  if (d < 30) return `${d} day${d === 1 ? '' : 's'} ago`
+    60→  const mo = Math.floor(d / 30)
+    61→  if (mo < 12) return `${mo} month${mo === 1 ? '' : 's'} ago`
+    62→  const y = Math.floor(mo / 12)
+    63→  return `${y} year${y === 1 ? '' : 's'} ago`
+    64→}
+    65→
+    66→/**
+    67→ * Shimmer sweep layered inside a Skeleton (framer-motion — no global keyframes
+    68→ * needed). Pairs with the skeleton's own animate-pulse for a polished loader.
+    69→ */
+    70→function Shimmer() {
+    71→  return (
+    72→    <span
+    73→      className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]"
+    74→      aria-hidden="true"
+    75→    >
+    76→      <motion.span
+    77→        className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/50 to-transparent dark:via-white/10"
+    78→        animate={{ x: ['-150%', '300%'] }}
+    79→        transition={{ duration: 1.3, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.4 }}
+    80→      />
+    81→    </span>
+    82→  )
+    83→}
+    84→
+    85→/**
+    86→ * Helpful vote toggle on an ANSWERED Q&A bubble. Render is fully derived from
+    87→ * the question row (optimistically updated by the parent); `busy` is the
+    88→ * per-question in-flight flag so only the clicked button spins.
+    89→ */
+    90→function HelpfulButton({
+    91→  question,
+    92→  busy,
+    93→  onToggle,
+    94→}: {
+    95→  question: MedicineQA
+    96→  busy: boolean
+    97→  onToggle: () => void
+    98→}) {
+    99→  const voted = question.hasVoted ?? false
+   100→  const count = question.helpfulCount ?? 0
+   101→  return (
+   102→    <Button
+   103→      type="button"
+   104→      variant="outline"
+   105→      size="sm"
+   106→      disabled={busy}
+   107→      aria-pressed={voted}
+   108→      aria-label={voted ? 'Remove helpful vote' : 'Mark this answer helpful'}
+   109→      title={
+   110→        voted
+   111→          ? 'You marked this answer helpful — click to remove your vote'
+   112→          : 'Was this answer helpful? Mark it helpful'
+   113→      }
+   114→      onClick={onToggle}
+   115→      className={cn(
+   116→        'mt-2 h-7 gap-1.5 rounded-xl px-2.5 text-xs active:scale-95',
+   117→        voted
+   118→          ? // `!` needed: the outline variant's dark:bg-input/30 & dark:border-input
+   119→            // would otherwise win the cascade over these in dark mode
+   120→            'border-primary/30! bg-primary/10! text-primary! hover:bg-primary/15! hover:text-primary!'
+   121→          : 'text-muted-foreground'
+   122→      )}
+   123→    >
+   124→      {busy ? (
+   125→        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+   126→      ) : (
+   127→        <ThumbsUp className={cn('size-3.5', voted && 'fill-primary')} aria-hidden="true" />
+   128→      )}
+   129→      Helpful
+   130→      {count > 0 && (
+   131→        <span
+   132→          className={cn(
+   133→            'rounded-full px-1.5 text-[10px] font-semibold tabular-nums',
+   134→            voted ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+   135→          )}
+   136→        >
+   137→          {count}
+   138→        </span>
+   139→      )}
+   140→    </Button>
+   141→  )
+   142→}
+   143→
+   144→/** Inner body — keyed by medicine id so qty/adding state resets per product */
+   145→function DetailBody({ medicine: m }: { medicine: Medicine }) {
+   146→  const setDetailMedicine = useAppStore((s) => s.setDetailMedicine)
+   147→  const [qty, setQty] = useState(1)
+   148→  const [adding, setAdding] = useState(false)
+   149→
+   150→  const price = effectivePrice(m)
+   151→  const stock = stockLabel(m.stock)
+   152→  const out = m.stock <= 0
+   153→  const maxQty = Math.max(1, m.stock)
+   154→
+   155→  // Freshness chip: reassure customers about shelf life (emerald ≥ 6 months, amber 3–6, red < 3)
+   156→  let expiryChip: { label: string; className: string; title: string } | null = null
+   157→  if (m.expiryDate) {
+   158→    const days = Math.ceil((new Date(m.expiryDate).getTime() - Date.now()) / 86_400_000)
+   159→    const months = Math.max(0, Math.round(days / 30))
+   160→    if (days < 0) {
+   161→      expiryChip = { label: 'Expired', className: 'bg-red-100 text-red-700', title: 'This batch has expired' }
+   162→    } else if (days < 90) {
+   163→      expiryChip = { label: 'Expires soon', className: 'bg-red-100 text-red-700', title: 'Less than 3 months shelf life left' }
+   164→    } else if (days < 180) {
+   165→      expiryChip = { label: `${months} months left`, className: 'bg-amber-100 text-amber-700', title: 'Short-dated batch — discounted freshness' }
+   166→    } else {
+   167→      expiryChip = { label: `${months} months left`, className: 'bg-emerald-100 text-emerald-700', title: 'Plenty of shelf life' }
+   168→    }
+   169→  }
+   170→
+   171→  const changeQty = (delta: number) => {
+   172→    setQty((q) => Math.min(Math.max(1, q + delta), maxQty))
+   173→  }
+   174→
+   175→  const handleAdd = async () => {
+   176→    setAdding(true)
+   177→    const ok = await addToCart(m, qty)
+   178→    setAdding(false)
+   179→    if (ok) setDetailMedicine(null)
+   180→  }
+   181→
+   182→  return (
+   183→    <div className="grid gap-6 p-4 sm:p-6 md:grid-cols-2">
+   184→      {/* Image */}
+   185→      <div className="relative">
+   186→        <MedImage
+   187→          src={m.image}
+   188→          alt={m.name}
+   189→          className="aspect-square w-full rounded-xl border bg-card"
+   190→        />
+   191→        {m.requiresPrescription && (
+   192→          <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-md bg-amber-400 px-2 py-1 text-xs font-semibold text-amber-950 shadow-sm">
+   193→            <FileWarning className="size-3.5" aria-hidden="true" />
+   194→            Prescription required
+   195→          </span>
+   196→        )}
+   197→      </div>
+   198→
+   199→      {/* Info */}
+   200→      <div className="flex min-w-0 flex-col">
+   201→        <h2 className="text-xl font-bold leading-tight tracking-tight">{m.name}</h2>
+   202→        <p className="mt-1 text-sm text-muted-foreground">
+   203→          {[m.brand, m.manufacturer].filter(Boolean).join(' · ') || '—'}
+   204→        </p>
+   205→        {m.genericName && (
+   206→          <p className="mt-0.5 text-sm text-muted-foreground">
+   207→            Generic: <span className="font-medium text-foreground">{m.genericName}</span>
+   208→          </p>
+   209→        )}
+   210→
+   211→        <p className="mt-3 text-2xl font-extrabold tabular-nums text-primary">{fmtBDT(price)}</p>
+   212→        {price < m.price && (
+   213→          <p className="text-sm tabular-nums text-muted-foreground">
+   214→            <span className="line-through">{fmtBDT(m.price)}</span>{' '}
+   215→            <span className="font-medium text-red-600">save {fmtBDT(m.price - price)}</span>
+   216→          </p>
+   217→        )}
+   218→
+   219→        {m.description && (
+   220→          <p className="mt-3 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
+   221→            {m.description}
+   222→          </p>
+   223→        )}
+   224→
+   225→        <Separator className="my-4" />
+   226→
+   227→        <div className="space-y-2 text-sm">
+   228→          <div className="flex items-center justify-between gap-3">
+   229→            <span className="flex items-center gap-2 text-muted-foreground">
+   230→              <Package className="size-4" aria-hidden="true" />
+   231→              Stock
+   232→            </span>
+   233→            <span className={cn('font-semibold', stockToneClass[stock.tone])}>{stock.text}</span>
+   234→          </div>
+   235→          <div className="flex items-center justify-between gap-3">
+   236→            <span className="flex items-center gap-2 text-muted-foreground">
+   237→              <Tags className="size-4" aria-hidden="true" />
+   238→              Unit
+   239→            </span>
+   240→            <span className="font-medium">{m.unit}</span>
+   241→          </div>
+   242→          <div className="flex items-center justify-between gap-3">
+   243→            <span className="flex items-center gap-2 text-muted-foreground">
+   244→              <CalendarClock className="size-4" aria-hidden="true" />
+   245→              Expiry
+   246→            </span>
+   247→            <span className="flex items-center gap-1.5">
+   248→              <span className="font-medium">{fmtDate(m.expiryDate)}</span>
+   249→              {expiryChip && (
+   250→                <span
+   251→                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${expiryChip.className}`}
+   252→                  title={expiryChip.title}
+   253→                >
+   254→                  {expiryChip.label}
+   255→                </span>
+   256→              )}
+   257→            </span>
+   258→          </div>
+   259→        </div>
+   260→
+   261→        {m.requiresPrescription && (
+   262→          <Alert className="mt-4 border-amber-300 bg-amber-50 text-amber-900">
+   263→            <FileWarning className="size-4 text-amber-600" aria-hidden="true" />
+   264→            <AlertTitle>Prescription required</AlertTitle>
+   265→            <AlertDescription className="text-amber-800">
+   266→              Upload or select an approved prescription at checkout.
+   267→            </AlertDescription>
+   268→          </Alert>
+   269→        )}
+   270→
+   271→        {/* Qty + subtotal + add */}
+   272→        <div className="mt-5 flex items-center justify-between gap-3">
+   273→          <div>
+   274→            <p className="text-xs text-muted-foreground">Quantity</p>
+   275→            <div className="mt-1 flex items-center gap-2">
+   276→              <Button
+   277→                variant="outline"
+   278→                size="icon"
+   279→                className="size-11 rounded-xl"
+   280→                disabled={out || qty <= 1}
+   281→                onClick={() => changeQty(-1)}
+   282→                aria-label="Decrease quantity"
+   283→              >
+   284→                <Minus className="size-4" aria-hidden="true" />
+   285→              </Button>
+   286→              <span
+   287→                className="w-10 text-center text-lg font-semibold"
+   288→                aria-live="polite"
+   289→                aria-label={`Quantity ${qty}`}
+   290→              >
+   291→                {out ? 0 : qty}
+   292→              </span>
+   293→              <Button
+   294→                variant="outline"
+   295→                size="icon"
+   296→                className="size-11 rounded-xl"
+   297→                disabled={out || qty >= maxQty}
+   298→                onClick={() => changeQty(1)}
+   299→                aria-label="Increase quantity"
+   300→              >
+   301→                <Plus className="size-4" aria-hidden="true" />
+   302→              </Button>
+   303→            </div>
+   304→          </div>
+   305→          <div className="text-right">
+   306→            <p className="text-xs text-muted-foreground">Subtotal</p>
+   307→            <p className="text-lg font-bold tabular-nums">{fmtBDT(price * (out ? 0 : qty))}</p>
+   308→          </div>
+   309→        </div>
+   310→
+   311→        <Button
+   312→          className="mt-5 h-11 w-full rounded-xl"
+   313→          disabled={out || adding}
+   314→          onClick={() => void handleAdd()}
+   315→        >
+   316→          <ShoppingCart className="size-4" aria-hidden="true" />
+   317→          {out ? 'Out of Stock' : adding ? 'Adding…' : 'Add to cart'}
+   318→        </Button>
+   319→      </div>
+   320→    </div>
+   321→  )
+   322→}
+   323→
+   324→/**
+   325→ * Product Q&A — public answered threads (chat bubbles) + the viewer's own
+   326→ * pending questions. Guests are prompted to sign in before asking.
+   327→ */
+   328→function QASection({ medicineId }: { medicineId: string }) {
+   329→  const user = useAppStore((s) => s.user)
+   330→  const setAuthOpen = useAppStore((s) => s.setAuthOpen)
+   331→  const [questions, setQuestions] = useState<MedicineQA[] | null>(null)
+   332→  const [loading, setLoading] = useState(true)
+   333→  const [failed, setFailed] = useState(false)
+   334→  const [composerOpen, setComposerOpen] = useState(false)
+   335→  const [draft, setDraft] = useState('')
+   336→  const [submitting, setSubmitting] = useState(false)
+   337→  const [reloadKey, setReloadKey] = useState(0)
+   338→  // Per-question in-flight id — only the clicked Helpful button spins/disables
+   339→  const [votingId, setVotingId] = useState<string | null>(null)
+   340→
+   341→  // Auth OPTIONAL on this GET — sending the token also surfaces own PENDING rows
+   342→  useEffect(() => {
+   343→    const ac = new AbortController()
+   344→    api<{ questions: MedicineQA[] }>(
+   345→      `/api/questions?medicineId=${encodeURIComponent(medicineId)}`,
+   346→      { signal: ac.signal }
+   347→    )
+   348→      .then((d) => {
+   349→        if (ac.signal.aborted) return
+   350→        setQuestions(d.questions)
+   351→        setFailed(false)
+   352→      })
+   353→      .catch((err) => {
+   354→        if (ac.signal.aborted) return
+   355→        setFailed(err instanceof Error)
+   356→      })
+   357→      .finally(() => {
+   358→        if (!ac.signal.aborted) setLoading(false)
+   359→      })
+   360→    return () => ac.abort()
+   361→  }, [medicineId, user?.id, reloadKey])
+   362→
+   363→  const answered = (questions ?? []).filter((q) => q.status === 'ANSWERED')
+   364→  const pendingMine = (questions ?? []).filter((q) => q.status === 'PENDING')
+   365→  const draftLen = draft.trim().length
+   366→  const canSubmit = draftLen >= MIN_QUESTION && draftLen <= MAX_QUESTION && !submitting
+   367→
+   368→  const submitQuestion = async () => {
+   369→    if (!canSubmit) return
+   370→    setSubmitting(true)
+   371→    try {
+   372→      const d = await api<{ question: MedicineQA }>('/api/questions', {
+   373→        method: 'POST',
+   374→        body: { medicineId, question: draft.trim() },
+   375→      })
+   376→      setQuestions((prev) => [d.question, ...(prev ?? [])])
+   377→      setComposerOpen(false)
+   378→      setDraft('')
+   379→      toast.success('Question submitted — our pharmacist will answer soon')
+   380→    } catch (err) {
+   381→      toast.error(err instanceof Error ? err.message : 'Failed to submit question')
+   382→    } finally {
+   383→      setSubmitting(false)
+   384→    }
+   385→  }
+   386→
+   387→  const onAskClick = () => {
+   388→    if (!user) {
+   389→      setAuthOpen(true)
+   390→      return
+   391→    }
+   392→    setComposerOpen((o) => !o)
+   393→  }
+   394→
+   395→  /** Optimistic helpful-vote toggle; guests get the AuthModal, never a request */
+   396→  const toggleHelpful = async (q: MedicineQA) => {
+   397→    if (!user) {
+   398→      setAuthOpen(true)
+   399→      return
+   400→    }
+   401→    if (votingId) return // one vote request at a time keeps rollback predictable
+   402→    const snapshot = questions
+   403→    const nextVoted = !(q.hasVoted ?? false)
+   404→    setQuestions((list) =>
+   405→      (list ?? []).map((row) =>
+   406→        row.id === q.id
+   407→          ? {
+   408→              ...row,
+   409→              hasVoted: nextVoted,
+   410→              helpfulCount: Math.max(0, (row.helpfulCount ?? 0) + (nextVoted ? 1 : -1)),
+   411→            }
+   412→          : row
+   413→      )
+   414→    )
+   415→    setVotingId(q.id)
+   416→    try {
+   417→      const d = await api<{ questionId: string; helpfulCount: number; voted: boolean }>(
+   418→        '/api/questions/helpful',
+   419→        { method: 'POST', body: { questionId: q.id } }
+   420→      )
+   421→      // Reconcile with server truth
+   422→      setQuestions((list) =>
+   423→        (list ?? []).map((row) =>
+   424→          row.id === d.questionId ? { ...row, helpfulCount: d.helpfulCount, hasVoted: d.voted } : row
+   425→        )
+   426→      )
+   427→    } catch (err) {
+   428→      const message = err instanceof Error ? err.message : 'Failed to record your vote'
+   429→      if (/no longer accepting|only answered/i.test(message)) {
+   430→        // 400 — question was likely reverted to pending; refetch for fresh state
+   431→        toast.error('This question is no longer accepting votes')
+   432→        setReloadKey((k) => k + 1)
+   433→      } else {
+   434→        toast.error(message)
+   435→        setQuestions(snapshot) // rollback the optimistic toggle
+   436→      }
+   437→    } finally {
+   438→      setVotingId(null)
+   439→    }
+   440→  }
+   441→
+   442→  return (
+   443→    <section aria-label="Questions and answers" className="space-y-4">
+   444→      <div className="flex flex-wrap items-center gap-2">
+   445→        <h3 className="flex items-center gap-2 text-base font-bold tracking-tight">
+   446→          <MessageCircleQuestion className="size-5 text-primary" aria-hidden="true" />
+   447→          Questions &amp; answers
+   448→          {answered.length > 0 && (
+   449→            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+   450→              {answered.length}
+   451→            </span>
+   452→          )}
+   453→        </h3>
+   454→        <Button
+   455→          variant="outline"
+   456→          size="sm"
+   457→          className="ml-auto h-9 gap-1.5 rounded-lg"
+   458→          onClick={onAskClick}
+   459→        >
+   460→          <MessageSquarePlus className="size-4" aria-hidden="true" />
+   461→          Ask a question
+   462→        </Button>
+   463→      </div>
+   464→
+   465→      {loading ? (
+   466→        /* 2 gray bubble rows while fetching (pulse + shimmer sweep) */
+   467→        <div className="space-y-3" aria-hidden="true">
+   468→          {[0, 1].map((i) => (
+   469→            <div key={i} className="space-y-2">
+   470→              <div className="flex items-start gap-2.5">
+   471→                <Skeleton className="relative size-7 shrink-0 overflow-hidden rounded-lg">
+   472→                  <Shimmer />
+   473→                </Skeleton>
+   474→                <Skeleton
+   475→                  className={cn('relative flex-1 overflow-hidden rounded-xl', i === 0 ? 'h-9' : 'h-7')}
+   476→                >
+   477→                  <Shimmer />
+   478→                </Skeleton>
+   479→              </div>
+   480→              <div className="flex items-start gap-2.5 pl-9">
+   481→                <Skeleton className="relative size-7 shrink-0 overflow-hidden rounded-lg">
+   482→                  <Shimmer />
+   483→                </Skeleton>
+   484→                <Skeleton className="relative h-12 flex-1 overflow-hidden rounded-xl">
+   485→                  <Shimmer />
+   486→                </Skeleton>
+   487→              </div>
+   488→            </div>
+   489→          ))}
+   490→        </div>
+   491→      ) : failed ? (
+   492→        <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed p-6 text-center">
+   493→          <p className="text-sm text-muted-foreground">Couldn&apos;t load questions.</p>
+   494→          <Button
+   495→            variant="outline"
+   496→            size="sm"
+   497→            className="h-9 rounded-lg"
+   498→            onClick={() => {
+   499→              setLoading(true)
+   500→              setReloadKey((k) => k + 1)
+   501→            }}
+   502→          >
+   503→            Try again
+   504→          </Button>
+   505→        </div>
+   506→      ) : (
+   507→        <>
+   508→          {/* Own pending questions */}
+   509→          {pendingMine.length > 0 && (
+   510→            <div className="space-y-2">
+   511→              <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
+   512→                <Clock3 className="size-3.5" aria-hidden="true" />
+   513→                Your question (pending review)
+   514→                <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+   515→                  Awaiting answer
+   516→                </span>
+   517→              </p>
+   518→              {pendingMine.map((q, i) => (
+   519→                <motion.div
+   520→                  key={q.id}
+   521→                  initial={{ opacity: 0, y: 8 }}
+   522→                  animate={{ opacity: 1, y: 0 }}
+   523→                  transition={{ duration: 0.25, delay: Math.min(i * 0.04, 0.2), ease: 'easeOut' }}
+   524→                  className="rounded-xl border border-dashed border-amber-200 bg-amber-50/50 p-3 dark:border-amber-900/70 dark:bg-amber-950/20"
+   525→                >
+   526→                  <p className="text-sm leading-snug text-muted-foreground">{q.question}</p>
+   527→                  <p className="mt-1 text-[11px] text-muted-foreground">
+   528→                    {q.askedByName} · {timeAgo(q.createdAt)}
+   529→                  </p>
+   530→                </motion.div>
+   531→              ))}
+   532→            </div>
+   533→          )}
+   534→
+   535→          {/* Answered threads */}
+   536→          {answered.length > 0 ? (
+   537→            <div
+   538→              className={cn(
+   539→                'space-y-4',
+   540→                answered.length > 4 && 'max-h-80 overflow-y-auto pr-1 scrollbar-thin'
+   541→              )}
+   542→            >
+   543→              {answered.map((q, i) => (
+   544→                <motion.div
+   545→                  key={q.id}
+   546→                  initial={{ opacity: 0, y: 8 }}
+   547→                  animate={{ opacity: 1, y: 0 }}
+   548→                  transition={{ duration: 0.25, delay: Math.min(i * 0.05, 0.3), ease: 'easeOut' }}
+   549→                  className="space-y-2"
+   550→                >
+   551→                  {/* Question row */}
+   552→                  <div className="flex items-start gap-2.5">
+   553→                    <span
+   554→                      className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-xs font-bold text-amber-700 dark:text-amber-400"
+   555→                      aria-hidden="true"
+   556→                    >
+   557→                      Q
+   558→                    </span>
+   559→                    <div className="min-w-0 flex-1">
+   560→                      <p className="text-sm font-medium leading-snug">{q.question}</p>
+   561→                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+   562→                        {q.askedByName} · {timeAgo(q.createdAt)}
+   563→                      </p>
+   564→                    </div>
+   565→                  </div>
+   566→                  {/* Answer row — indented, pharmacist chip, helpful votes */}
+   567→                  {q.answer && (
+   568→                    <div className="flex items-start gap-2.5 pl-9">
+   569→                      <span
+   570→                        className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-xs font-bold text-primary"
+   571→                        aria-hidden="true"
+   572→                      >
+   573→                        A
+   574→                      </span>
+   575→                      <div
+   576→                        role="group"
+   577→                        aria-label={
+   578→                          `Answer from ${q.answerByName ?? 'Pharmacist'}` +
+   579→                          ((q.helpfulCount ?? 0) > 0
+   580→                            ? `, marked helpful by ${q.helpfulCount} ${q.helpfulCount === 1 ? 'person' : 'people'}`
+   581→                            : '')
+   582→                        }
+   583→                        className="min-w-0 flex-1 rounded-xl rounded-tl-sm border bg-card/60 p-3"
+   584→                      >
+   585→                        <p className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary">
+   586→                          <BadgeCheck className="size-3.5" aria-hidden="true" />
+   587→                          {q.answerByName ?? 'Pharmacist'}
+   588→                        </p>
+   589→                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{q.answer}</p>
+   590→                        <HelpfulButton
+   591→                          question={q}
+   592→                          busy={votingId === q.id}
+   593→                          onToggle={() => void toggleHelpful(q)}
+   594→                        />
+   595→                      </div>
+   596→                    </div>
+   597→                  )}
+   598→                </motion.div>
+   599→              ))}
+   600→            </div>
+   601→          ) : (
+   602→            pendingMine.length === 0 && (
+   603→              <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed p-6 text-center">
+   604→                <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
+   605→                  <MessageCircleQuestion className="size-5 text-primary" aria-hidden="true" />
+   606→                </span>
+   607→                <p className="text-sm font-semibold">No questions yet</p>
+   608→                <p className="text-xs text-muted-foreground">
+   609→                  Be the first to ask about this medicine.
+   610→                </p>
+   611→              </div>
+   612→            )
+   613→          )}
+   614→
+   615→          {/* Inline composer (signed-in only — guests get the auth modal) */}
+   616→          {composerOpen && user && (
+   617→            <motion.div
+   618→              initial={{ opacity: 0, y: 6 }}
+   619→              animate={{ opacity: 1, y: 0 }}
+   620→              transition={{ duration: 0.2, ease: 'easeOut' }}
+   621→              className="rounded-xl border bg-card/50 p-3"
+   622→            >
+   623→              <Textarea
+   624→                value={draft}
+   625→                maxLength={MAX_QUESTION}
+   626→                onChange={(e) => setDraft(e.target.value)}
+   627→                placeholder="Ask about dosage, usage, interactions…"
+   628→                aria-label="Your question"
+   629→                className="min-h-20 resize-none focus-visible:ring-primary/30"
+   630→              />
+   631→              {draftLen > 0 && draftLen < MIN_QUESTION && (
+   632→                <p className="mt-1 text-[11px] text-amber-600">
+   633→                  Question must be at least {MIN_QUESTION} characters.
+   634→                </p>
+   635→              )}
+   636→              <div className="mt-2 flex items-center justify-between gap-2">
+   637→                <span
+   638→                  className={cn(
+   639→                    'text-[11px] tabular-nums',
+   640→                    draftLen > 540 ? 'font-medium text-amber-600' : 'text-muted-foreground'
+   641→                  )}
+   642→                  aria-live="polite"
+   643→                >
+   644→                  {draft.length} / {MAX_QUESTION}
+   645→                </span>
+   646→                <div className="flex gap-2">
+   647→                  <Button
+   648→                    variant="ghost"
+   649→                    size="sm"
+   650→                    className="h-9 rounded-lg"
+   651→                    disabled={submitting}
+   652→                    onClick={() => {
+   653→                      setComposerOpen(false)
+   654→                      setDraft('')
+   655→                    }}
+   656→                  >
+   657→                    Cancel
+   658→                  </Button>
+   659→                  <Button
+   660→                    size="sm"
+   661→                    className="h-9 gap-1.5 rounded-lg"
+   662→                    disabled={!canSubmit}
+   663→                    onClick={() => void submitQuestion()}
+   664→                  >
+   665→                    {submitting && <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />}
+   666→                    {submitting ? 'Submitting…' : 'Submit question'}
+   667→                  </Button>
+   668→                </div>
+   669→              </div>
+   670→            </motion.div>
+   671→          )}
+   672→        </>
+   673→      )}
+   674→    </section>
+   675→  )
+   676→}
+   677→
+   678→export default function MedicineDetailModal() {
+   679→  const medicine = useAppStore((s) => s.detailMedicine)
+   680→  const setDetailMedicine = useAppStore((s) => s.setDetailMedicine)
+   681→
+   682→  if (!medicine) return null
+   683→
+   684→  return (
+   685→    <Dialog open onOpenChange={(open) => !open && setDetailMedicine(null)}>
+   686→      <DialogContent className="max-h-[90vh] gap-0 overflow-y-auto p-0 sm:max-w-2xl scrollbar-thin">
+   687→        <DialogHeader className="sr-only">
+   688→          <DialogTitle>{medicine.name}</DialogTitle>
+   689→          <DialogDescription>Medicine details</DialogDescription>
+   690→        </DialogHeader>
+   691→        <DetailBody key={medicine.id} medicine={medicine} />
+   692→        {/* Ratings & reviews — full width under the detail body */}
+   693→        <div className="mt-4 border-t px-4 pb-6 pt-4 sm:px-6">
+   694→          <ReviewsSection medicineId={medicine.id} />
+   695→        </div>
+   696→        {/* Questions & answers — below reviews, inside the same scroll area */}
+   697→        <div className="border-t px-4 pb-6 pt-4 sm:px-6">
+   698→          <QASection medicineId={medicine.id} />
+   699→        </div>
+   700→      </DialogContent>
+   701→    </Dialog>
+   702→  )
+   703→}
+   704→

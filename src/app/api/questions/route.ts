@@ -5,6 +5,8 @@ import { readJson } from '../_lib'
 const MAX_QUESTION_LENGTH = 600
 const MIN_QUESTION_LENGTH = 5
 const PUBLIC_LIMIT = 20
+/** Round 11 — a PENDING question can be edited by its owner only during this window after creation. */
+export const QUESTION_EDIT_WINDOW_MS = 15 * 60 * 1000
 
 function askedName(name: string | null): string {
   return name ?? 'Customer'
@@ -12,6 +14,12 @@ function askedName(name: string | null): string {
 
 function answerName(name: string | null): string {
   return name ?? 'Pharmacist'
+}
+
+/** Round 11 — true only when the row belongs to the caller, is still PENDING and inside the edit window (elapsed ≤ 15 min). */
+function canEditQuestion(q: { userId: string; status: string; createdAt: Date }, userId?: string | null): boolean {
+  if (!userId || q.userId !== userId || q.status !== 'PENDING') return false
+  return Date.now() - q.createdAt.getTime() <= QUESTION_EDIT_WINDOW_MS
 }
 
 /** Sort: ANSWERED first (newest answer first), then PENDING (newest question first). */
@@ -35,7 +43,9 @@ async function voteData(questionIds: string[], userId?: string) {
 
 /**
  * GET /api/questions?medicineId=<id>  → public Q&A for a medicine (ANSWERED for everyone + caller's own PENDING when a valid token is sent)
- * GET /api/questions?mine=1           → all of the caller's own questions (newest first)
+ *                                       rows carry canEdit: true only for the caller's own PENDING rows still inside
+ *                                       the 15-minute edit window (guests / other users → false; userId never leaked)
+ * GET /api/questions?mine=1           → all of the caller's own questions (newest first) — same canEdit flag
  */
 export async function GET(request: Request) {
   try {
@@ -72,6 +82,7 @@ export async function GET(request: Request) {
           answerByName: q.answer ? answerName(q.answeredBy?.name ?? null) : null,
           helpfulCount: countByQuestion.get(q.id) ?? 0,
           hasVoted: votedIds.has(q.id),
+          canEdit: canEditQuestion(q, user.id),
         })),
       })
     }
@@ -109,6 +120,7 @@ export async function GET(request: Request) {
         answerByName: q.answer ? answerName(q.answeredBy?.name ?? null) : null,
         helpfulCount: countByQuestion.get(q.id) ?? 0,
         hasVoted: votedIds.has(q.id),
+        canEdit: canEditQuestion(q, user?.id),
       })),
     })
   } catch (e) {
@@ -118,6 +130,7 @@ export async function GET(request: Request) {
 
 /**
  * POST /api/questions {medicineId, question} — ask a question (auth required, any role, intended CUSTOMER) → 201 {question}
+ *   the returned row matches the GET ?medicineId=... shape (canEdit: true — freshly created inside the window)
  */
 export async function POST(request: Request) {
   try {
@@ -156,10 +169,66 @@ export async function POST(request: Request) {
           answerByName: created.answer ? answerName(created.answeredBy?.name ?? null) : null,
           helpfulCount: 0,
           hasVoted: false,
+          canEdit: true,
         },
       },
       { status: 201 }
     )
+  } catch (e) {
+    return serverError(e)
+  }
+}
+
+/**
+ * PUT /api/questions {id, question} — edit your own question while PENDING and inside the 15-minute edit window (auth required)
+ *   401 guest · 404 unknown id ('Question not found') · 403 not owner ('You can only edit your own questions')
+ *   400 non-PENDING ('Only pending questions can be edited') · 400 window passed ('The edit window has passed')
+ *   400 text rules identical to POST (trim; 5 min / 600 max)
+ *   → 200 {question: <same row shape as GET ?medicineId=... rows, helpfulCount 0 while pending, canEdit recomputed>}
+ */
+export async function PUT(request: Request) {
+  try {
+    const user = await getAuthUser(request)
+    if (!user) return unauthorized()
+    const body = await readJson(request)
+    if (!body) return badRequest('Invalid request body')
+
+    const id = typeof body.id === 'string' ? body.id.trim() : ''
+    if (!id) return badRequest('Question id is required')
+    const question = await db.question.findUnique({
+      where: { id },
+      include: { user: { select: { name: true } }, answeredBy: { select: { name: true } } },
+    })
+    if (!question) return notFound('Question not found')
+    if (question.userId !== user.id) return forbidden('You can only edit your own questions')
+    if (question.status !== 'PENDING') return badRequest('Only pending questions can be edited')
+    if (Date.now() - question.createdAt.getTime() > QUESTION_EDIT_WINDOW_MS) return badRequest('The edit window has passed')
+
+    const text = typeof body.question === 'string' ? body.question.trim() : ''
+    if (text.length < MIN_QUESTION_LENGTH) return badRequest(`Question must be at least ${MIN_QUESTION_LENGTH} characters`)
+    if (text.length > MAX_QUESTION_LENGTH) return badRequest(`Question must be ${MAX_QUESTION_LENGTH} characters or less`)
+
+    const updated = await db.question.update({
+      where: { id },
+      data: { question: text },
+      include: { user: { select: { name: true } }, answeredBy: { select: { name: true } } },
+    })
+    const { countByQuestion, votedIds } = await voteData([updated.id], user.id)
+    return Response.json({
+      question: {
+        id: updated.id,
+        question: updated.question,
+        answer: updated.answer,
+        status: updated.status,
+        createdAt: updated.createdAt,
+        answeredAt: updated.answeredAt,
+        askedByName: askedName(updated.user.name),
+        answerByName: updated.answer ? answerName(updated.answeredBy?.name ?? null) : null,
+        helpfulCount: countByQuestion.get(updated.id) ?? 0,
+        hasVoted: votedIds.has(updated.id),
+        canEdit: canEditQuestion(updated, user.id),
+      },
+    })
   } catch (e) {
     return serverError(e)
   }

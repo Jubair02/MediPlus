@@ -84,8 +84,20 @@ model Medicine {
   questions            Question[]
   stockMovements       StockMovement[]
   purchaseOrders       PurchaseOrder[]
+  extraImages          MedicineImage[]
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
+}
+
+model MedicineImage {
+  id         String   @id @default(cuid())
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  url        String
+  sort       Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([medicineId, sort])
 }
 
 model CartItem {
@@ -270,6 +282,8 @@ model PurchaseOrder {
   qty          Int
   status       String    @default("ORDERED") // ORDERED | RECEIVED | CANCELLED
   note         String?
+  supplier     String?
+  expectedAt   DateTime?
   orderedById  String
   orderedBy    User      @relation("PoOrderer", fields: [orderedById], references: [id], onDelete: Cascade)
   receivedById String?

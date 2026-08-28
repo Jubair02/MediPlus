@@ -41,6 +41,11 @@ export interface Medicine {
   createdAt?: string
   rating?: number | null
   ratingCount?: number
+  // Round 11 — list payloads carry a count (badge on cards); detail fetch carries the full array
+  imageCount?: number
+  images?: string[]
+  // Round 11 — staff medicine payloads: additional images beyond the primary (sorted)
+  extraImages?: string[]
 }
 
 export interface CartItem {
@@ -221,6 +226,8 @@ export interface MedicineQA {
   helpfulCount?: number
   /** Round 9: whether the caller has voted (only true when a valid token is sent) */
   hasVoted?: boolean
+  /** Round 11: caller owns this PENDING question and it is still inside the 15-min edit window */
+  canEdit?: boolean
 }
 
 /** GET /api/questions?mine=1 — own questions incl. medicine name (all statuses) */
@@ -243,6 +250,8 @@ export interface PharmacistQuestion {
   askedByName: string
   askedByEmail: string
   answerByName: string | null
+  /** Round 11: question text was edited while PENDING (updatedAt moved >2s past createdAt) */
+  edited?: boolean
   /** Round 9: number of helpful votes on this question (0 while pending) */
   helpfulCount?: number
 }
@@ -282,6 +291,8 @@ export interface PurchaseOrderRow {
   qty: number
   status: PurchaseOrderStatus
   note: string | null
+  supplier: string | null
+  expectedAt: string | null
   orderedAt: string
   receivedAt: string | null
   orderedBy: { id: string; name: string | null }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { FileWarning, Heart, Pill, ShoppingCart, Star } from 'lucide-react'
+import { FileWarning, Heart, Images, Pill, ShoppingCart, Star } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
@@ -172,6 +172,16 @@ export default function MedicineCard({
               Out of Stock
             </span>
           </div>
+        )}
+        {/* Multi-image hint — opens the gallery in the detail modal (decorative) */}
+        {(medicine.imageCount ?? 0) > 1 && (
+          <span
+            aria-hidden="true"
+            className="absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 rounded-full border bg-background/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-foreground/80 shadow-sm"
+          >
+            <Images className="size-3" aria-hidden="true" />
+            {medicine.imageCount}
+          </span>
         )}
         <button
           type="button"

@@ -140,6 +140,24 @@ async function main() {
     medIds[m.name] = { id: med.id, price: med.discountPrice ?? med.price, discountPrice: med.discountPrice ?? null, name: med.name, image: med.image, requiresPrescription: med.requiresPrescription }
   }
 
+  // ---------- Medicine gallery extras (Round 11) ----------
+  console.log('Seeding medicine gallery extras...')
+  const gallerySeeds = [
+    { medName: 'Napa Extra 500mg+65mg', extras: ['/images/med-vitaminc.png', '/images/med-zinconia.png'] },
+    { medName: 'Digital BP Monitor', extras: ['/images/med-glucometer.png'] },
+    { medName: 'Amoxin 500mg', extras: ['/images/med-cef3.png'] },
+  ]
+  for (const g of gallerySeeds) {
+    const med = medIds[g.medName]
+    if (!med) continue
+    // idempotent guard: only add when the medicine has no MedicineImage rows yet
+    const existingCount = await prisma.medicineImage.count({ where: { medicineId: med.id } })
+    if (existingCount > 0) continue
+    await prisma.medicineImage.createMany({
+      data: g.extras.map((url, i) => ({ medicineId: med.id, url, sort: i })),
+    })
+  }
+
   // ---------- Coupons ----------
   console.log('Seeding coupons...')
   await prisma.coupon.createMany({
@@ -258,12 +276,23 @@ async function main() {
     ],
   })
 
-  // ---------- Purchase Orders (Round 10) ----------
+  // ---------- Purchase Orders (Round 10 + Round 11 supplier demo) ----------
   console.log('Seeding purchase orders...')
-  const poSeeds = [
+  function localMidnightInDays(n: number) {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() + n)
+    return d
+  }
+  const poSeeds: Array<{
+    medName: string; qty: number; status: string; note: string; orderedAt: Date; receivedAt: Date | null;
+    supplier?: string; expectedAt?: Date;
+  }> = [
     { medName: 'Amoxin 500mg', qty: 100, status: 'RECEIVED', note: 'Supplier: Square Pharma', orderedAt: daysAgo(7), receivedAt: daysAgo(5) as Date | null },
     { medName: 'Crepe Bandage 4 inch', qty: 60, status: 'ORDERED', note: 'Supplier: Square Pharma', orderedAt: daysAgo(2), receivedAt: null as Date | null },
     { medName: 'Digital BP Monitor', qty: 10, status: 'ORDERED', note: 'Supplier: Roche Distributor', orderedAt: daysAgo(1), receivedAt: null as Date | null },
+    // Round 11 — supplier + expected-delivery demo
+    { medName: 'Crepe Bandage 4 inch', qty: 40, status: 'ORDERED', note: 'Weekly restock', supplier: 'Square Pharmaceuticals Ltd.', expectedAt: localMidnightInDays(5), orderedAt: daysAgo(0), receivedAt: null as Date | null },
   ]
   let receivedPoId: string | null = null
   for (const s of poSeeds) {
@@ -281,6 +310,8 @@ async function main() {
         qty: s.qty,
         status: s.status,
         note: s.note,
+        supplier: s.supplier ?? null,
+        expectedAt: s.expectedAt ?? null,
         orderedById: pharmacist.id,
         receivedById: s.status === 'RECEIVED' ? pharmacist.id : null,
         orderedAt: s.orderedAt,
@@ -288,6 +319,28 @@ async function main() {
       },
     })
     if (s.status === 'RECEIVED') receivedPoId = po.id
+  }
+
+  // ---------- Q&A edit-window demo question (Round 11) ----------
+  const napaMed = medIds['Napa Extra 500mg+65mg']
+  if (napaMed && customer) {
+    const qText = 'Can I take Napa Extra with my morning coffee?'
+    const existingQuestion = await prisma.question.findFirst({
+      where: { userId: customer.id, medicineId: napaMed.id, question: qText },
+    })
+    if (!existingQuestion) {
+      const createdAt = new Date(Date.now() - 3 * 60 * 1000) // inside the 15-minute edit window
+      await prisma.question.create({
+        data: {
+          medicineId: napaMed.id,
+          userId: customer.id,
+          question: qText,
+          status: 'PENDING',
+          createdAt,
+          updatedAt: createdAt, // keep the pharmacist `edited` flag false until a real edit happens
+        },
+      })
+    }
   }
 
   // ---------- Audit Log samples (Round 10) ----------

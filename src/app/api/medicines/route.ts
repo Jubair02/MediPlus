@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { getAuthUser, notFound, serverError } from '@/lib/auth'
-import { numParam } from '../_lib'
+import { numParam, medicineImageCount } from '../_lib'
 
 function effective(m: { price: number; discountPrice: number | null }): number {
   return m.discountPrice != null ? m.discountPrice : m.price
@@ -31,20 +31,46 @@ function withRatings<T extends { id: string }>(medicine: T, ratings: Map<string,
   return { ...medicine, rating: r?.rating ?? null, ratingCount: r?.ratingCount ?? 0 }
 }
 
+/** medicineId → number of extra MedicineImage rows (Round 11 gallery). */
+async function extraImageCounts(medicineIds: string[]): Promise<Map<string, number>> {
+  if (medicineIds.length === 0) return new Map()
+  const grouped = await db.medicineImage.groupBy({
+    by: ['medicineId'],
+    where: { medicineId: { in: medicineIds } },
+    _count: { _all: true },
+  })
+  return new Map(grouped.map((g) => [g.medicineId, g._count._all]))
+}
+
 /**
- * GET /api/medicines?id=<id>            → single ACTIVE medicine (include category)
+ * GET /api/medicines?id=<id>            → single ACTIVE medicine (include category) + gallery:
+ *                                         images[] (primary first, then extras sorted asc, null/empty dropped,
+ *                                         exact-string repeats deduped), extraImages[], imageCount (primary + extras)
  * GET /api/medicines?recommended=true&limit=4 → personalized picks from order history (auth) with top-rated fallback
  * GET /api/medicines?search&category&minPrice&maxPrice&rxOnly&sort&featured&page&limit
+ * List/recommended rows stay lean: they carry imageCount (primary + extras) but never the images/extraImages arrays.
  */
 export async function GET(request: Request) {
   try {
     const sp = new URL(request.url).searchParams
     const id = sp.get('id')
     if (id) {
-      const medicine = await db.medicine.findUnique({ where: { id }, include: { category: true } })
+      const medicine = await db.medicine.findUnique({
+        where: { id },
+        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+      })
       if (!medicine || medicine.status !== 'ACTIVE') return notFound('Medicine not found')
       const ratings = await ratingsFor([medicine.id])
-      return Response.json({ medicine: withRatings(medicine, ratings) })
+      const extraImages = medicine.extraImages.map((e) => e.url)
+      const images = [...new Set([medicine.image, ...extraImages].filter((u): u is string => !!u))]
+      return Response.json({
+        medicine: {
+          ...withRatings(medicine, ratings),
+          extraImages,
+          images,
+          imageCount: medicineImageCount(medicine.image, extraImages.length),
+        },
+      })
     }
 
     // ---- recommended for you: history-driven picks, top-rated fallback ----
@@ -93,7 +119,10 @@ export async function GET(request: Request) {
       }
 
       const ratings = await ratingsFor(picks.map((m) => m.id))
-      return Response.json({ medicines: picks.map((m) => withRatings(m, ratings)) })
+      const imgCounts = await extraImageCounts(picks.map((m) => m.id))
+      return Response.json({
+        medicines: picks.map((m) => ({ ...withRatings(m, ratings), imageCount: medicineImageCount(m.image, imgCounts.get(m.id) ?? 0) })),
+      })
     }
 
     const search = sp.get('search')?.trim()
@@ -186,7 +215,13 @@ export async function GET(request: Request) {
     const pages = Math.ceil(total / useLimit)
     const medicines = all.slice((usePage - 1) * useLimit, usePage * useLimit)
     const ratings = await ratingsFor(medicines.map((m) => m.id))
-    return Response.json({ medicines: medicines.map((m) => withRatings(m, ratings)), total, page: usePage, pages })
+    const imgCounts = await extraImageCounts(medicines.map((m) => m.id))
+    return Response.json({
+      medicines: medicines.map((m) => ({ ...withRatings(m, ratings), imageCount: medicineImageCount(m.image, imgCounts.get(m.id) ?? 0) })),
+      total,
+      page: usePage,
+      pages,
+    })
   } catch (e) {
     return serverError(e)
   }

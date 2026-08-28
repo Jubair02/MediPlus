@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   BadgeCheck,
   CalendarClock,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   FileWarning,
   Loader2,
@@ -12,6 +14,7 @@ import {
   MessageSquarePlus,
   Minus,
   Package,
+  Pencil,
   Plus,
   ShoppingCart,
   Tags,
@@ -46,6 +49,13 @@ const stockToneClass: Record<string, string> = {
 
 const MIN_QUESTION = 5
 const MAX_QUESTION = 600
+/** Customer can edit their own PENDING question for 15 minutes after asking */
+const EDIT_WINDOW_MS = 15 * 60 * 1000
+
+/** Dedupe image srcs (keeps first occurrence) and drop empty entries */
+function dedupeImages(srcs: (string | null | undefined)[]): string[] {
+  return Array.from(new Set(srcs.filter((s): s is string => Boolean(s))))
+}
 
 /** Compact relative time for Q&A meta lines ("3 days ago") */
 function timeAgo(iso: string): string {
@@ -141,6 +151,148 @@ function HelpfulButton({
   )
 }
 
+/**
+ * Product image gallery (Round 11). Progressive enhancement: the store's single
+ * image renders exactly as before until the detail fetch returns `images` —
+ * only then do the carousel controls + thumbnail strip appear. Fetch failures
+ * fall back silently to the store image (no error toast).
+ */
+function MedicineGallery({ medicine: m }: { medicine: Medicine }) {
+  const [gallery, setGallery] = useState<string[] | null>(null)
+  const [galleryLoading, setGalleryLoading] = useState(true)
+  const [index, setIndex] = useState(0)
+  const [dir, setDir] = useState(1)
+  const reduceMotion = useReducedMotion()
+
+  const firstImage = m.image
+  const id = m.id
+
+  // One detail fetch per opened product; the store image stays visible meanwhile
+  useEffect(() => {
+    if (!id) return
+    const ac = new AbortController()
+    api<{ medicine: Medicine }>(`/api/medicines?id=${encodeURIComponent(id)}`, { signal: ac.signal })
+      .then((d) => {
+        if (ac.signal.aborted) return
+        const imgs = d.medicine?.images
+        setGallery(
+          imgs && imgs.length > 0
+            ? Array.from(new Set(imgs)).slice(0, 6)
+            : dedupeImages([d.medicine?.image ?? firstImage])
+        )
+      })
+      .catch(() => {
+        // Silent fallback — the gallery is progressive enhancement, never an error surface
+        if (!ac.signal.aborted) setGallery(dedupeImages([firstImage]))
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setGalleryLoading(false)
+      })
+    return () => ac.abort()
+  }, [id, firstImage])
+
+  const images = gallery ?? dedupeImages([firstImage])
+  const multi = !galleryLoading && images.length > 1
+
+  const goto = (next: number, direction: 1 | -1) => {
+    if (images.length === 0) return
+    setDir(direction)
+    setIndex(((next % images.length) + images.length) % images.length) // wrap-around
+  }
+
+  // Single image (or still loading) — render exactly as before, zero regression
+  if (!multi) {
+    return <MedImage src={firstImage} alt={m.name} className="aspect-square w-full rounded-xl border bg-card" />
+  }
+
+  return (
+    <div>
+      <div
+        role="group"
+        aria-roledescription="carousel"
+        aria-label={`${m.name} images`}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft') {
+            e.preventDefault()
+            goto(index - 1, -1)
+          } else if (e.key === 'ArrowRight') {
+            e.preventDefault()
+            goto(index + 1, 1)
+          }
+        }}
+        className="relative aspect-square w-full overflow-hidden rounded-xl border bg-card outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2"
+      >
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.div
+            key={index}
+            initial={{ opacity: 0, x: reduceMotion ? 0 : 16 * dir }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: reduceMotion ? 0 : -16 * dir }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="absolute inset-0"
+          >
+            <MedImage
+              src={images[index]}
+              alt={`${m.name} — image ${index + 1} of ${images.length}`}
+              className="h-full w-full"
+            />
+          </motion.div>
+        </AnimatePresence>
+
+        {/* Prev / next — wrap-around, never disabled */}
+        <button
+          type="button"
+          aria-label="Previous image"
+          onClick={() => goto(index - 1, -1)}
+          className="absolute left-2 top-1/2 z-10 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border bg-background/85 shadow-sm backdrop-blur transition-colors hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+        >
+          <ChevronLeft className="size-4" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          aria-label="Next image"
+          onClick={() => goto(index + 1, 1)}
+          className="absolute right-2 top-1/2 z-10 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border bg-background/85 shadow-sm backdrop-blur transition-colors hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+        >
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </button>
+
+        {/* Position counter chip */}
+        <span
+          aria-live="polite"
+          aria-label={`Image ${index + 1} of ${images.length}`}
+          className="absolute bottom-2 right-2 z-10 rounded-full border bg-background/85 px-2 py-0.5 text-[11px] font-medium tabular-nums"
+        >
+          {index + 1}/{images.length}
+        </span>
+      </div>
+
+      {/* Thumbnail strip — active thumb gets the primary ring */}
+      <div className="mt-2 flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+        {images.map((src, i) => (
+          <button
+            key={`${i}-${src}`}
+            type="button"
+            aria-label={`Show image ${i + 1}`}
+            aria-current={i === index}
+            onClick={() => {
+              setDir(i > index ? 1 : -1)
+              setIndex(i)
+            }}
+            className={cn(
+              'size-14 shrink-0 overflow-hidden rounded-lg border transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
+              i === index ? 'border-primary ring-2 ring-primary/30' : 'opacity-70 hover:opacity-100'
+            )}
+          >
+            <MedImage src={src} alt="" className="h-full w-full" />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** Inner body — keyed by medicine id so qty/adding state resets per product */
 function DetailBody({ medicine: m }: { medicine: Medicine }) {
   const setDetailMedicine = useAppStore((s) => s.setDetailMedicine)
@@ -181,13 +333,9 @@ function DetailBody({ medicine: m }: { medicine: Medicine }) {
 
   return (
     <div className="grid gap-6 p-4 sm:p-6 md:grid-cols-2">
-      {/* Image */}
+      {/* Image (gallery-aware — single image renders unchanged) */}
       <div className="relative">
-        <MedImage
-          src={m.image}
-          alt={m.name}
-          className="aspect-square w-full rounded-xl border bg-card"
-        />
+        <MedicineGallery medicine={m} />
         {m.requiresPrescription && (
           <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-md bg-amber-400 px-2 py-1 text-xs font-semibold text-amber-950 shadow-sm">
             <FileWarning className="size-3.5" aria-hidden="true" />
@@ -337,6 +485,12 @@ function QASection({ medicineId }: { medicineId: string }) {
   const [reloadKey, setReloadKey] = useState(0)
   // Per-question in-flight id — only the clicked Helpful button spins/disables
   const [votingId, setVotingId] = useState<string | null>(null)
+  // Round 11 — inline edit of an own PENDING question (15-min window)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+  // Ticking clock for the countdown hints — only runs while an editable row is visible
+  const [now, setNow] = useState(() => Date.now())
 
   // Auth OPTIONAL on this GET — sending the token also surfaces own PENDING rows
   useEffect(() => {
@@ -364,6 +518,92 @@ function QASection({ medicineId }: { medicineId: string }) {
   const pendingMine = (questions ?? []).filter((q) => q.status === 'PENDING')
   const draftLen = draft.trim().length
   const canSubmit = draftLen >= MIN_QUESTION && draftLen <= MAX_QUESTION && !submitting
+  const hasEditable = pendingMine.some((q) => q.canEdit)
+  const editLen = editDraft.trim().length
+  const canSaveEdit = editLen >= MIN_QUESTION && editLen <= MAX_QUESTION && !savingEdit
+
+  // Refresh 'Editable for Xm' hints every 30s — only while an editable row exists.
+  // Re-sync immediately when an editable row APPEARS (e.g. a question just asked)
+  // so the hint never computes against a stale mount-time clock.
+  useEffect(() => {
+    if (!hasEditable) return
+    setNow(Date.now())
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [hasEditable])
+
+  /**
+   * Escape cancels the inline editor — NOT the whole modal. Radix Dialog
+   * dismisses Escape via a document CAPTURE-phase keydown listener, and Next.js
+   * App Router hydrates React onto the document node, so a React synthetic
+   * stopPropagation on the textarea can never beat it. Registering on `window`
+   * (capture) is one hop ahead of every document listener: while the editor is
+   * open, swallow Escape and cancel just the editor.
+   */
+  useEffect(() => {
+    if (!editingId) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
+      e.preventDefault()
+      setEditingId(null)
+      setEditDraft('')
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [editingId])
+
+  /** Minutes left in the 15-min edit window (0 when passed — hint hides, server refetch clears canEdit) */
+  const editMinutesLeft = (createdAt: string) =>
+    Math.ceil((new Date(createdAt).getTime() + EDIT_WINDOW_MS - now) / 60_000)
+
+  const startEdit = (q: MedicineQA) => {
+    setEditingId(q.id) // only one row in edit mode at a time
+    setEditDraft(q.question)
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditDraft('')
+  }
+
+  const saveEdit = async (q: MedicineQA) => {
+    if (!canSaveEdit) return
+    setSavingEdit(true)
+    try {
+      const d = await api<{ question: MedicineQA }>('/api/questions', {
+        method: 'PUT',
+        body: { id: q.id, question: editDraft.trim() },
+      })
+      setQuestions((list) =>
+        (list ?? []).map((row) =>
+          row.id === q.id
+            ? { ...row, question: d.question.question, canEdit: d.question.canEdit }
+            : row
+        )
+      )
+      setEditingId(null)
+      setEditDraft('')
+      toast.success('Question updated')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update question'
+      if (/edit window has passed/i.test(message)) {
+        toast.error('The edit window has passed')
+        setEditingId(null)
+        setEditDraft('')
+        setReloadKey((k) => k + 1) // refetch — server recomputes canEdit
+      } else if (/only pending questions/i.test(message)) {
+        toast.error('Only pending questions can be edited')
+        setEditingId(null)
+        setEditDraft('')
+        setReloadKey((k) => k + 1)
+      } else {
+        toast.error(message) // keep the editor open so the draft isn't lost
+      }
+    } finally {
+      setSavingEdit(false)
+    }
+  }
 
   const submitQuestion = async () => {
     if (!canSubmit) return
@@ -515,20 +755,104 @@ function QASection({ medicineId }: { medicineId: string }) {
                   Awaiting answer
                 </span>
               </p>
-              {pendingMine.map((q, i) => (
-                <motion.div
-                  key={q.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25, delay: Math.min(i * 0.04, 0.2), ease: 'easeOut' }}
-                  className="rounded-xl border border-dashed border-amber-200 bg-amber-50/50 p-3 dark:border-amber-900/70 dark:bg-amber-950/20"
-                >
-                  <p className="text-sm leading-snug text-muted-foreground">{q.question}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    {q.askedByName} · {timeAgo(q.createdAt)}
-                  </p>
-                </motion.div>
-              ))}
+              {pendingMine.map((q, i) => {
+                const minutesLeft = editMinutesLeft(q.createdAt)
+                const isEditing = editingId === q.id
+                return (
+                  <motion.div
+                    key={q.id}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25, delay: Math.min(i * 0.04, 0.2), ease: 'easeOut' }}
+                    className="rounded-xl border border-dashed border-amber-200 bg-amber-50/50 p-3 dark:border-amber-900/70 dark:bg-amber-950/20"
+                  >
+                    {isEditing ? (
+                      /* Inline edit composer — same visual language as the Ask composer */
+                      <div>
+                        <Textarea
+                          value={editDraft}
+                          maxLength={MAX_QUESTION}
+                          rows={3}
+                          autoFocus
+                          aria-label="Edit your question"
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          // Escape is handled at window level (see effect above) — a
+                          // React handler here cannot preempt Radix's document listener
+                          className="min-h-20 resize-none border-border bg-card focus-visible:ring-primary/30"
+                        />
+                        {editLen > 0 && editLen < MIN_QUESTION && (
+                          <p className="mt-1 text-[11px] text-amber-600">
+                            Question must be at least {MIN_QUESTION} characters.
+                          </p>
+                        )}
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span
+                            className={cn(
+                              'text-[11px] tabular-nums',
+                              editLen > MAX_QUESTION ? 'font-medium text-red-600' : 'text-muted-foreground'
+                            )}
+                            aria-live="polite"
+                          >
+                            {editDraft.length} / {MAX_QUESTION}
+                          </span>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 rounded-lg"
+                              disabled={savingEdit}
+                              onClick={cancelEdit}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="h-8 gap-1.5 rounded-lg"
+                              disabled={!canSaveEdit}
+                              onClick={() => void saveEdit(q)}
+                            >
+                              {savingEdit && <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />}
+                              {savingEdit ? 'Saving…' : 'Save'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm leading-snug text-muted-foreground">{q.question}</p>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <p className="text-[11px] text-muted-foreground">
+                            {q.askedByName} · {timeAgo(q.createdAt)}
+                          </p>
+                          {q.canEdit && (
+                            <>
+                              {minutesLeft > 0 && (
+                                <span
+                                  className="text-[11px] tabular-nums text-muted-foreground"
+                                  title="You can edit this question while it awaits review"
+                                >
+                                  Editable for {minutesLeft}m
+                                </span>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="ml-auto h-7 gap-1 rounded-lg px-2 text-xs"
+                                title="You can edit this question for 15 minutes"
+                                aria-label={`Edit your question: ${q.question}`}
+                                onClick={() => startEdit(q)}
+                              >
+                                <Pencil className="size-3.5" aria-hidden="true" />
+                                Edit
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </motion.div>
+                )
+              })}
             </div>
           )}
 
