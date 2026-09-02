@@ -24,9 +24,10 @@ import {
   UserRound,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { useAppStore, type View } from '@/lib/store'
+import { useAppStore } from '@/lib/store'
+import { canAccessView, isCustomer, DASHBOARD_LABEL, ROLE_DASHBOARD, type View } from '@/lib/rbac'
 import { effectivePrice, fmtBDT, fmtDateTime } from '@/lib/format'
-import type { AuthUser, Medicine, NotificationItem, Role } from '@/lib/types'
+import type { AuthUser, Medicine, NotificationItem } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -52,12 +53,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { cn } from '@/lib/utils'
-
-const ROLE_DASHBOARD: Partial<Record<Role, View>> = {
-  ADMIN: 'admin',
-  PHARMACIST: 'pharmacist',
-  DELIVERY: 'delivery',
-}
 
 const NAV_ITEMS: { view: View; label: string; icon: typeof Home; authOnly?: boolean }[] = [
   { view: 'home', label: 'Home', icon: Home },
@@ -97,7 +92,7 @@ function NavLinks({
 }) {
   return (
     <>
-      {NAV_ITEMS.filter((n) => !n.authOnly || user).map((n) => (
+      {NAV_ITEMS.filter((n) => (!n.authOnly || user) && canAccessView(user?.role ?? null, n.view)).map((n) => (
         <button
           key={n.view}
           type="button"
@@ -448,6 +443,9 @@ export default function Header() {
   }
 
   const dashboardView = user ? ROLE_DASHBOARD[user.role] : undefined
+  // Staff accounts do not shop: hide cart, wishlist and the customer account links.
+  // Signed-out visitors keep them — they browse and get the sign-in prompt.
+  const showShopperUi = !user || isCustomer(user.role)
 
   const go = (v: View) => {
     setView(v)
@@ -520,13 +518,17 @@ export default function Header() {
               <SheetDescription>Your online pharmacy</SheetDescription>
             </SheetHeader>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-6 scrollbar-thin">
-              <SearchForm
-                search={search}
-                onSearchChange={setSearch}
-                onSubmit={submitSearch}
-                onAction={() => setMobileOpen(false)}
-              />
-              <Separator />
+              {showShopperUi && (
+                <>
+                  <SearchForm
+                    search={search}
+                    onSearchChange={setSearch}
+                    onSubmit={submitSearch}
+                    onAction={() => setMobileOpen(false)}
+                  />
+                  <Separator />
+                </>
+              )}
               <nav className="flex flex-col gap-1" aria-label="Mobile navigation">
                 <NavLinks user={user} view={view} go={go} stacked />
                 {dashboardView && (
@@ -536,11 +538,7 @@ export default function Header() {
                     className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-muted-foreground transition-colors hover:text-primary"
                   >
                     <LayoutDashboard className="size-4" aria-hidden="true" />
-                    {user?.role === 'ADMIN'
-                      ? 'Admin dashboard'
-                      : user?.role === 'PHARMACIST'
-                        ? 'Pharmacist dashboard'
-                        : 'Delivery dashboard'}
+                    {user ? DASHBOARD_LABEL[user.role] : null}
                   </button>
                 )}
               </nav>
@@ -586,7 +584,7 @@ export default function Header() {
         {/* Logo */}
         <button
           type="button"
-          onClick={() => setView('home')}
+          onClick={() => setView(dashboardView ?? 'home')}
           className="flex min-h-11 items-center gap-2 rounded-lg px-1"
           aria-label="MediPlus home"
         >
@@ -601,18 +599,20 @@ export default function Header() {
           <NavLinks user={user} view={view} go={go} />
         </nav>
 
-        {/* Search (desktop) */}
-        <div className="ml-auto hidden w-64 md:block xl:w-80">
-          <SearchForm search={search} onSearchChange={setSearch} onSubmit={submitSearch} />
-        </div>
+        {/* Search (desktop) — storefront only; staff search inside their dashboard */}
+        {showShopperUi && (
+          <div className="ml-auto hidden w-64 md:block xl:w-80">
+            <SearchForm search={search} onSearchChange={setSearch} onSubmit={submitSearch} />
+          </div>
+        )}
 
         {/* Right actions */}
         <div className="ml-auto flex items-center gap-1 sm:gap-2 md:ml-2">
           {/* Theme toggle */}
           <ThemeToggle />
 
-          {/* Wishlist (icon-only, logged in only) */}
-          {user && (
+          {/* Wishlist (icon-only, signed-in customers only) */}
+          {user && showShopperUi && (
             <Button
               variant="ghost"
               size="icon"
@@ -632,21 +632,23 @@ export default function Header() {
             </Button>
           )}
 
-          {/* Cart */}
-          <Button
-            variant="outline"
-            className="relative h-11 gap-2 rounded-xl"
-            onClick={() => setView('cart')}
-            aria-label={`Cart, ${cartCount} items`}
-          >
-            <ShoppingCart className="size-4" aria-hidden="true" />
-            <span className="hidden sm:inline">Cart</span>
-            {cartCount > 0 && (
-              <span className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
-                {cartCount > 9 ? '9+' : cartCount}
-              </span>
-            )}
-          </Button>
+          {/* Cart (customers and signed-out visitors only) */}
+          {showShopperUi && (
+            <Button
+              variant="outline"
+              className="relative h-11 gap-2 rounded-xl"
+              onClick={() => setView('cart')}
+              aria-label={`Cart, ${cartCount} items`}
+            >
+              <ShoppingCart className="size-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Cart</span>
+              {cartCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                  {cartCount > 9 ? '9+' : cartCount}
+                </span>
+              )}
+            </Button>
+          )}
 
           {/* Notifications (logged in only) */}
           {user && (
@@ -755,25 +757,25 @@ export default function Header() {
                 {dashboardView && (
                   <DropdownMenuItem onClick={() => setView(dashboardView)}>
                     <LayoutDashboard className="size-4" aria-hidden="true" />
-                    {user.role === 'ADMIN'
-                      ? 'Admin dashboard'
-                      : user.role === 'PHARMACIST'
-                        ? 'Pharmacist dashboard'
-                        : 'Delivery dashboard'}
+                    {DASHBOARD_LABEL[user.role]}
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem onClick={() => setView('wishlist')}>
-                  <Heart className="size-4" aria-hidden="true" />
-                  My Wishlist
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setView('orders')}>
-                  <Package className="size-4" aria-hidden="true" />
-                  My Orders
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setView('prescriptions')}>
-                  <FileText className="size-4" aria-hidden="true" />
-                  My Prescriptions
-                </DropdownMenuItem>
+                {showShopperUi && (
+                  <>
+                    <DropdownMenuItem onClick={() => setView('wishlist')}>
+                      <Heart className="size-4" aria-hidden="true" />
+                      My Wishlist
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setView('orders')}>
+                      <Package className="size-4" aria-hidden="true" />
+                      My Orders
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setView('prescriptions')}>
+                      <FileText className="size-4" aria-hidden="true" />
+                      My Prescriptions
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuItem onClick={() => setView('profile')}>
                   <UserRound className="size-4" aria-hidden="true" />
                   Profile

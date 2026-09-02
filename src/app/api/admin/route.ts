@@ -469,7 +469,7 @@ export async function GET(request: Request) {
       const search = sp.get('search')?.trim()
       const role = sp.get('role')
       const where: { OR?: object[]; role?: string } = {}
-      if (search) where.OR = [{ name: { contains: search } }, { email: { contains: search } }]
+      if (search) where.OR = [{ name: { contains: search, mode: 'insensitive' } }, { email: { contains: search, mode: 'insensitive' } }]
       if (role && ROLES.includes(role)) where.role = role
       const users = await db.user.findMany({ where, select: USER_SELECT, orderBy: { createdAt: 'desc' } })
       return Response.json({ users })
@@ -482,9 +482,9 @@ export async function GET(request: Request) {
           where: search
             ? {
                 OR: [
-                  { name: { contains: search } },
-                  { genericName: { contains: search } },
-                  { brand: { contains: search } },
+                  { name: { contains: search, mode: 'insensitive' } },
+                  { genericName: { contains: search, mode: 'insensitive' } },
+                  { brand: { contains: search, mode: 'insensitive' } },
                 ],
               }
             : {},
@@ -530,9 +530,9 @@ export async function GET(request: Request) {
       if (status && ORDER_STATUSES.includes(status)) where.status = status
       if (search) {
         where.OR = [
-          { orderNo: { contains: search } },
-          { user: { is: { name: { contains: search } } } },
-          { user: { is: { email: { contains: search } } } },
+          { orderNo: { contains: search, mode: 'insensitive' } },
+          { user: { is: { name: { contains: search, mode: 'insensitive' } } } },
+          { user: { is: { email: { contains: search, mode: 'insensitive' } } } },
         ]
       }
       const orders = await db.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' } })
@@ -712,10 +712,10 @@ export async function GET(request: Request) {
       if (action && AUDIT_ACTIONS.includes(action)) where.action = action
       if (search) {
         where.OR = [
-          { actorEmail: { contains: search } },
-          { actorName: { contains: search } },
-          { entityRef: { contains: search } },
-          { detail: { contains: search } },
+          { actorEmail: { contains: search, mode: 'insensitive' } },
+          { actorName: { contains: search, mode: 'insensitive' } },
+          { entityRef: { contains: search, mode: 'insensitive' } },
+          { detail: { contains: search, mode: 'insensitive' } },
         ]
       }
       const [total, groups] = await Promise.all([

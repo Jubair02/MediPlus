@@ -138,9 +138,9 @@ export async function GET(request: Request) {
     const where: Prisma.MedicineWhereInput = { status: 'ACTIVE' }
     if (search) {
       where.OR = [
-        { name: { contains: search } },
-        { genericName: { contains: search } },
-        { brand: { contains: search } },
+        { name: { contains: search, mode: 'insensitive' } },
+        { genericName: { contains: search, mode: 'insensitive' } },
+        { brand: { contains: search, mode: 'insensitive' } },
       ]
     }
     if (featured) where.discountPrice = { not: null }

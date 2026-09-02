@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import { readJson, parseAddressInput } from '../_lib'
 
 function shape(a: {
@@ -31,8 +31,8 @@ function shape(a: {
 /** GET /api/addresses (Bearer) → my addresses, default first */
 export async function GET(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const addresses = await db.address.findMany({
       where: { userId: user.id },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
@@ -46,8 +46,8 @@ export async function GET(request: Request) {
 /** POST /api/addresses {label, recipient, phone, line1, area?, city, postcode?, isDefault?} */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const parsed = parseAddressInput(body, 'Delivery address required')
@@ -70,8 +70,8 @@ export async function POST(request: Request) {
 /** PUT /api/addresses {id, ...partial} */
 export async function PUT(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const id = typeof body.id === 'string' ? body.id : ''
@@ -110,8 +110,8 @@ export async function PUT(request: Request) {
 /** DELETE /api/addresses?id= */
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const id = new URL(request.url).searchParams.get('id')
     if (!id) return badRequest('Address id is required')
     const existing = await db.address.findFirst({ where: { id, userId: user.id } })

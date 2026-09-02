@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import { readJson, numOr } from '../_lib'
 
 async function loadCart(userId: string) {
@@ -13,8 +13,8 @@ async function loadCart(userId: string) {
 /** GET /api/cart (Bearer) → my cart items (newest first) */
 export async function GET(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const items = await loadCart(user.id)
     return Response.json({ items })
   } catch (e) {
@@ -25,8 +25,8 @@ export async function GET(request: Request) {
 /** POST /api/cart {medicineId, quantity=1} — add to cart (clamped to stock) */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const medicineId = typeof body.medicineId === 'string' ? body.medicineId : ''
@@ -56,8 +56,8 @@ export async function POST(request: Request) {
 /** PUT /api/cart {itemId, quantity} — set quantity clamped 1..stock */
 export async function PUT(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const itemId = typeof body.itemId === 'string' ? body.itemId : ''
@@ -81,8 +81,8 @@ export async function PUT(request: Request) {
 /** DELETE /api/cart?itemId= (remove one) or DELETE /api/cart (clear cart) */
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const itemId = new URL(request.url).searchParams.get('itemId')
     if (itemId) {
       const item = await db.cartItem.findFirst({ where: { id: itemId, userId: user.id } })

@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { Facebook, Instagram, MailCheck, Pill, Send, ShieldCheck, Twitter, Youtube } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAppStore, type View } from '@/lib/store'
+import { useAppStore } from '@/lib/store'
+import { canAccessView, type View } from '@/lib/rbac'
 
 const quickLinks: { view: View; label: string }[] = [
   { view: 'catalog', label: 'Shop' },
@@ -16,6 +17,9 @@ const paymentChips = ['Cash on Delivery', 'bKash (Demo)', 'Visa']
 
 export default function Footer() {
   const setView = useAppStore((s) => s.setView)
+  const role = useAppStore((s) => s.user?.role ?? null)
+  // Same policy as the header: don't offer storefront links a staff role can't open.
+  const visibleLinks = quickLinks.filter((l) => canAccessView(role, l.view))
   const [newsletterEmail, setNewsletterEmail] = useState('')
   const [subscribing, setSubscribing] = useState(false)
 
@@ -129,7 +133,7 @@ export default function Footer() {
             Quick Links
           </h3>
           <ul className="space-y-1">
-            {quickLinks.map((l, i) => (
+            {visibleLinks.map((l, i) => (
               <li key={`${l.label}-${i}`}>
                 <button
                   type="button"
@@ -155,15 +159,17 @@ export default function Footer() {
             Support
           </h3>
           <ul className="space-y-1 text-sm text-emerald-100/90">
-            <li>
-              <button
-                type="button"
-                onClick={() => setView('prescriptions')}
-                className="min-h-11 py-1 text-left transition-colors hover:text-white hover:underline"
-              >
-                How prescriptions work
-              </button>
-            </li>
+            {canAccessView(role, 'prescriptions') && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setView('prescriptions')}
+                  className="min-h-11 py-1 text-left transition-colors hover:text-white hover:underline"
+                >
+                  How prescriptions work
+                </button>
+              </li>
+            )}
             <li className="pt-1">
               <p className="font-medium text-emerald-50">Hotline: 09611-MEDIPLUS</p>
               <p className="text-emerald-200/80">support@medplus.com</p>
@@ -195,9 +201,26 @@ export default function Footer() {
 
       {/* Bottom bar */}
       <div className="border-t border-emerald-900">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-1 px-4 py-4 text-xs text-emerald-300/80 sm:flex-row lg:px-6">
-          <p>© {new Date().getFullYear()} MediPlus Pharmacy</p>
-          <p>Made for demo purposes</p>
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 py-4 text-center text-xs text-emerald-300/80 sm:flex-row sm:gap-4 sm:text-left lg:px-6">
+          <p>
+            © {new Date().getFullYear()} MediPlus Pharmacy
+            <span aria-hidden="true" className="hidden sm:inline">
+              {' · '}
+            </span>
+            <span className="block sm:inline">Made for demo purposes</span>
+          </p>
+          <p>
+            Built by{' '}
+            <a
+              href="https://jhossain.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-sm font-semibold text-emerald-200 underline-offset-4 transition-colors hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-emerald-950"
+            >
+              Jubair Hossain
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          </p>
         </div>
       </div>
     </footer>

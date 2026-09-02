@@ -140,10 +140,8 @@ fi
 PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
     bash "$SCRIPT_DIR/python-runtime-build.sh"
 
-# 有 Preview 数据库时复制现有数据；没有时直接在部署产物中初始化空库。
-# 模板源码不携带 db/custom.db，不能依赖 dev.sh 必须在 Deploy 前成功运行过。
-PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
-    bash "$SCRIPT_DIR/database-runtime-build.sh"
+# 数据库是外部托管的 Postgres（Neon），不再随部署产物打包。
+# schema 变更由 `prisma db push` / `prisma migrate deploy` 独立执行。
 
 # 复制 Caddyfile（如果存在）
 if [ -f "Caddyfile" ]; then

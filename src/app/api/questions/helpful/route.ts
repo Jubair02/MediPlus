@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import { readJson } from '../../_lib'
 
 /**
@@ -9,8 +9,8 @@ import { readJson } from '../../_lib'
  */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
 

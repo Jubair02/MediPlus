@@ -53,9 +53,6 @@ cd "$BUILD_DIR" || exit 1
 
 ls -lah
 
-DEFAULT_PACKAGED_DB_PATH="/app/db/custom.db"
-DEFAULT_PACKAGED_DATABASE_URL="file:$DEFAULT_PACKAGED_DB_PATH"
-
 # Python 依赖在构建阶段安装进部署产物，不复用 Sandbox 的 /home/z/.venv。
 # Next.js 及其启动的子进程都会继承这组路径。
 if [ -d "/app/python-runtime/site-packages" ]; then
@@ -75,20 +72,27 @@ if [ -f "./next-service-dist/server.js" ]; then
     export NODE_ENV=production
     export PORT="${PORT:-3000}"
     export HOSTNAME="${HOSTNAME:-0.0.0.0}"
-    export DATABASE_URL="${DATABASE_URL:-$DEFAULT_PACKAGED_DATABASE_URL}"
-
-    if [ "$DATABASE_URL" = "$DEFAULT_PACKAGED_DATABASE_URL" ]; then
-        if [ ! -f "$DEFAULT_PACKAGED_DB_PATH" ]; then
-            echo "❌ 未找到打包后的数据库文件 $DEFAULT_PACKAGED_DB_PATH"
-            echo "   为避免生产环境启动到空数据库，启动已终止"
-            exit 1
-        fi
-
-        echo "🗄️  当前使用打包数据库: $DEFAULT_PACKAGED_DB_PATH"
-    else
-        echo "🗄️  当前使用外部指定数据库: $DATABASE_URL"
+    # 数据库是外部托管的 Postgres，产物内不再有可回退的打包数据库。
+    # 缺少 DATABASE_URL 时必须直接失败，绝不能静默启动到错误的库。
+    if [ -z "${DATABASE_URL:-}" ]; then
+        echo "❌ 未设置 DATABASE_URL"
+        echo "   本服务需要一个外部 Postgres 连接串，启动已终止"
+        exit 1
     fi
-    
+    export DATABASE_URL
+
+    # JWT_SECRET 缺失时必须直接失败：代码里已移除硬编码兜底密钥，
+    # 静默启动会让所有角色校验形同虚设。
+    if [ -z "${JWT_SECRET:-}" ]; then
+        echo "❌ 未设置 JWT_SECRET"
+        echo "   缺少签名密钥会使会话令牌可被伪造，启动已终止"
+        exit 1
+    fi
+    export JWT_SECRET
+
+    # 只打印 host/db，避免把密码写进日志
+    echo "🗄️  当前使用数据库: $(echo "$DATABASE_URL" | sed -E 's#^(postgres(ql)?://)[^@]*@#\1***@#; s#\?.*$##')"
+
     # 后台启动 Next.js
     bun server.js &
     NEXT_PID=$!

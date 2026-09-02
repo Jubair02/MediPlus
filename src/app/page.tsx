@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAppStore } from '@/lib/store'
+import { canAccessView, fallbackViewFor, isCustomer } from '@/lib/rbac'
 import { api } from '@/lib/api'
 import Header from '@/components/store/Header'
 import Footer from '@/components/store/Footer'
@@ -25,12 +26,16 @@ import DeliveryDashboard from '@/components/delivery/DeliveryDashboard'
 export default function Page() {
   const view = useAppStore((s) => s.view)
   const user = useAppStore((s) => s.user)
+  const setView = useAppStore((s) => s.setView)
   const setCartCount = useAppStore((s) => s.setCartCount)
   const setWishlistIds = useAppStore((s) => s.setWishlistIds)
 
-  // Refresh cart badge + wishlist on first load when logged in
+  const role = user?.role ?? null
+
+  // Refresh cart badge + wishlist on first load when logged in as a customer.
+  // Staff accounts have no cart or wishlist — these endpoints 403 for them.
   useEffect(() => {
-    if (!user) return
+    if (!isCustomer(user?.role)) return
     api<{ items: unknown[] }>('/api/cart')
       .then((d) => setCartCount(d.items.length))
       .catch(() => {})
@@ -44,8 +49,21 @@ export default function Page() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [view])
 
+  // Self-heal: if `view` was forced to something this role may not open, write the
+  // permitted view back so the store, the header's active-nav state and the rendered
+  // view stay in agreement.
+  useEffect(() => {
+    if (!canAccessView(role, view)) setView(fallbackViewFor(role))
+  }, [role, view, setView])
+
+  // Last line of client-side defence. The store already refuses to set a view this role
+  // may not open, but state can be forced (devtools, a stale persisted blob, a role change
+  // mid-session) — so resolve what to render against the same policy rather than trusting
+  // `view`. Anything not permitted falls back to the role's own landing view.
+  const effectiveView = canAccessView(role, view) ? view : fallbackViewFor(role)
+
   const renderView = () => {
-    switch (view) {
+    switch (effectiveView) {
       case 'catalog':
         return <CatalogView />
       case 'cart':
@@ -63,11 +81,11 @@ export default function Page() {
       case 'profile':
         return <ProfileView />
       case 'admin':
-        return user?.role === 'ADMIN' ? <AdminDashboard /> : <HomeView />
+        return <AdminDashboard />
       case 'pharmacist':
-        return user?.role === 'PHARMACIST' ? <PharmacistDashboard /> : <HomeView />
+        return <PharmacistDashboard />
       case 'delivery':
-        return user?.role === 'DELIVERY' ? <DeliveryDashboard /> : <HomeView />
+        return <DeliveryDashboard />
       case 'home':
       default:
         return <HomeView />
@@ -80,7 +98,7 @@ export default function Page() {
       <main className="flex-1">
         <AnimatePresence mode="wait">
           <motion.div
-            key={view}
+            key={effectiveView}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}

@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Eye, EyeOff, LogIn, Pill, UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { useAppStore, type View } from '@/lib/store'
+import { useAppStore } from '@/lib/store'
 import type { AuthUser, Role } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,12 +19,6 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 
-const ROLE_DASHBOARD: Partial<Record<Role, View>> = {
-  ADMIN: 'admin',
-  PHARMACIST: 'pharmacist',
-  DELIVERY: 'delivery',
-}
-
 const DEMO_ACCOUNTS: { role: Role; email: string; password: string }[] = [
   { role: 'CUSTOMER', email: 'customer@medplus.com', password: 'Customer123!' },
   { role: 'PHARMACIST', email: 'pharmacist@medplus.com', password: 'Pharma123!' },
@@ -36,7 +30,6 @@ export default function AuthModal() {
   const authOpen = useAppStore((s) => s.authOpen)
   const setAuthOpen = useAppStore((s) => s.setAuthOpen)
   const login = useAppStore((s) => s.login)
-  const setView = useAppStore((s) => s.setView)
 
   const [tab, setTab] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
@@ -51,12 +44,9 @@ export default function AuthModal() {
 
   const [busy, setBusy] = useState(false)
 
+  // Redirect to the role's dashboard is handled by login() in the store.
   const afterAuth = (user: AuthUser) => {
     toast.success(tab === 'login' ? `Welcome back, ${user.name ?? user.email}` : `Welcome, ${user.name ?? user.email}`)
-    if (user.role !== 'CUSTOMER') {
-      const dash = ROLE_DASHBOARD[user.role]
-      if (dash) setView(dash)
-    }
   }
 
   const handleLogin = async (e: React.FormEvent) => {

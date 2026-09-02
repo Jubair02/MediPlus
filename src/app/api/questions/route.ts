@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, forbidden, serverError } from '@/lib/auth'
+import { getAuthUser, requireCustomer, unauthorized, badRequest, notFound, forbidden, serverError } from '@/lib/auth'
 import { readJson } from '../_lib'
 
 const MAX_QUESTION_LENGTH = 600
@@ -54,6 +54,7 @@ export async function GET(request: Request) {
 
     if (sp.get('mine') === '1') {
       if (!user) return unauthorized()
+      if (user.role !== 'CUSTOMER') return forbidden('This action is only available to customer accounts')
       const questions = await db.question.findMany({
         where: { userId: user.id },
         include: {
@@ -134,8 +135,8 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
 
@@ -188,8 +189,8 @@ export async function POST(request: Request) {
  */
 export async function PUT(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
 
@@ -237,8 +238,8 @@ export async function PUT(request: Request) {
 /** DELETE /api/questions?id=<id> — owner may delete their own question while it is still PENDING */
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const id = new URL(request.url).searchParams.get('id')
     if (!id) return badRequest('Question id is required')
     const question = await db.question.findUnique({ where: { id }, select: { id: true, userId: true, status: true } })

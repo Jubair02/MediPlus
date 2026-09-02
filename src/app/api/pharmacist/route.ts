@@ -3,6 +3,19 @@ import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
 import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
 
+/** Raised inside the review transaction when another request already reviewed this prescription. */
+class AlreadyReviewedError extends Error {
+  constructor() { super('Already reviewed'); this.name = 'AlreadyReviewedError' }
+}
+
+/** Raised inside the review transaction when stock ran out between the check and the decrement. */
+class InsufficientStockError extends Error {
+  constructor(public itemName: string) {
+    super(`Insufficient stock for ${itemName}`)
+    this.name = 'InsufficientStockError'
+  }
+}
+
 const RX_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
 const QA_STATUSES = ['PENDING', 'ANSWERED', 'REJECTED']
@@ -244,9 +257,9 @@ export async function GET(request: Request) {
         where: search
           ? {
               OR: [
-                { name: { contains: search } },
-                { genericName: { contains: search } },
-                { brand: { contains: search } },
+                { name: { contains: search, mode: 'insensitive' } },
+                { genericName: { contains: search, mode: 'insensitive' } },
+                { brand: { contains: search, mode: 'insensitive' } },
               ],
             }
           : {},
@@ -408,14 +421,23 @@ export async function PUT(request: Request) {
           }
         }
         await db.$transaction(async (tx) => {
-          await tx.prescription.update({
-            where: { id: prescription.id },
+          // Claim the review inside the transaction. The PENDING check above ran outside it,
+          // so two concurrent approvals (a double-click is enough) would both pass and both
+          // decrement stock. Whichever request updates zero rows lost the race and aborts.
+          const claimed = await tx.prescription.updateMany({
+            where: { id: prescription.id, status: 'PENDING' },
             data: { status: 'APPROVED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
           })
+          if (claimed.count === 0) throw new AlreadyReviewedError()
           const movements: StockMovementEntry[] = []
           for (const item of order.items) {
             if (item.medicineId) {
-              await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
+              // Conditional decrement: the stock check above also ran outside the transaction.
+              const decremented = await tx.medicine.updateMany({
+                where: { id: item.medicineId, stock: { gte: item.quantity } },
+                data: { stock: { decrement: item.quantity } },
+              })
+              if (decremented.count === 0) throw new InsufficientStockError(item.name)
               movements.push({
                 medicineId: item.medicineId,
                 delta: -item.quantity,
@@ -690,6 +712,10 @@ export async function PUT(request: Request) {
 
     return badRequest('Invalid action')
   } catch (e) {
+    // Lost races are the caller's problem to retry, not server faults.
+    if (e instanceof AlreadyReviewedError || e instanceof InsufficientStockError) {
+      return badRequest(e.message)
+    }
     return serverError(e)
   }
 }

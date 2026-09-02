@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, forbidden, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, notFound, forbidden, serverError } from '@/lib/auth'
 import { readJson, numOr } from '../_lib'
 
 const MAX_COMMENT_LENGTH = 600
@@ -66,8 +66,8 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
 
@@ -100,8 +100,8 @@ export async function POST(request: Request) {
 /** DELETE /api/reviews?id=<id> — owner only */
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const id = new URL(request.url).searchParams.get('id')
     if (!id) return badRequest('Review id is required')
     const review = await db.review.findUnique({ where: { id }, select: { id: true, userId: true } })

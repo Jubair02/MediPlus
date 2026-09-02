@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, serverError } from '@/lib/auth'
 import { readJson, rxExpiryFields, RX_EXPIRY_WARNING_DAYS } from '../_lib'
 
 /** GET /api/prescriptions (Bearer) → my prescriptions (no image), newest first, with orderNo.
@@ -7,8 +7,8 @@ import { readJson, rxExpiryFields, RX_EXPIRY_WARNING_DAYS } from '../_lib'
  *  Read-time side-effect: deduped 'expiring soon / expired' reminder notifications — never fails the GET. */
 export async function GET(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const prescriptions = await db.prescription.findMany({
       where: { userId: user.id },
       select: {
@@ -72,8 +72,8 @@ async function sendExpiryReminders(
 /** POST /api/prescriptions {image, note?} — upload a prescription image (data URL) */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const image = typeof body.image === 'string' ? body.image : ''

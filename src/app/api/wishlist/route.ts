@@ -1,11 +1,11 @@
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, serverError } from '@/lib/auth'
 
 /** GET /api/wishlist → { items: WishlistItem[], ids: string[] } */
 export async function GET(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const items = await db.wishlistItem.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: 'desc' },
@@ -25,8 +25,8 @@ export async function GET(request: Request) {
 /** POST /api/wishlist { medicineId } → toggle → { ids, added } */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await request.json().catch(() => null)
     const medicineId = (body as { medicineId?: string } | null)?.medicineId
     if (!medicineId) return badRequest('medicineId is required')
@@ -55,8 +55,8 @@ export async function POST(request: Request) {
 /** DELETE /api/wishlist?medicineId= → { ids } */
 export async function DELETE(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const { searchParams } = new URL(request.url)
     const medicineId = searchParams.get('medicineId')
     if (!medicineId) return badRequest('medicineId is required')

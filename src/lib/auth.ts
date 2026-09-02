@@ -1,7 +1,26 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto'
 import { db } from '@/lib/db'
+import type { Role } from '@/lib/types'
+import { STAFF_ROLES } from '@/lib/rbac'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'medplus-epharm-dev-secret'
+/**
+ * Signing key for session tokens. There is deliberately no fallback: a default here
+ * would be committed to the repository, and anyone who could read it could forge a
+ * token for any user id and any role — defeating every guard below. Failing at import
+ * is the safe outcome, because the alternative is a deploy that looks healthy and is
+ * silently unauthenticated.
+ *
+ * Generate a value with 32 bytes of randomness, hex-encoded.
+ */
+function requireJwtSecret(): string {
+  const secret = process.env.JWT_SECRET
+  if (!secret) {
+    throw new Error('JWT_SECRET is not set. Add a 32-byte random hex value to .env (local) or the deployment environment.')
+  }
+  return secret
+}
+
+const JWT_SECRET = requireJwtSecret()
 
 export interface JwtPayload {
   sub: string
@@ -57,7 +76,7 @@ export interface AuthUser {
   name: string | null
   email: string
   phone: string | null
-  role: string
+  role: Role
   status: string
 }
 
@@ -70,7 +89,7 @@ export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   if (!payload) return null
   const user = await db.user.findUnique({ where: { id: payload.sub } })
   if (!user || user.status !== 'ACTIVE') return null
-  return { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, status: user.status }
+  return { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role as Role, status: user.status }
 }
 
 export function unauthorized(message = 'Unauthorized') {
@@ -95,10 +114,43 @@ export function serverError(e: unknown) {
   return Response.json({ error: message }, { status: 500 })
 }
 
-/** Guard: require one of the given roles */
-export async function requireRole(request: Request, roles: string[]): Promise<AuthUser | Response> {
+// ---------- role guards ----------
+// Every guard returns `AuthUser | Response`. Call sites MUST narrow with
+// `if (x instanceof Response) return x` before touching the user.
+
+/** Guard: require one of the given roles. */
+export async function requireRole(request: Request, roles: readonly Role[]): Promise<AuthUser | Response> {
   const user = await getAuthUser(request)
   if (!user) return unauthorized()
   if (!roles.includes(user.role)) return forbidden(`Requires role: ${roles.join(' or ')}`)
   return user
+}
+
+/** Guard: require any signed-in user, whatever the role (profile, notifications). */
+export async function requireAuth(request: Request): Promise<AuthUser | Response> {
+  const user = await getAuthUser(request)
+  if (!user) return unauthorized()
+  return user
+}
+
+/**
+ * Guard: CUSTOMER only.
+ *
+ * Shopping — cart, wishlist, addresses, checkout, orders, prescriptions, reviews, Q&A —
+ * is a customer capability. Staff accounts operate the store through their own
+ * /api/{admin,pharmacist,delivery} resources and must never transact as a shopper,
+ * so they get 403 here rather than a self-scoped success.
+ */
+export async function requireCustomer(request: Request): Promise<AuthUser | Response> {
+  const user = await getAuthUser(request)
+  if (!user) return unauthorized()
+  if (user.role !== 'CUSTOMER') {
+    return forbidden('This action is only available to customer accounts')
+  }
+  return user
+}
+
+/** Guard: any staff role (ADMIN | PHARMACIST | DELIVERY). */
+export async function requireStaff(request: Request): Promise<AuthUser | Response> {
+  return requireRole(request, STAFF_ROLES)
 }

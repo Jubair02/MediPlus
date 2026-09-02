@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
-import { getAuthUser, unauthorized, badRequest, notFound, serverError } from '@/lib/auth'
+import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import {
   readJson,
   orderInclude,
@@ -18,6 +18,18 @@ const CANCELLABLE = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING'
 const RESTOCK_STATUSES = ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY']
 const FREE_DELIVERY_MIN = 2000
 const DELIVERY_FEE = 60
+
+/** Thrown when a concurrent request already moved the order out of a cancellable status. */
+class AlreadyCancelledError extends Error {
+  constructor() { super('Order cannot be cancelled now'); this.name = 'AlreadyCancelledError' }
+}
+/** Thrown when the in-transaction conditional stock decrement finds the item already sold out. */
+class InsufficientStockError extends Error {
+  constructor(public medicineName: string) {
+    super(`Insufficient stock for ${medicineName}`)
+    this.name = 'InsufficientStockError'
+  }
+}
 const MAX_NOTES_LENGTH = 600
 
 async function loadCart(userId: string) {
@@ -34,8 +46,8 @@ async function loadFullOrder(id: string) {
  */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
 
@@ -195,7 +207,11 @@ export async function POST(request: Request) {
           if (deductStock) {
             const movements: StockMovementEntry[] = []
             for (const it of cartItems) {
-              await tx.medicine.update({ where: { id: it.medicineId }, data: { stock: { decrement: it.quantity } } })
+              const decremented = await tx.medicine.updateMany({
+                where: { id: it.medicineId, stock: { gte: it.quantity } },
+                data: { stock: { decrement: it.quantity } },
+              })
+              if (decremented.count === 0) throw new InsufficientStockError(it.medicine.name)
               movements.push({
                 medicineId: it.medicineId,
                 delta: -it.quantity,
@@ -214,6 +230,7 @@ export async function POST(request: Request) {
         })
         break
       } catch (e) {
+        if (e instanceof InsufficientStockError) return badRequest(e.message)
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && attempt < 4) continue
         return serverError(e)
       }
@@ -231,8 +248,8 @@ export async function POST(request: Request) {
 /** GET /api/orders → my orders (newest first); GET /api/orders?id= → single (ownership, prescription with image) */
 export async function GET(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const id = new URL(request.url).searchParams.get('id')
     if (id) {
       const order = await db.order.findFirst({ where: { id, userId: user.id }, include: orderInclude })
@@ -253,8 +270,8 @@ export async function GET(request: Request) {
 /** PUT /api/orders {action:'cancel'|'reorder'|'reorder-prescription', id?|orderId?, prescriptionId?} */
 export async function PUT(request: Request) {
   try {
-    const user = await getAuthUser(request)
-    if (!user) return unauthorized()
+    const user = await requireCustomer(request)
+    if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const action = typeof body.action === 'string' ? body.action : ''
@@ -355,6 +372,14 @@ export async function PUT(request: Request) {
       const restock = RESTOCK_STATUSES.includes(order.status)
       const wasPaid = order.paymentStatus === 'PAID'
       await db.$transaction(async (tx) => {
+        // Claim the cancellation first. The CANCELLABLE check above ran outside the
+        // transaction, so two concurrent cancels would both pass it and both restock,
+        // inventing units that do not exist. The status write is the guard.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: { in: CANCELLABLE } },
+          data: { status: 'CANCELLED', statusNote: 'Cancelled by customer', ...(wasPaid ? { paymentStatus: 'REFUNDED' } : {}) },
+        })
+        if (claimed.count === 0) throw new AlreadyCancelledError()
         if (restock) {
           const movements: StockMovementEntry[] = []
           for (const it of order.items) {
@@ -371,10 +396,6 @@ export async function PUT(request: Request) {
           }
           await recordStockMovements(tx, movements)
         }
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: 'CANCELLED', statusNote: 'Cancelled by customer', ...(wasPaid ? { paymentStatus: 'REFUNDED' } : {}) },
-        })
         if (wasPaid && order.payment) {
           await tx.payment.update({ where: { id: order.payment.id }, data: { status: 'REFUNDED' } })
         }
@@ -411,6 +432,7 @@ export async function PUT(request: Request) {
 
     return badRequest('Invalid action')
   } catch (e) {
+    if (e instanceof AlreadyCancelledError) return badRequest(e.message)
     return serverError(e)
   }
 }
