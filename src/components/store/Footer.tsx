@@ -15,6 +15,13 @@ const quickLinks: { view: View; label: string }[] = [
 
 const paymentChips = ['Cash on Delivery', 'bKash (Demo)', 'Visa']
 
+/** One heading treatment for every footer column, so they share a baseline and rhythm. */
+const COLUMN_HEADING = 'text-sm font-semibold uppercase tracking-wider text-emerald-300'
+
+/** Footer link row: a full-width 44px target, so a column of links reads as an even stack. */
+const LINK_ROW =
+  'flex min-h-11 w-full items-center text-left text-sm text-emerald-100/90 transition-colors hover:text-white hover:underline'
+
 export default function Footer() {
   const setView = useAppStore((s) => s.setView)
   const role = useAppStore((s) => s.user?.role ?? null)
@@ -89,24 +96,24 @@ export default function Footer() {
           </form>
         </div>
       </div>
-      <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:grid-cols-2 lg:grid-cols-4 lg:px-6">
-        {/* Brand */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <span className="flex size-9 items-center justify-center rounded-lg bg-emerald-600">
+      <div className="mx-auto grid max-w-7xl gap-x-8 gap-y-10 px-4 py-12 sm:grid-cols-2 lg:grid-cols-12 lg:gap-x-10 lg:px-6">
+        {/* Brand — spans the full row on small screens so the blurb keeps a readable measure */}
+        <div className="flex flex-col gap-4 sm:col-span-2 lg:col-span-4">
+          <div className="flex h-9 items-center gap-2.5">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-emerald-600">
               <Pill className="size-5 text-white" aria-hidden="true" />
             </span>
-            <span className="text-lg font-bold">MediPlus</span>
+            <span className="text-lg font-bold leading-none">MediPlus</span>
           </div>
-          <p className="text-sm leading-relaxed text-emerald-200/90">
+          <p className="max-w-sm text-sm leading-relaxed text-emerald-200/90">
             Genuine medicines and health essentials, delivered to your door — fast, safe and
             affordable.
           </p>
-          <p className="inline-flex items-center gap-1.5 rounded-full bg-emerald-900 px-3 py-1 text-xs text-emerald-200">
-            <ShieldCheck className="size-3.5" aria-hidden="true" />
+          <p className="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-900 px-3 py-1 text-xs text-emerald-200">
+            <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
             Licensed online pharmacy demo
           </p>
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
             {[
               { icon: Facebook, label: 'Facebook' },
               { icon: Instagram, label: 'Instagram' },
@@ -128,11 +135,9 @@ export default function Footer() {
         </div>
 
         {/* Quick links */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-emerald-300">
-            Quick Links
-          </h3>
-          <ul className="space-y-1">
+        <div className="lg:col-span-2">
+          <h3 className={COLUMN_HEADING}>Quick Links</h3>
+          <ul className="mt-4 flex flex-col">
             {visibleLinks.map((l, i) => (
               <li key={`${l.label}-${i}`}>
                 <button
@@ -144,7 +149,7 @@ export default function Footer() {
                     }
                     setView(l.view)
                   }}
-                  className="min-h-11 py-1 text-sm text-emerald-100/90 transition-colors hover:text-white hover:underline"
+                  className={LINK_ROW}
                 >
                   {l.label}
                 </button>
@@ -154,36 +159,27 @@ export default function Footer() {
         </div>
 
         {/* Support */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-emerald-300">
-            Support
-          </h3>
-          <ul className="space-y-1 text-sm text-emerald-100/90">
+        <div className="lg:col-span-3">
+          <h3 className={COLUMN_HEADING}>Support</h3>
+          <div className="mt-4 flex flex-col gap-3">
             {canAccessView(role, 'prescriptions') && (
-              <li>
-                <button
-                  type="button"
-                  onClick={() => setView('prescriptions')}
-                  className="min-h-11 py-1 text-left transition-colors hover:text-white hover:underline"
-                >
-                  How prescriptions work
-                </button>
-              </li>
+              <button type="button" onClick={() => setView('prescriptions')} className={LINK_ROW}>
+                How prescriptions work
+              </button>
             )}
-            <li className="pt-1">
+            {/* Contact details are read, not clicked — tighter rhythm than the link rows above */}
+            <div className="space-y-1 text-sm">
               <p className="font-medium text-emerald-50">Hotline: 09611-MEDIPLUS</p>
               <p className="text-emerald-200/80">support@medplus.com</p>
               <p className="text-emerald-200/80">Dhaka, Bangladesh</p>
-            </li>
-          </ul>
+            </div>
+          </div>
         </div>
 
         {/* Payment */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-emerald-300">
-            Payment
-          </h3>
-          <div className="flex flex-wrap gap-2">
+        <div className="lg:col-span-3">
+          <h3 className={COLUMN_HEADING}>Payment</h3>
+          <div className="mt-4 flex flex-wrap gap-2">
             {paymentChips.map((p) => (
               <span
                 key={p}
@@ -193,7 +189,7 @@ export default function Footer() {
               </span>
             ))}
           </div>
-          <p className="mt-4 text-xs leading-relaxed text-emerald-300/80">
+          <p className="mt-4 max-w-xs text-xs leading-relaxed text-emerald-300/80">
             All payments on this demo are simulated. No real money is charged.
           </p>
         </div>
