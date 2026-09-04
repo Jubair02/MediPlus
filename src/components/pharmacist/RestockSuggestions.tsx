@@ -199,16 +199,34 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
   /** Lines that still need a PO (not already covered by an open one). */
   const needOrdering = useMemo(() => {
     const list = suggestions ?? []
-    return list.filter((s) => (s.openPoQty ?? 0) < s.suggestedQty)
+    return list.filter((s) => (s.openPoQty ?? 0) < s.suggestedQty) // i.e. shortfallOf(s) > 0
   }, [suggestions])
 
   function openPoQtyOf(s: RestockSuggestion): number {
     return s.openPoQty ?? 0
   }
 
+  /**
+   * Units still to order for a line: the suggestion minus what open POs already cover.
+   *
+   * `suggestedQty` is the target stock position, not an increment — a line suggested 50
+   * with 40 already on an open PO needs 10 more, not another 50. Ordering `suggestedQty`
+   * outright is how "Order all" used to double-order every partially covered line.
+   */
+  function shortfallOf(s: RestockSuggestion): number {
+    return Math.max(0, s.suggestedQty - openPoQtyOf(s))
+  }
+
+  /** `estValue` covers the whole suggestion; pro-rate it to the units actually ordered. */
+  function shortfallValueOf(s: RestockSuggestion): number {
+    if (s.suggestedQty <= 0) return 0
+    return (s.estValue / s.suggestedQty) * shortfallOf(s)
+  }
+
   function openPoDialog(s: RestockSuggestion) {
     setPoTarget(s)
-    setPoQty(String(s.suggestedQty))
+    // Default to what is still missing, not the full suggestion (see shortfallOf).
+    setPoQty(String(shortfallOf(s) || s.suggestedQty))
     setPoSupplier('')
     setPoExpectedAt('')
     setPoNote('')
@@ -278,10 +296,12 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
     let firstError: string | null = null
     try {
       for (const s of needOrdering) {
+        const qty = shortfallOf(s)
+        if (qty < 1) continue
         try {
           await api<{ order: unknown }>('/api/pharmacist', {
             method: 'PUT',
-            body: { action: 'create-po', medicineId: s.id, qty: s.suggestedQty },
+            body: { action: 'create-po', medicineId: s.id, qty },
           })
           ok++
         } catch (e) {
@@ -598,8 +618,9 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
             <AlertDialogTitle>Create purchase orders for all suggested lines?</AlertDialogTitle>
             <AlertDialogDescription>
               {needOrdering.length} order{needOrdering.length === 1 ? '' : 's'}, ~
-              {fmtBDT(needOrdering.reduce((sum, s) => sum + s.estValue, 0))} total — lines already
-              fully covered by an open PO are skipped.
+              {fmtBDT(needOrdering.reduce((sum, s) => sum + shortfallValueOf(s), 0))} total — each
+              line is ordered up to its suggested quantity, so units already on an open PO are
+              deducted and fully covered lines are skipped.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

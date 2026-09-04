@@ -1,4 +1,5 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto'
+import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'crypto'
+import { promisify } from 'util'
 import { db } from '@/lib/db'
 import type { Role } from '@/lib/types'
 import { STAFF_ROLES } from '@/lib/rbac'
@@ -30,18 +31,35 @@ export interface JwtPayload {
   exp: number
 }
 
-export function hashPassword(password: string): string {
+/**
+ * scrypt, off the main thread.
+ *
+ * The synchronous `scryptSync` runs its whole key-derivation on the event loop, so a
+ * burst of login attempts stops the server answering anything at all — the password
+ * check becomes a denial-of-service lever as well as a credential-stuffing target.
+ * The async form hands the work to libuv's threadpool instead, so concurrent requests
+ * interleave. Rate limiting still matters (the pool is only UV_THREADPOOL_SIZE wide);
+ * see `src/lib/ratelimit.ts`.
+ */
+const scryptAsync = promisify(scrypt) as (password: string, salt: string, keylen: number) => Promise<Buffer>
+
+/** Cost of one derivation. 64 bytes of scrypt output at Node's default N=16384. */
+const KEY_LENGTH = 64
+
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex')
-  const hash = scryptSync(password, salt, 64).toString('hex')
+  const hash = (await scryptAsync(password, salt, KEY_LENGTH)).toString('hex')
   return `${salt}:${hash}`
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   try {
     const [salt, hash] = stored.split(':')
     const hashBuf = Buffer.from(hash, 'hex')
-    const testBuf = scryptSync(password, salt, 64)
-    return timingSafeEqual(hashBuf, testBuf)
+    const testBuf = await scryptAsync(password, salt, KEY_LENGTH)
+    // Length-mismatched buffers make timingSafeEqual throw, which the catch turns
+    // into a plain "wrong password" — the right answer for a malformed stored hash.
+    return hashBuf.length === testBuf.length && timingSafeEqual(hashBuf, testBuf)
   } catch {
     return false
   }
@@ -98,6 +116,14 @@ export function unauthorized(message = 'Unauthorized') {
 
 export function forbidden(message = 'Forbidden') {
   return Response.json({ error: message }, { status: 403 })
+}
+
+/** 429 with a Retry-After header, so clients (and crawlers) can back off correctly. */
+export function tooManyRequests(message: string, retryAfterSeconds: number) {
+  return Response.json(
+    { error: message },
+    { status: 429, headers: { 'Retry-After': String(Math.max(1, Math.ceil(retryAfterSeconds))) } }
+  )
 }
 
 export function badRequest(message: string) {

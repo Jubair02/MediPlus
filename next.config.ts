@@ -6,9 +6,10 @@ import type { NextConfig } from "next";
 // sets VERCEL=1 during the build, so key off that and leave its default output alone.
 const nextConfig: NextConfig = {
   ...(process.env.VERCEL ? {} : { output: "standalone" as const }),
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  // No `typescript.ignoreBuildErrors` here on purpose: with it on, `next build` shipped
+  // type errors silently and nothing static stood between a regression and production.
+  // `examples/` and `download/` are excluded in tsconfig.json instead (they import
+  // packages that are not installed), so the app's own code is the thing being checked.
   reactStrictMode: false,
 };
 

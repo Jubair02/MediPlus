@@ -1,11 +1,16 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
-import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
+import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, StockConflictError, updateMedicineWithStockGuard, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
 
 /** Raised inside the review transaction when another request already reviewed this prescription. */
 class AlreadyReviewedError extends Error {
   constructor() { super('Already reviewed'); this.name = 'AlreadyReviewedError' }
+}
+
+/** Raised when a purchase order was already received by a concurrent request. */
+class AlreadyReceivedError extends Error {
+  constructor() { super('This purchase order has already been received'); this.name = 'AlreadyReceivedError' }
 }
 
 /** Raised inside the review transaction when stock ran out between the check and the decrement. */
@@ -232,7 +237,7 @@ export async function GET(request: Request) {
         where,
         include: {
           user: { select: { id: true, name: true, email: true, phone: true } },
-          order: { select: { orderNo: true } },
+          orders: { select: { orderNo: true }, orderBy: { createdAt: 'asc' }, take: 1 },
         },
         orderBy: { createdAt: 'desc' },
       })
@@ -245,7 +250,7 @@ export async function GET(request: Request) {
           reviewNote: p.reviewNote,
           createdAt: p.createdAt,
           user: p.user,
-          orderNo: p.order?.orderNo ?? null,
+          orderNo: p.orders[0]?.orderNo ?? null,
           ...rxExpiryFields(p.status, p.reviewedAt),
         })),
       })
@@ -284,7 +289,7 @@ export async function GET(request: Request) {
         if (ap !== bp) return ap - bp
         return b.createdAt.getTime() - a.createdAt.getTime()
       })
-      return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+      return Response.json({ orders: orders.map((o) => parseOrder(o)) })
     }
 
     if (resource === 'movements') {
@@ -404,13 +409,16 @@ export async function PUT(request: Request) {
 
       const prescription = await db.prescription.findUnique({
         where: { id: prescriptionId },
-        include: { order: { include: { ...orderInclude, items: { include: { medicine: true } } } } },
+        include: { orders: { include: { ...orderInclude, items: { include: { medicine: true } } } } },
       })
       if (!prescription) return notFound('Prescription not found')
       if (prescription.status !== 'PENDING') return badRequest('Already reviewed')
 
       const reviewNote = optStr(body.reviewNote)?.trim() || null
-      const order = prescription.order
+      // A prescription can back several orders once approved, but only one is ever
+      // awaiting this review — the one it was submitted with. Reused orders are already
+      // CONFIRMED and must not be touched by a later review of the same prescription.
+      const order = prescription.orders.find((o) => o.status === 'PRESCRIPTION_REVIEW') ?? null
 
       if (decision === 'APPROVED' && order) {
         // Check stock for all Rx order items BEFORE approving
@@ -475,10 +483,16 @@ export async function PUT(request: Request) {
         })
       } else if (decision === 'REJECTED' && order) {
         await db.$transaction(async (tx) => {
-          await tx.prescription.update({
-            where: { id: prescription.id },
+          // Claim the review, exactly as the approval branch does. An unconditional
+          // update here loses the approve/reject race in the worst possible direction:
+          // a concurrent approval decrements stock and confirms the order, then this
+          // write flips the row to REJECTED and cancels the order without restocking —
+          // so those units leave inventory with nothing to show for them.
+          const claimed = await tx.prescription.updateMany({
+            where: { id: prescription.id, status: 'PENDING' },
             data: { status: 'REJECTED', reviewNote, reviewedById: user.id, reviewedAt: new Date() },
           })
+          if (claimed.count === 0) throw new AlreadyReviewedError()
           await tx.order.update({ where: { id: order.id }, data: { status: 'CANCELLED', statusNote: 'Prescription rejected' } })
           await tx.notification.create({
             data: {
@@ -495,10 +509,13 @@ export async function PUT(request: Request) {
           })
         })
       } else {
-        await db.prescription.update({
-          where: { id: prescription.id },
+        // No linked order, so there is no stock to get wrong — but two reviewers must
+        // still not both "win", or the audit log records a decision that was overwritten.
+        const claimed = await db.prescription.updateMany({
+          where: { id: prescription.id, status: 'PENDING' },
           data: { status: decision, reviewNote, reviewedById: user.id, reviewedAt: new Date() },
         })
+        if (claimed.count === 0) throw new AlreadyReviewedError()
         await logAudit(db, user, {
           action: 'RX_REVIEW',
           entityType: 'PRESCRIPTION',
@@ -516,7 +533,7 @@ export async function PUT(request: Request) {
 
       const updated = await db.prescription.findUnique({
         where: { id: prescription.id },
-        include: { order: { select: { orderNo: true } } },
+        include: { orders: { select: { orderNo: true }, orderBy: { createdAt: 'asc' }, take: 1 } },
       })
       if (!updated) return notFound('Prescription not found')
       return Response.json({
@@ -527,7 +544,7 @@ export async function PUT(request: Request) {
           status: updated.status,
           reviewNote: updated.reviewNote,
           createdAt: updated.createdAt,
-          orderNo: updated.order?.orderNo ?? null,
+          orderNo: updated.orders[0]?.orderNo ?? null,
         },
       })
     }
@@ -592,8 +609,12 @@ export async function PUT(request: Request) {
       // body.note replaces the note only when provided as a non-empty string; otherwise the note is kept
       const replacementNote = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
       await db.$transaction(async (tx) => {
-        await tx.purchaseOrder.update({
-          where: { id: po.id },
+        // The status check above ran outside the transaction, so a double-click sent two
+        // requests that both passed it and both incremented stock — the same delivery
+        // counted twice. Claiming the ORDERED row is the guard: the loser writes nothing
+        // and aborts before it can add the second increment.
+        const claimed = await tx.purchaseOrder.updateMany({
+          where: { id: po.id, status: 'ORDERED' },
           data: {
             status: 'RECEIVED',
             receivedAt: new Date(),
@@ -601,6 +622,7 @@ export async function PUT(request: Request) {
             ...(replacementNote !== null ? { note: replacementNote } : {}),
           },
         })
+        if (claimed.count === 0) throw new AlreadyReceivedError()
         await tx.medicine.update({ where: { id: po.medicineId }, data: { stock: { increment: po.qty } } })
         await recordStockMovements(tx, [{
           medicineId: po.medicineId,
@@ -631,7 +653,10 @@ export async function PUT(request: Request) {
       })
       if (!po) return notFound('Purchase order not found')
       if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be cancelled')
-      await db.purchaseOrder.update({ where: { id: po.id }, data: { status: 'CANCELLED' } })
+      // Claimed, not overwritten: cancelling a PO that another request just received
+      // would leave the stock increment standing against a CANCELLED order.
+      const cancelled = await db.purchaseOrder.updateMany({ where: { id: po.id, status: 'ORDERED' }, data: { status: 'CANCELLED' } })
+      if (cancelled.count === 0) return badRequest('Only ordered purchase orders can be cancelled')
       await logAudit(db, user, {
         action: 'PO_CANCEL',
         entityType: 'PURCHASE_ORDER',
@@ -663,15 +688,22 @@ export async function PUT(request: Request) {
       if (!existing) return notFound('Medicine not found')
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
-      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
-      const medicine = await db.medicine.update({
-        where: { id },
-        data: parsed.data,
-        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
-      })
-      if (newStock !== undefined && newStock !== existing.stock) {
-        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+      // `stock` is an absolute value, so it is only safe to write if it was computed
+      // from a current reading. `expectedStock` is what the editor's form was showing;
+      // the write lands only if that is still the truth. Absent (an older client, or a
+      // caller that only touches other fields) it falls back to the row just read, which
+      // still closes the read-then-write window inside this request.
+      const expectedStock = body.expectedStock === undefined ? undefined : numOr(body.expectedStock, NaN)
+      if (expectedStock !== undefined && !Number.isInteger(expectedStock)) {
+        return badRequest('Invalid expected stock')
       }
+      const medicine = await updateMedicineWithStockGuard({
+        id,
+        name: existing.name,
+        data: parsed.data,
+        previousStock: expectedStock ?? existing.stock,
+        actorId: user.id,
+      })
       return Response.json({ medicine: medicineStaffJson(medicine) })
     }
 
@@ -713,7 +745,12 @@ export async function PUT(request: Request) {
     return badRequest('Invalid action')
   } catch (e) {
     // Lost races are the caller's problem to retry, not server faults.
-    if (e instanceof AlreadyReviewedError || e instanceof InsufficientStockError) {
+    if (
+      e instanceof AlreadyReviewedError ||
+      e instanceof AlreadyReceivedError ||
+      e instanceof InsufficientStockError ||
+      e instanceof StockConflictError
+    ) {
       return badRequest(e.message)
     }
     return serverError(e)

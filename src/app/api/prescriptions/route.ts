@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { requireCustomer, badRequest, serverError } from '@/lib/auth'
-import { readJson, rxExpiryFields, RX_EXPIRY_WARNING_DAYS } from '../_lib'
+import { readJson, parseImageInput, rxExpiryFields, RX_EXPIRY_WARNING_DAYS } from '../_lib'
 
 /** GET /api/prescriptions (Bearer) → my prescriptions (no image), newest first, with orderNo.
  *  APPROVED rows additionally carry reviewedAt / expiresAt / daysLeft / expiringSoon (90-day validity).
@@ -19,7 +19,9 @@ export async function GET(request: Request) {
         reviewedAt: true,
         createdAt: true,
         updatedAt: true,
-        order: { select: { id: true, orderNo: true } },
+        // A prescription can now back several orders; the list shows the one it was
+        // uploaded with, which is the oldest.
+        orders: { select: { id: true, orderNo: true }, orderBy: { createdAt: 'asc' }, take: 1 },
       },
       orderBy: { createdAt: 'desc' },
     })
@@ -30,8 +32,8 @@ export async function GET(request: Request) {
       reviewNote: p.reviewNote,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
-      orderNo: p.order?.orderNo ?? null,
-      orderId: p.order?.id ?? null,
+      orderNo: p.orders[0]?.orderNo ?? null,
+      orderId: p.orders[0]?.id ?? null,
       ...rxExpiryFields(p.status, p.reviewedAt),
     }))
     await sendExpiryReminders(user.id, rows)
@@ -76,11 +78,12 @@ export async function POST(request: Request) {
     if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
-    const image = typeof body.image === 'string' ? body.image : ''
-    if (!image.startsWith('data:image')) return badRequest('Please upload a valid image')
+    // Prefix-only validation let any size of payload through into the image column.
+    const parsedImage = parseImageInput(body.image, { label: 'prescription image' })
+    if ('error' in parsedImage) return badRequest(parsedImage.error)
     const note = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
     const prescription = await db.prescription.create({
-      data: { userId: user.id, image, note },
+      data: { userId: user.id, image: parsedImage.data, note },
     })
     return Response.json({ prescription }, { status: 201 })
   } catch (e) {

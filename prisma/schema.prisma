@@ -9,31 +9,31 @@ datasource db {
 }
 
 model User {
-  id            String         @id @default(cuid())
-  email         String         @unique
-  name          String?
-  password      String?
-  phone         String?
-  role          String         @default("CUSTOMER") // CUSTOMER | PHARMACIST | ADMIN | DELIVERY
-  status        String         @default("ACTIVE") // ACTIVE | INACTIVE
-  addresses     Address[]
-  cartItems     CartItem[]
-  wishlistItems WishlistItem[]
-  orders        Order[]        @relation("OrderCustomer")
-  prescriptions Prescription[]
-  notifications Notification[]
-  deliveries    Order[]        @relation("DeliveryStaff")
-  reviewsDone   Prescription[] @relation("ReviewedBy")
-  reviews       Review[]
-  questions     Question[]
-  answeredQuestions Question[] @relation("QuestionAnswerer")
-  helpfulVotesGiven HelpfulVote[]
-  stockMovements StockMovement[]
-  purchaseOrdersOrdered PurchaseOrder[] @relation("PoOrderer")
+  id                     String          @id @default(cuid())
+  email                  String          @unique
+  name                   String?
+  password               String?
+  phone                  String?
+  role                   String          @default("CUSTOMER") // CUSTOMER | PHARMACIST | ADMIN | DELIVERY
+  status                 String          @default("ACTIVE") // ACTIVE | INACTIVE
+  addresses              Address[]
+  cartItems              CartItem[]
+  wishlistItems          WishlistItem[]
+  orders                 Order[]         @relation("OrderCustomer")
+  prescriptions          Prescription[]
+  notifications          Notification[]
+  deliveries             Order[]         @relation("DeliveryStaff")
+  reviewsDone            Prescription[]  @relation("ReviewedBy")
+  reviews                Review[]
+  questions              Question[]
+  answeredQuestions      Question[]      @relation("QuestionAnswerer")
+  helpfulVotesGiven      HelpfulVote[]
+  stockMovements         StockMovement[]
+  purchaseOrdersOrdered  PurchaseOrder[] @relation("PoOrderer")
   purchaseOrdersReceived PurchaseOrder[] @relation("PoReceiver")
-  auditLogs AuditLog[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  auditLogs              AuditLog[]
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 }
 
 model Address {
@@ -49,6 +49,8 @@ model Address {
   postcode  String?
   isDefault Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Category {
@@ -62,21 +64,21 @@ model Category {
 }
 
 model Medicine {
-  id                   String      @id @default(cuid())
+  id                   String          @id @default(cuid())
   name                 String
   genericName          String?
   brand                String?
   description          String?
   categoryId           String?
-  category             Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  category             Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   price                Float
   discountPrice        Float?
-  stock                Int         @default(0)
-  unit                 String      @default("piece") // piece | strip | bottle | box | tube
+  stock                Int             @default(0)
+  unit                 String          @default("piece") // piece | strip | bottle | box | tube
   image                String?
-  requiresPrescription Boolean     @default(false)
+  requiresPrescription Boolean         @default(false)
   expiryDate           DateTime?
-  status               String      @default("ACTIVE") // ACTIVE | INACTIVE
+  status               String          @default("ACTIVE") // ACTIVE | INACTIVE
   manufacturer         String?
   cartItems            CartItem[]
   wishlistItems        WishlistItem[]
@@ -86,8 +88,11 @@ model Medicine {
   stockMovements       StockMovement[]
   purchaseOrders       PurchaseOrder[]
   extraImages          MedicineImage[]
-  createdAt            DateTime    @default(now())
-  updatedAt            DateTime    @updatedAt
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([categoryId])
+  @@index([status, name])
 }
 
 model MedicineImage {
@@ -135,35 +140,46 @@ model Prescription {
   reviewedById String?
   reviewedBy   User?     @relation("ReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   reviewedAt   DateTime?
-  order        Order?
+  orders       Order[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status, createdAt])
+  @@index([reviewedById])
 }
 
 model Order {
-  id              String        @id @default(cuid())
-  orderNo         String        @unique
-  userId          String
-  user            User          @relation("OrderCustomer", fields: [userId], references: [id], onDelete: Cascade)
-  items           OrderItem[]
-  addressJson     String
-  subtotal        Float
-  discount        Float         @default(0)
-  deliveryFee     Float         @default(0)
-  total           Float
-  couponCode      String?
-  paymentMethod   String        @default("COD") // COD | BKASH_DEMO
-  paymentStatus   String        @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
-  status          String        @default("PENDING") // PENDING | PRESCRIPTION_REVIEW | CONFIRMED | PROCESSING | OUT_FOR_DELIVERY | DELIVERED | CANCELLED | FAILED
-  prescriptionId  String?       @unique
-  prescription    Prescription? @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+  id             String        @id @default(cuid())
+  orderNo        String        @unique
+  userId         String
+  user           User          @relation("OrderCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  items          OrderItem[]
+  addressJson    String
+  subtotal       Float
+  discount       Float         @default(0)
+  deliveryFee    Float         @default(0)
+  total          Float
+  couponCode     String?
+  paymentMethod  String        @default("COD") // COD | BKASH_DEMO
+  paymentStatus  String        @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
+  status         String        @default("PENDING") // PENDING | PRESCRIPTION_REVIEW | CONFIRMED | PROCESSING | OUT_FOR_DELIVERY | DELIVERED | CANCELLED | FAILED
+  prescriptionId String?
+  prescription   Prescription? @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+
   deliveryStaffId String?
-  deliveryStaff   User?         @relation("DeliveryStaff", fields: [deliveryStaffId], references: [id], onDelete: SetNull)
+  deliveryStaff   User?    @relation("DeliveryStaff", fields: [deliveryStaffId], references: [id], onDelete: SetNull)
   statusNote      String?
   notes           String?
   payment         Payment?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([prescriptionId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([deliveryStaffId, status])
+  @@index([createdAt])
 }
 
 model OrderItem {
@@ -177,6 +193,9 @@ model OrderItem {
   quantity             Int
   image                String?
   requiresPrescription Boolean   @default(false)
+
+  @@index([orderId])
+  @@index([medicineId])
 }
 
 model Payment {
@@ -216,22 +235,23 @@ model Review {
 
   @@unique([userId, medicineId])
   @@index([medicineId])
+  @@index([userId])
 }
 
 model Question {
-  id           String    @id @default(cuid())
+  id           String        @id @default(cuid())
   medicineId   String
-  medicine     Medicine  @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  medicine     Medicine      @relation(fields: [medicineId], references: [id], onDelete: Cascade)
   userId       String
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   question     String
   answer       String?
   answeredById String?
-  answeredBy   User?     @relation("QuestionAnswerer", fields: [answeredById], references: [id], onDelete: SetNull)
+  answeredBy   User?         @relation("QuestionAnswerer", fields: [answeredById], references: [id], onDelete: SetNull)
   answeredAt   DateTime?
-  status       String    @default("PENDING") // PENDING | ANSWERED | REJECTED
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  status       String        @default("PENDING") // PENDING | ANSWERED | REJECTED
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   helpfulVotes HelpfulVote[]
 
   @@index([medicineId])
@@ -249,6 +269,7 @@ model HelpfulVote {
 
   @@unique([questionId, userId])
   @@index([questionId])
+  @@index([userId])
 }
 
 model StockMovement {
@@ -264,6 +285,7 @@ model StockMovement {
 
   @@index([medicineId])
   @@index([createdAt])
+  @@index([userId])
 }
 
 model Notification {
@@ -274,6 +296,9 @@ model Notification {
   message   String
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, read])
 }
 
 model PurchaseOrder {
@@ -295,6 +320,8 @@ model PurchaseOrder {
 
   @@index([status, orderedAt])
   @@index([medicineId, status])
+  @@index([orderedById])
+  @@index([receivedById])
 }
 
 model AuditLog {
@@ -304,12 +331,13 @@ model AuditLog {
   actorName  String
   actorEmail String
   actorRole  String
-  action     String   // PAYMENT_STATUS | ORDER_STATUS | RX_REVIEW | PO_CREATE | PO_RECEIVE | PO_CANCEL | USER_STATUS
-  entityType String   // ORDER | PAYMENT | PRESCRIPTION | PURCHASE_ORDER | USER
-  entityRef  String   // human-readable ref: orderNo / email / short id
+  action     String // PAYMENT_STATUS | ORDER_STATUS | RX_REVIEW | PO_CREATE | PO_RECEIVE | PO_CANCEL | USER_STATUS
+  entityType String // ORDER | PAYMENT | PRESCRIPTION | PURCHASE_ORDER | USER
+  entityRef  String // human-readable ref: orderNo / email / short id
   detail     String?
   createdAt  DateTime @default(now())
 
   @@index([createdAt])
   @@index([action])
+  @@index([actorId])
 }

@@ -2,9 +2,10 @@
 
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { toast } from 'sonner'
 import { useAppStore } from '@/lib/store'
 import { canAccessView, fallbackViewFor, isCustomer } from '@/lib/rbac'
-import { api } from '@/lib/api'
+import { api, UNAUTHORIZED_EVENT } from '@/lib/api'
 import Header from '@/components/store/Header'
 import Footer from '@/components/store/Footer'
 import HomeView from '@/components/store/HomeView'
@@ -24,13 +25,38 @@ import PharmacistDashboard from '@/components/pharmacist/PharmacistDashboard'
 import DeliveryDashboard from '@/components/delivery/DeliveryDashboard'
 
 export default function Page() {
+  const hydrated = useAppStore((s) => s.hydrated)
   const view = useAppStore((s) => s.view)
   const user = useAppStore((s) => s.user)
   const setView = useAppStore((s) => s.setView)
   const setCartCount = useAppStore((s) => s.setCartCount)
   const setWishlistIds = useAppStore((s) => s.setWishlistIds)
+  const logout = useAppStore((s) => s.logout)
+  const setAuthOpen = useAppStore((s) => s.setAuthOpen)
 
   const role = user?.role ?? null
+
+  // Read the persisted session back. The store defers this (`skipHydration`) so the
+  // first client render matches the server's guest markup instead of tripping a
+  // hydration mismatch; until it completes, the shell below is what renders.
+  useEffect(() => {
+    void useAppStore.persist.rehydrate()
+  }, [])
+
+  // The API layer clears the token on any 401 and fires this. Tokens last 7 days, so a
+  // session can also die from deactivation or a rotated signing secret — without this the
+  // app keeps a stale user in the store and every view waits on a request that will never
+  // succeed. Drop the session once, say why, and offer the sign-in form.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      if (!useAppStore.getState().user) return
+      logout()
+      toast.error('Your session has expired. Please sign in again.')
+      setAuthOpen(true)
+    }
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [logout, setAuthOpen])
 
   // Refresh cart badge + wishlist on first load when logged in as a customer.
   // Staff accounts have no cart or wishlist — these endpoints 403 for them.
@@ -90,6 +116,27 @@ export default function Page() {
       default:
         return <HomeView />
     }
+  }
+
+  // Pre-hydration shell. Identical on the server and on the first client render, so
+  // there is nothing for React to reconcile away — and no flash of the guest home page
+  // before the restored session appears.
+  if (!hydrated) {
+    return (
+      <div className="flex min-h-screen flex-col bg-background">
+        <div className="h-16 border-b bg-card" />
+        <main className="flex-1">
+          <div className="mx-auto w-full max-w-6xl space-y-4 px-4 py-8">
+            <div className="h-40 animate-pulse rounded-xl bg-muted" />
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-48 animate-pulse rounded-xl bg-muted" />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    )
   }
 
   return (

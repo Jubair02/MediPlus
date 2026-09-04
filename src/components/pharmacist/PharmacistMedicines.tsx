@@ -364,8 +364,9 @@ function MedicineDialog({ open, onOpenChange, categories, initial, onSaved }: Me
         // create = include only when non-empty (undefined key is dropped by JSON)
         extraImages: initial ? form.extraImages : form.extraImages.length > 0 ? form.extraImages : undefined,
       }
+      // See AdminMedicines: the server rejects the write if stock moved under the form.
       const body = initial
-        ? { action: 'update-medicine', id: initial.id, data }
+        ? { action: 'update-medicine', id: initial.id, data, expectedStock: initial.stock }
         : { action: 'create-medicine', data }
       await api<{ medicine: Medicine }>('/api/pharmacist', { method: 'PUT', body })
       toast.success(initial ? 'Medicine updated' : 'Medicine created')
@@ -604,7 +605,9 @@ export default function PharmacistMedicines() {
     try {
       const d = await api<{ medicine: Medicine }>('/api/pharmacist', {
         method: 'PUT',
-        body: { action: 'update-medicine', id: m.id, data: { stock: next } },
+        // The +/- buttons compute `next` from the row on screen, so that row's stock is
+        // exactly the value the write must be conditional on.
+        body: { action: 'update-medicine', id: m.id, data: { stock: next }, expectedStock: m.stock },
       })
       setMeds((prev) => prev.map((x) => (x.id === m.id ? d.medicine : x)))
       toast.success(`${m.name}: stock updated to ${d.medicine.stock}`)

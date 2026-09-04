@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { FileWarning, Heart, Images, Pill, ShoppingCart, Star } from 'lucide-react'
+import { FileWarning, Heart, Images, Loader2, Pill, ShoppingCart, Star } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
@@ -85,7 +85,7 @@ export async function addToCart(medicine: Medicine, quantity = 1): Promise<boole
  * Resolves to the new "in wishlist" state, or null when not signed in.
  */
 export async function toggleWishlist(medicineId: string): Promise<boolean | null> {
-  const { user, setAuthOpen, toggleWishlistId } = useAppStore.getState()
+  const { user, setAuthOpen } = useAppStore.getState()
   if (!user) {
     setAuthOpen(true)
     toast.info('Please sign in to save favourites')
@@ -96,8 +96,10 @@ export async function toggleWishlist(medicineId: string): Promise<boolean | null
       method: 'POST',
       body: { medicineId },
     })
+    // `d.ids` is the full post-toggle list, so it already reflects the add/remove. It used
+    // to be followed by toggleWishlistId(), which appended the same id a second time and
+    // inflated the header badge by one on every add.
     useAppStore.getState().setWishlistIds(d.ids)
-    toggleWishlistId(medicineId, d.added)
     toast.success(d.added ? 'Saved to your wishlist' : 'Removed from wishlist')
     return d.added
   } catch (err) {
@@ -119,6 +121,7 @@ export default function MedicineCard({
   medicine: Medicine
   onView: (m: Medicine) => void
 }) {
+  const [adding, setAdding] = useState(false)
   const price = effectivePrice(medicine)
   const pct = discountPercent(medicine)
   const stock = stockLabel(medicine.stock)
@@ -134,6 +137,21 @@ export default function MedicineCard({
     [medicine.id]
   )
 
+  // The cart POST is additive, so a double click used to add the item twice.
+  const onAdd = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation()
+      if (adding) return
+      setAdding(true)
+      try {
+        await addToCart(medicine, 1)
+      } finally {
+        setAdding(false)
+      }
+    },
+    [adding, medicine]
+  )
+
   return (
     <Card
       role="button"
@@ -141,6 +159,10 @@ export default function MedicineCard({
       aria-label={`View ${medicine.name}`}
       onClick={() => onView(medicine)}
       onKeyDown={(e) => {
+        // Only act on keys aimed at the card itself. Without this, Enter on the nested
+        // "Add to cart" / wishlist buttons bubbled up here and opened the detail modal
+        // instead of activating the button.
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onView(medicine)
@@ -230,14 +252,15 @@ export default function MedicineCard({
           <Button
             size="icon"
             aria-label={`Add ${medicine.name} to cart`}
-            disabled={out}
+            disabled={out || adding}
             className="size-11 shrink-0 rounded-xl"
-            onClick={(e) => {
-              e.stopPropagation()
-              void addToCart(medicine, 1)
-            }}
+            onClick={(e) => void onAdd(e)}
           >
-            <ShoppingCart className="size-4" aria-hidden="true" />
+            {adding ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <ShoppingCart className="size-4" aria-hidden="true" />
+            )}
           </Button>
         </div>
       </div>

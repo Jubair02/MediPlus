@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Banknote,
   CheckCircle2,
@@ -12,10 +12,12 @@ import {
   MapPin,
   Plus,
   ShieldCheck,
+  RefreshCcw,
   ShoppingBag,
   Smartphone,
   StickyNote,
   Tag,
+  TriangleAlert,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -57,6 +59,10 @@ export default function CheckoutView() {
   const setSuccessOrderNo = useAppStore((s) => s.setSuccessOrderNo)
 
   const [ready, setReady] = useState(false)
+  // A failed load left cartItems null, which fell through to the empty-cart screen and
+  // told the customer their cart was empty. Keep the two states apart.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [cartItems, setCartItems] = useState<CartItem[] | null>(null)
   const [addresses, setAddresses] = useState<Address[]>([])
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null)
@@ -83,6 +89,7 @@ export default function CheckoutView() {
     if (!user) return
     const ac = new AbortController()
     const load = async () => {
+      setLoadError(null)
       try {
         const [cartRes, addrRes] = await Promise.all([
           api<{ items: CartItem[] }>('/api/cart', { signal: ac.signal }),
@@ -106,7 +113,9 @@ export default function CheckoutView() {
         }
       } catch (err) {
         if (!ac.signal.aborted) {
-          toast.error(err instanceof Error ? err.message : 'Failed to load checkout')
+          const message = err instanceof Error ? err.message : 'Failed to load checkout'
+          toast.error(message)
+          setLoadError(message)
         }
       } finally {
         if (!ac.signal.aborted) setReady(true)
@@ -114,26 +123,7 @@ export default function CheckoutView() {
     }
     void load()
     return () => ac.abort()
-  }, [user, setCartCount])
-
-  // ---------- guard: signed out ----------
-  if (!user) {
-    return (
-      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
-        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
-          <LogIn className="size-8 text-primary" aria-hidden="true" />
-        </span>
-        <h1 className="mt-4 text-xl font-bold">Sign in to checkout</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          You need an account to place an order and track its delivery.
-        </p>
-        <Button className="mt-6 h-11 rounded-xl" onClick={() => setAuthOpen(true)}>
-          <LogIn className="size-4" aria-hidden="true" />
-          Sign in
-        </Button>
-      </div>
-    )
-  }
+  }, [user, setCartCount, reloadKey])
 
   const needsRx = (cartItems ?? []).some((i) => i.medicine.requiresPrescription)
   const subtotal = (cartItems ?? []).reduce(
@@ -202,6 +192,10 @@ export default function CheckoutView() {
       const d = await api<{ order: Order }>('/api/orders', { method: 'POST', body })
       setPlacedOrder(d.order)
       setSuccessOrderNo(d.order.orderNo)
+      // Clear the local cart too, not just the header badge: `canPlace` reads
+      // cartItems, so leaving it populated keeps the Place-order path armed against
+      // a cart the server has already emptied.
+      setCartItems([])
       setCartCount(0)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to place order')
@@ -210,6 +204,15 @@ export default function CheckoutView() {
     }
   }
 
+  // BkashPayDialog arms its post-success timer from this callback. Handing it a fresh
+  // arrow on every render is what let the old code re-place the order in a loop, so
+  // keep the identity stable and read the current closure from a ref.
+  const placeOrderRef = useRef(placeOrder)
+  useEffect(() => {
+    placeOrderRef.current = placeOrder
+  })
+  const handleBkashPaid = useCallback(() => void placeOrderRef.current(), [])
+
   const addressSaved = (a: Address) => {
     setAddresses((prev) => {
       const exists = prev.some((p) => p.id === a.id)
@@ -217,6 +220,27 @@ export default function CheckoutView() {
       return a.isDefault ? next.map((p) => ({ ...p, isDefault: p.id === a.id })) : next
     })
     if (a.id) setSelectedAddressId(a.id)
+  }
+
+  // ---------- guard: signed out ----------
+  // Sits below every hook, not above them: the hooks between here and the top must run
+  // on every render, and an early return would make them conditional.
+  if (!user) {
+    return (
+      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
+        <span className="flex size-16 items-center justify-center rounded-full bg-primary/10">
+          <LogIn className="size-8 text-primary" aria-hidden="true" />
+        </span>
+        <h1 className="mt-4 text-xl font-bold">Sign in to checkout</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          You need an account to place an order and track its delivery.
+        </p>
+        <Button className="mt-6 h-11 rounded-xl" onClick={() => setAuthOpen(true)}>
+          <LogIn className="size-4" aria-hidden="true" />
+          Sign in
+        </Button>
+      </div>
+    )
   }
 
   // ---------- loading skeleton ----------
@@ -236,8 +260,46 @@ export default function CheckoutView() {
     )
   }
 
+  // ---------- load failure ----------
+  // Must come before the empty-cart guard below: a network error also leaves cartItems
+  // null, and "your cart is empty" is the wrong (and alarming) thing to say about it.
+  if (loadError) {
+    return (
+      <div className="mx-auto w-full max-w-md px-4 py-16">
+        <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed p-8 text-center">
+          <span className="flex size-11 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/15">
+            <TriangleAlert
+              className="size-5 text-amber-700 dark:text-amber-400"
+              aria-hidden="true"
+            />
+          </span>
+          <h1 className="mt-1 text-lg font-bold">Could not load checkout</h1>
+          <p className="text-sm text-muted-foreground">{loadError}</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <Button
+              className="h-11 rounded-xl"
+              onClick={() => {
+                setReady(false)
+                setReloadKey((k) => k + 1)
+              }}
+            >
+              <RefreshCcw className="size-4" aria-hidden="true" /> Try again
+            </Button>
+            <Button variant="outline" className="h-11 rounded-xl" onClick={() => setView('cart')}>
+              Back to cart
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // ---------- empty cart ----------
-  if (!cartItems || cartItems.length === 0) {
+  // Placing an order empties cartItems, so the "no items" half of this guard has to
+  // stand down once an order exists — otherwise the success dialog below is replaced
+  // by the empty-cart screen. The null check stays unconditional so cartItems still
+  // narrows to CartItem[] for the render beneath.
+  if (!cartItems || (cartItems.length === 0 && !placedOrder)) {
     return (
       <div className="mx-auto w-full max-w-md px-4 py-16">
         {/* Dashed empty-state card — same pattern as the cart / Q&A empty states */}
@@ -679,7 +741,7 @@ export default function CheckoutView() {
         open={bkashOpen}
         onOpenChange={setBkashOpen}
         amount={total}
-        onPaid={() => void placeOrder()}
+        onPaid={handleBkashPaid}
       />
 
       {/* Success dialog */}

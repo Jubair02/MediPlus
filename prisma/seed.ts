@@ -1,6 +1,6 @@
 /* Seed script for MediPlus E-Pharmacy MVP */
 import { PrismaClient } from '@prisma/client'
-import { randomBytes, scryptSync, createHmac } from 'crypto'
+import { randomBytes, scryptSync } from 'crypto'
 
 const prisma = new PrismaClient()
 
@@ -11,17 +11,6 @@ export function hashPassword(password: string): string {
   return `${salt}:${hash}`
 }
 
-export function signJwt(payload: Record<string, unknown>, secret: string, expiresInSeconds = 60 * 60 * 24 * 7): string {
-  const header = { alg: 'HS256', typ: 'JWT' }
-  const body = { ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + expiresInSeconds }
-  const h = Buffer.from(JSON.stringify(header)).toString('base64url')
-  const p = Buffer.from(JSON.stringify(body)).toString('base64url')
-  const sig = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url')
-  return `${h}.${p}.${sig}`
-}
-
-const JWT_SECRET = process.env.JWT_SECRET || 'medplus-epharm-dev-secret'
-
 function daysFromNow(n: number) {
   return new Date(Date.now() + n * 24 * 60 * 60 * 1000)
 }
@@ -29,7 +18,48 @@ function daysAgo(n: number) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000)
 }
 
+/**
+ * Refuse to run unless the operator has explicitly opted into a destructive reseed.
+ *
+ * main() starts by deleting every row in every table. Pointed at a production database
+ * -- which is one stale DATABASE_URL away -- that is unrecoverable, so wiping a database
+ * that already holds users requires SEED_RESET=true, and is blocked outright under
+ * NODE_ENV=production unless SEED_ALLOW_PRODUCTION is also set. Seeding an empty database
+ * is always allowed. The host is echoed so a mistargeted URL is visible before any loss.
+ */
+async function assertSeedAllowed() {
+  const url = process.env.DATABASE_URL ?? ''
+  let host = '(unknown host)'
+  try { host = new URL(url).host } catch { /* keep the placeholder */ }
+
+  if (!url) {
+    console.error('❌ DATABASE_URL is not set - refusing to seed.')
+    process.exit(1)
+  }
+
+  // An empty database has nothing to lose, so a first seed (and the seed that
+  // `prisma migrate reset` runs against the freshly dropped schema) needs no opt-in.
+  if ((await prisma.user.count()) === 0) return
+
+  if (process.env.SEED_RESET !== 'true') {
+    console.error(
+      `❌ Refusing to seed ${host}: this script DELETES every row in every table first.\n` +
+        '   Re-run with SEED_RESET=true if that is what you want.'
+    )
+    process.exit(1)
+  }
+  if (process.env.NODE_ENV === 'production' && process.env.SEED_ALLOW_PRODUCTION !== 'true') {
+    console.error(
+      `❌ Refusing to wipe ${host} with NODE_ENV=production.\n` +
+        '   Set SEED_ALLOW_PRODUCTION=true only if this is genuinely a throwaway database.'
+    )
+    process.exit(1)
+  }
+  console.log(`⚠️  Destructive reseed of ${host} - every existing row will be deleted.`)
+}
+
 async function main() {
+  await assertSeedAllowed()
   console.log('Clearing existing data...')
   await prisma.notification.deleteMany()
   await prisma.payment.deleteMany()
@@ -357,16 +387,19 @@ async function main() {
     await prisma.auditLog.create({ data: a })
   }
 
-  // ---------- Auth tokens for quick demo login (informational) ----------
+  // ---------- Demo accounts (informational) ----------
+  // Emails only. Printing the passwords put working staff credentials into CI logs,
+  // terminal scrollback and screen shares; the values stay in the seed source above for
+  // anyone who legitimately has the repo. The JWT secret is never echoed, not even a prefix.
   const demoAccounts = [
-    { role: 'ADMIN', email: 'admin@medplus.com', password: 'Admin123!' },
-    { role: 'PHARMACIST', email: 'pharmacist@medplus.com', password: 'Pharma123!' },
-    { role: 'DELIVERY', email: 'delivery@medplus.com', password: 'Deliver123!' },
-    { role: 'CUSTOMER', email: 'customer@medplus.com', password: 'Customer123!' },
-    { role: 'CUSTOMER', email: 'nusrat@example.com', password: 'Customer123!' },
+    { role: 'ADMIN', email: 'admin@medplus.com' },
+    { role: 'PHARMACIST', email: 'pharmacist@medplus.com' },
+    { role: 'DELIVERY', email: 'delivery@medplus.com' },
+    { role: 'CUSTOMER', email: 'customer@medplus.com' },
+    { role: 'CUSTOMER', email: 'nusrat@example.com' },
   ]
-  console.log('\n✅ Seed complete!\nDemo accounts (JWT_SECRET=' + JWT_SECRET.slice(0, 6) + '...):')
-  for (const a of demoAccounts) console.log(`  ${a.role.padEnd(11)} ${a.email.padEnd(28)} ${a.password}`)
+  console.log('\n✅ Seed complete!\nDemo accounts (passwords are in prisma/seed.ts):')
+  for (const a of demoAccounts) console.log(`  ${a.role.padEnd(11)} ${a.email}`)
 }
 
 main()

@@ -11,6 +11,7 @@ import {
   Printer,
   RefreshCcw,
   StickyNote,
+  TriangleAlert,
   Truck,
   UploadCloud,
   XCircle,
@@ -158,32 +159,47 @@ export default function OrdersView() {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [detail, setDetail] = useState<Order | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  // Load failures used to be swallowed: the list skeleton spun forever and the detail
+  // dialog showed placeholder blocks with no way to retry.
+  const [listError, setListError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [detailRetry, setDetailRetry] = useState(0)
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null)
   const [cancelling, setCancelling] = useState(false)
 
   useEffect(() => {
     if (!user) return
     const ac = new AbortController()
+    setListError(null)
     api<{ orders: Order[] }>('/api/orders', { signal: ac.signal })
       .then((d) => setOrders(d.orders))
-      .catch(() => {})
+      .catch((e) => {
+        if (ac.signal.aborted) return
+        setListError(e instanceof Error ? e.message : 'Failed to load your orders')
+      })
     return () => ac.abort()
-  }, [user])
+  }, [user, reloadKey])
 
   // Fetch full detail (incl. prescription image) when the dialog opens
   useEffect(() => {
     if (!detailId) return
     const ac = new AbortController()
     setDetail(null)
+    setDetailError(null)
     setDetailLoading(true)
     api<{ order: Order }>(`/api/orders?id=${encodeURIComponent(detailId)}`, { signal: ac.signal })
       .then((d) => {
         setDetail(d.order)
         setDetailLoading(false)
       })
-      .catch(() => setDetailLoading(false))
+      .catch((e) => {
+        if (ac.signal.aborted) return
+        setDetailError(e instanceof Error ? e.message : 'Failed to load this order')
+        setDetailLoading(false)
+      })
     return () => ac.abort()
-  }, [detailId])
+  }, [detailId, detailRetry])
 
   // ---------- guard ----------
   if (!user) {
@@ -234,6 +250,29 @@ export default function OrdersView() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to reorder')
     }
+  }
+
+  // ---------- load failure ----------
+  if (listError) {
+    return (
+      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
+        <span className="flex size-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/15">
+          <TriangleAlert className="size-8 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+        </span>
+        <h1 className="mt-4 text-xl font-bold">Could not load your orders</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{listError}</p>
+        <Button
+          variant="outline"
+          className="mt-6 h-11 rounded-xl"
+          onClick={() => {
+            setOrders(null)
+            setReloadKey((k) => k + 1)
+          }}
+        >
+          <RefreshCcw className="size-4" aria-hidden="true" /> Try again
+        </Button>
+      </div>
+    )
   }
 
   // ---------- loading ----------
@@ -399,7 +438,22 @@ export default function OrdersView() {
       {/* Detail dialog */}
       <Dialog open={!!detailId} onOpenChange={(open) => !open && setDetailId(null)}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl scrollbar-thin">
-          {detailLoading || !detail ? (
+          {detailError ? (
+            <div className="flex flex-col items-center gap-3 p-6 text-center">
+              <DialogTitle className="sr-only">Order details unavailable</DialogTitle>
+              <span className="flex size-12 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/15">
+                <TriangleAlert
+                  className="size-6 text-amber-700 dark:text-amber-400"
+                  aria-hidden="true"
+                />
+              </span>
+              <p className="font-medium">Could not load this order</p>
+              <p className="text-sm text-muted-foreground">{detailError}</p>
+              <Button variant="outline" onClick={() => setDetailRetry((k) => k + 1)}>
+                <RefreshCcw className="size-4" aria-hidden="true" /> Try again
+              </Button>
+            </div>
+          ) : detailLoading || !detail ? (
             <div className="space-y-4 p-2">
               <DialogTitle className="sr-only">Order details</DialogTitle>
               <Skeleton className="h-8 w-48" />

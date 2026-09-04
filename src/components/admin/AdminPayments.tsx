@@ -58,6 +58,14 @@ const PAYMENT_TONES: Record<PaymentStatus, string> = {
   REFUNDED: 'border-border bg-muted text-muted-foreground',
 }
 
+/**
+ * Order statuses that have already ended. Collecting cash against one of these is not a
+ * real action — the money was never going to arrive for a cancelled or failed order, and
+ * a delivered order's COD is settled by the driver — so the button is withheld rather
+ * than offered and then rejected by the API.
+ */
+const SETTLED_ORDER_STATUSES = ['CANCELLED', 'FAILED']
+
 const STATUS_FILTERS: { value: PaymentStatus | 'ALL'; label: string }[] = [
   { value: 'ALL', label: 'All statuses' },
   { value: 'PENDING', label: 'Pending' },
@@ -433,7 +441,9 @@ export default function AdminPayments() {
                             {fmtDate(row.createdAt)}
                           </TableCell>
                           <TableCell className="whitespace-nowrap text-right">
-                            {row.status === 'PENDING' && row.method === 'COD' ? (
+                            {row.status === 'PENDING' &&
+                            row.method === 'COD' &&
+                            !SETTLED_ORDER_STATUSES.includes(row.orderStatus) ? (
                               <Button
                                 variant="outline"
                                 size="sm"
@@ -539,13 +549,26 @@ export default function AdminPayments() {
           <AlertDialogHeader>
             <AlertDialogTitle>Refund this payment?</AlertDialogTitle>
             <AlertDialogDescription>
+              {/* A refund is not just a ledger label: unless the order has already ended,
+                  the server cancels it and returns any stock it was holding. Say so — the
+                  old copy described a status change and nothing else. */}
               {refundTarget && (
                 <>
                   {fmtBDT(refundTarget.amount)} collected for order{' '}
                   <span className="font-mono font-medium">{refundTarget.orderNo}</span> will be
                   marked{' '}
-                  <span className="font-medium text-red-700 dark:text-red-400">REFUNDED</span>. This
-                  cannot be undone from the ledger.
+                  <span className="font-medium text-red-700 dark:text-red-400">REFUNDED</span>.
+                  {refundTarget.orderStatus === 'DELIVERED' ? (
+                    <> The order stays marked as delivered.</>
+                  ) : SETTLED_ORDER_STATUSES.includes(refundTarget.orderStatus) ? (
+                    <> The order is already closed, so only the payment changes.</>
+                  ) : (
+                    <>
+                      {' '}The order will also be <span className="font-medium">cancelled</span> and
+                      any stock it is holding returned to inventory.
+                    </>
+                  )}{' '}
+                  This cannot be undone from the ledger.
                 </>
               )}
             </AlertDialogDescription>

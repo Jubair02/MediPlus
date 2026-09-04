@@ -243,6 +243,10 @@ export default function DeliveryDashboard() {
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [failTarget, setFailTarget] = useState<Order | null>(null)
   const [failNote, setFailNote] = useState('')
+  // Marking a delivery is irreversible and, for COD, also records the cash as collected —
+  // the driver is the only person who confirms either. It used to be a single unguarded
+  // tap sitting next to "Report Failed", which does ask. Now both ask.
+  const [deliverTarget, setDeliverTarget] = useState<Order | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -323,6 +327,7 @@ export default function DeliveryDashboard() {
       )
       setFailTarget(null)
       setFailNote('')
+      setDeliverTarget(null)
       void load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to update delivery')
@@ -502,7 +507,7 @@ export default function DeliveryDashboard() {
                         <Button
                           className="bg-emerald-600 text-white hover:bg-emerald-700"
                           disabled={pendingId === order.id}
-                          onClick={() => void updateStatus(order, 'DELIVERED')}
+                          onClick={() => setDeliverTarget(order)}
                         >
                           {pendingId === order.id ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
@@ -595,6 +600,52 @@ export default function DeliveryDashboard() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Delivered confirmation — see `deliverTarget` */}
+      <Dialog open={deliverTarget !== null} onOpenChange={(o) => !o && setDeliverTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark this order as delivered?</DialogTitle>
+            <DialogDescription>
+              {deliverTarget && (
+                <>
+                  Order {deliverTarget.orderNo} to {deliverTarget.address?.recipient ?? 'the customer'}
+                  {codToCollect(deliverTarget) > 0 ? (
+                    <>
+                      {' '}will be closed as delivered, and{' '}
+                      <span className="font-medium text-foreground">
+                        {fmtBDT(codToCollect(deliverTarget))} in cash
+                      </span>{' '}
+                      will be recorded as collected. Only confirm once you have the money.
+                    </>
+                  ) : (
+                    <> will be closed as delivered. This cannot be undone.</>
+                  )}
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeliverTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              disabled={pendingId === deliverTarget?.id}
+              onClick={() => {
+                if (deliverTarget) void updateStatus(deliverTarget, 'DELIVERED')
+              }}
+            >
+              {pendingId === deliverTarget?.id ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4" />
+              )}
+              Confirm delivered
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Failed delivery dialog */}
       <Dialog open={failTarget !== null} onOpenChange={(o) => !o && setFailTarget(null)}>

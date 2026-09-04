@@ -468,18 +468,38 @@ export default function Header() {
       .catch(() => {})
   }
 
-  // Fetch notifications each time the popover opens
+  const fetchNotifications = useCallback(
+    (signal: AbortSignal) => {
+      api<{ notifications: NotificationItem[]; unread: number }>('/api/notifications', { signal })
+        .then((d) => {
+          setNotifications(d.notifications)
+          setUnread(d.unread)
+        })
+        .catch(() => {})
+    },
+    []
+  )
+
+  // Fetch once the user is known, so the bell badge is right on first paint. This used to
+  // be gated on `notifOpen`, which meant the badge read 0 until the popover was opened.
+  useEffect(() => {
+    if (!user) {
+      setNotifications([])
+      setUnread(0)
+      return
+    }
+    const ac = new AbortController()
+    fetchNotifications(ac.signal)
+    return () => ac.abort()
+  }, [user, fetchNotifications])
+
+  // Refresh each time the popover opens, so the list is current when actually read.
   useEffect(() => {
     if (!notifOpen || !user) return
     const ac = new AbortController()
-    api<{ notifications: NotificationItem[]; unread: number }>('/api/notifications', { signal: ac.signal })
-      .then((d) => {
-        setNotifications(d.notifications)
-        setUnread(d.unread)
-      })
-      .catch(() => {})
+    fetchNotifications(ac.signal)
     return () => ac.abort()
-  }, [notifOpen, user])
+  }, [notifOpen, user, fetchNotifications])
 
   // Sync the bell badge when the full-page notifications view marks everything read
   useEffect(() => {

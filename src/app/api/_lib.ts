@@ -34,6 +34,73 @@ export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100
 }
 
+// ---------- image uploads ----------
+//
+// Every image in this app arrives as a base64 data URL inside a JSON body and is stored
+// verbatim in a text column. Checking only the `data:image` prefix - which is all the
+// upload paths used to do - puts no ceiling on any of it: a single request could carry
+// tens of megabytes into Postgres, and every later read of that row pays for it again.
+// So a data URL is now parsed rather than sniffed: declared type off an allow-list, and
+// a decoded size under MAX_IMAGE_BYTES.
+//
+// Note this bounds one image, not the request. A create-medicine body may legitimately
+// carry a primary image plus MAX_EXTRA_IMAGES more, so a total-body limit belongs in
+// front of the app (proxy request-body limit), not here.
+
+/** Ceiling on ONE decoded image. The client compresses to ~1400px JPEG, well under this. */
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024
+const MAX_IMAGE_LABEL = '2 MB'
+
+/** Raster types the storefront renders. SVG is excluded on purpose: it is script-bearing markup. */
+const ALLOWED_IMAGE_TYPES = ['png', 'jpeg', 'jpg', 'webp', 'gif', 'avif']
+
+const DATA_IMAGE_RE = /^data:image\/([a-z0-9.+-]+);base64,([\s\S]*)$/i
+
+/** Decoded byte length of a base64 payload, without allocating the buffer. */
+function base64Bytes(payload: string): number {
+  const clean = payload.replace(/\s+/g, '')
+  if (clean.length === 0) return 0
+  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding)
+}
+
+export interface ImageInputOptions {
+  /**
+   * Accept a reference as well as a data URL — an http(s) URL, or a site-relative path
+   * such as `/images/med-napa.png`. The seeded catalog is entirely relative paths and the
+   * medicine form posts the existing value straight back, so refusing them here would
+   * make every seeded medicine uneditable.
+   */
+  allowUrl?: boolean
+  /** What to call this in error messages, e.g. 'prescription image'. */
+  label?: string
+}
+
+/**
+ * Validate one uploaded image. Returns the trimmed value on success.
+ * Remote URLs (when allowed) pass through unmeasured - there are no bytes to weigh.
+ */
+export function parseImageInput(raw: unknown, opts: ImageInputOptions = {}): { error: string } | { data: string } {
+  const { allowUrl = false, label = 'image' } = opts
+  const invalid = { error: `Please upload a valid ${label}` }
+  const v = typeof raw === 'string' ? raw.trim() : ''
+  if (!v) return invalid
+  // `//host/path` is protocol-relative and would resolve off-site, so a bare `/` prefix
+  // only counts when the second character is not another slash.
+  if (allowUrl && (v.startsWith('http://') || v.startsWith('https://') || (v.startsWith('/') && v[1] !== '/'))) {
+    return { data: v }
+  }
+  const m = DATA_IMAGE_RE.exec(v)
+  if (!m) return invalid
+  if (!ALLOWED_IMAGE_TYPES.includes(m[1].toLowerCase())) {
+    return { error: `Unsupported ${label} format - use JPEG, PNG, WebP, GIF or AVIF` }
+  }
+  const bytes = base64Bytes(m[2])
+  if (bytes === 0) return invalid
+  if (bytes > MAX_IMAGE_BYTES) return { error: `${label} must be ${MAX_IMAGE_LABEL} or smaller` }
+  return { data: v }
+}
+
 // ---------- users ----------
 
 export function publicUser(u: User) {
@@ -124,17 +191,43 @@ export function parseAddressInput(
 
 // ---------- orders ----------
 
+// `prescription: true` used to hang off every order query in the app, which meant the
+// base64 image column was read for order lists, the delivery board, admin stats and CSV
+// exports - hundreds of rows of it - only for parseOrder to throw the image away again.
+// The columns the UI actually shows are listed explicitly instead, and the image is an
+// opt-in include used by the two single-order reads that render it.
+const rxSelect = {
+  id: true,
+  status: true,
+  note: true,
+  reviewNote: true,
+  createdAt: true,
+} satisfies Prisma.PrescriptionSelect
+
+const rxSelectWithImage = { ...rxSelect, image: true } satisfies Prisma.PrescriptionSelect
+
 export const orderInclude = {
   items: true,
-  prescription: true,
+  prescription: { select: rxSelect },
   deliveryStaff: { select: { id: true, name: true, phone: true } },
   payment: true,
   user: { select: { id: true, name: true, email: true, phone: true } },
 } satisfies Prisma.OrderInclude
 
-export type FullOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>
+/** `orderInclude` plus the prescription image - for a SINGLE order the client displays. */
+export const orderIncludeRxImage = {
+  ...orderInclude,
+  prescription: { select: rxSelectWithImage },
+} satisfies Prisma.OrderInclude
 
-export function parseOrder(order: FullOrder, opts: { prescriptionImage?: boolean } = {}) {
+export type FullOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>
+export type FullOrderRxImage = Prisma.OrderGetPayload<{ include: typeof orderIncludeRxImage }>
+
+/**
+ * `prescriptionImage: true` only has an effect on an order loaded with
+ * `orderIncludeRxImage` - the image simply is not there otherwise, which is the point.
+ */
+export function parseOrder(order: FullOrder | FullOrderRxImage, opts: { prescriptionImage?: boolean } = {}) {
   const rx = order.prescription
   return {
     id: order.id,
@@ -164,7 +257,7 @@ export function parseOrder(order: FullOrder, opts: { prescriptionImage?: boolean
           note: rx.note,
           reviewNote: rx.reviewNote,
           createdAt: rx.createdAt,
-          ...(opts.prescriptionImage ? { image: rx.image } : {}),
+          ...(opts.prescriptionImage && 'image' in rx ? { image: rx.image } : {}),
         }
       : null,
     deliveryStaff: order.deliveryStaff
@@ -307,11 +400,11 @@ export function parseExtraImages(raw: unknown): { error: string } | { data: stri
   if (raw.length > MAX_EXTRA_IMAGES) return { error: `At most ${MAX_EXTRA_IMAGES} extra images are allowed` }
   const out: string[] = []
   for (let i = 0; i < raw.length; i++) {
-    const v = typeof raw[i] === 'string' ? (raw[i] as string).trim() : ''
-    if (!v || !(v.startsWith('data:image') || v.startsWith('http://') || v.startsWith('https://'))) {
-      return { error: `Invalid image at position ${i + 1}` }
-    }
-    out.push(v)
+    // Size and format are enforced here too - the gallery was the one upload path with
+    // no ceiling at all, and it accepts up to MAX_EXTRA_IMAGES of them per request.
+    const parsed = parseImageInput(raw[i], { allowUrl: true, label: `image at position ${i + 1}` })
+    if ('error' in parsed) return { error: parsed.error }
+    out.push(parsed.data)
   }
   return { data: out }
 }
@@ -390,7 +483,18 @@ export async function buildMedicineData(
     out.stock = st
   }
 
-  const nullableText = ['genericName', 'brand', 'manufacturer', 'description', 'image'] as const
+  // The primary image is validated, not just trimmed like the other free-text columns:
+  // it is an upload, and an unbounded one would land straight in the medicines table.
+  if (d.image !== undefined) {
+    if (d.image === null || d.image === '') out.image = null
+    else {
+      const img = parseImageInput(d.image, { allowUrl: true, label: 'medicine image' })
+      if ('error' in img) return { error: img.error }
+      out.image = img.data
+    }
+  }
+
+  const nullableText = ['genericName', 'brand', 'manufacturer', 'description'] as const
   for (const key of nullableText) {
     if (d[key] !== undefined) {
       if (d[key] === null) out[key] = null
@@ -438,6 +542,59 @@ export async function buildMedicineData(
       ...(extraImagesWrite ? { extraImages: extraImagesWrite } : {}),
     } as Prisma.MedicineUncheckedCreateInput | Prisma.MedicineUncheckedUpdateInput,
   }
+}
+
+/** Raised when a medicine's stock moved between the staff form being loaded and saved. */
+export class StockConflictError extends Error {
+  constructor(public medicineName: string) {
+    super(`Stock for ${medicineName} changed while you were editing — reload and try again`)
+    this.name = 'StockConflictError'
+  }
+}
+
+/**
+ * Apply a staff medicine update (pharmacist + admin share this).
+ *
+ * `stock` is treated as optimistically locked rather than written as an absolute value.
+ * A plain `{ stock: 42 }` update silently discards anything that happened in between:
+ * an order placed while the edit form was open has its deduction overwritten, so the
+ * shop sells units it does not have. The conditional write below only lands if stock is
+ * still what the editor saw; otherwise the caller gets a 409-shaped error and can reload.
+ *
+ * The whole thing is one transaction so the stock movement, the audit trail's only
+ * record of a manual adjustment, cannot be left behind by a failed update.
+ */
+export async function updateMedicineWithStockGuard(args: {
+  id: string
+  name: string
+  data: Prisma.MedicineUncheckedUpdateInput
+  previousStock: number
+  actorId: string
+}): Promise<MedicineWithExtras> {
+  const { id, name, data, previousStock, actorId } = args
+  const { stock, ...rest } = data
+  const nextStock = typeof stock === 'number' ? stock : undefined
+  return db.$transaction(async (tx) => {
+    if (nextStock !== undefined && nextStock !== previousStock) {
+      const claimed = await tx.medicine.updateMany({
+        where: { id, stock: previousStock },
+        data: { stock: nextStock },
+      })
+      if (claimed.count === 0) throw new StockConflictError(name)
+      await recordStockMovements(tx, [{
+        medicineId: id,
+        delta: nextStock - previousStock,
+        reason: 'MANUAL_EDIT',
+        note: 'Manual stock update',
+        userId: actorId,
+      }])
+    }
+    return tx.medicine.update({
+      where: { id },
+      data: rest,
+      include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
+    })
+  })
 }
 
 // ---------- stock movements (audit log) ----------

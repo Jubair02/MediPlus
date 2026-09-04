@@ -376,3 +376,24 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   CANCELLED: 'Cancelled',
   FAILED: 'Failed Delivery',
 }
+
+/**
+ * Legal order status transitions, shared by the admin API and the admin UI so the
+ * dashboard cannot offer a move the server will reject.
+ *
+ * The graph exists because stock moves with status: it is decremented once on entry to
+ * CONFIRMED and released once when a stock-holding order ends as CANCELLED or FAILED.
+ * The three end states are terminal, which is what stops an order being confirmed twice
+ * (DELIVERED → PENDING → CONFIRMED) or shipped after its stock was already returned
+ * (CANCELLED → CONFIRMED).
+ */
+export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
+  PENDING: ['PRESCRIPTION_REVIEW', 'CONFIRMED', 'CANCELLED', 'FAILED'],
+  PRESCRIPTION_REVIEW: ['CONFIRMED', 'CANCELLED', 'FAILED'],
+  CONFIRMED: ['PROCESSING', 'CANCELLED', 'FAILED'],
+  PROCESSING: ['OUT_FOR_DELIVERY', 'CANCELLED', 'FAILED'],
+  OUT_FOR_DELIVERY: ['DELIVERED', 'CANCELLED', 'FAILED'],
+  DELIVERED: [],
+  CANCELLED: [],
+  FAILED: [],
+}

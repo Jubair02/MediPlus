@@ -70,6 +70,21 @@ export default function BkashPayDialog({ open, onOpenChange, amount, onPaid }: B
   const [statusIdx, setStatusIdx] = useState(0)
   const [txnId, setTxnId] = useState<string | null>(null)
 
+  // Hand-off latch. The success effect must fire exactly once per open cycle: it closes
+  // the dialog and places the real order, and a second run would place a duplicate.
+  const paidRef = useRef(false)
+
+  // The parent passes `onPaid` as an inline arrow, so its identity changes on every
+  // parent render — and placing an order re-renders the parent. Reading the callbacks
+  // from refs keeps the success effect keyed on `step` alone, so a parent re-render
+  // can never cancel and re-arm the timer.
+  const onPaidRef = useRef(onPaid)
+  const onOpenChangeRef = useRef(onOpenChange)
+  useEffect(() => {
+    onPaidRef.current = onPaid
+    onOpenChangeRef.current = onOpenChange
+  })
+
   const walletValid = WALLET_RE.test(wallet)
   const locked = step === 'processing' || step === 'success'
   const isInputStep = step === 'wallet' || step === 'otp' || step === 'pin'
@@ -90,6 +105,14 @@ export default function BkashPayDialog({ open, onOpenChange, amount, onPaid }: B
       setResendSecs(RESEND_SECONDS)
     }
   }
+
+  // Arm a fresh hand-off each time the dialog opens. This lives in an effect rather
+  // than the render-phase reset above because refs must not be written during render.
+  // Safe ordering: opening also sets step to 'wallet', so the success effect below
+  // cannot fire before this has run.
+  useEffect(() => {
+    if (open) paidRef.current = false
+  }, [open])
 
   // resend countdown ticks while on the OTP step (timer value is set by the
   // navigation events that enter this step, not by this effect)
@@ -115,15 +138,18 @@ export default function BkashPayDialog({ open, onOpenChange, amount, onPaid }: B
     }
   }, [step])
 
-  // success → let the user see it, then close and hand off to the real order placement
+  // success → let the user see it, then close and hand off to the real order placement.
+  // Guarded by paidRef: the dialog stays mounted after it closes with step still
+  // 'success', so without the latch every later render would re-place the order.
   useEffect(() => {
-    if (step !== 'success') return
+    if (step !== 'success' || paidRef.current) return
     const t = setTimeout(() => {
-      onOpenChange(false)
-      onPaid()
+      paidRef.current = true
+      onOpenChangeRef.current(false)
+      onPaidRef.current()
     }, 950)
     return () => clearTimeout(t)
-  }, [step, onOpenChange, onPaid])
+  }, [step])
 
   const goTo = (next: BkashStep, direction: 1 | -1 = 1) => {
     setDir(direction)

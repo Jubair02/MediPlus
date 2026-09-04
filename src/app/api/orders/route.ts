@@ -4,12 +4,15 @@ import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import {
   readJson,
   orderInclude,
+  orderIncludeRxImage,
+  parseImageInput,
   parseOrder,
   addressToJson,
   parseAddressInput,
   resolveCoupon,
   recordStockMovements,
   round2,
+  rxExpiryFields,
   type ParsedAddress,
   type StockMovementEntry,
 } from '../_lib'
@@ -18,6 +21,10 @@ const CANCELLABLE = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING'
 const RESTOCK_STATUSES = ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY']
 const FREE_DELIVERY_MIN = 2000
 const DELIVERY_FEE = 60
+
+/** Shown whenever an approved prescription cannot back this particular order. */
+const RX_UNUSABLE_MESSAGE =
+  'This prescription cannot be used for this order because it has already expired, been revoked, or is not valid for the selected medicines. Please upload a new prescription.'
 
 /** Thrown when a concurrent request already moved the order out of a cancellable status. */
 class AlreadyCancelledError extends Error {
@@ -31,6 +38,18 @@ class InsufficientStockError extends Error {
   }
 }
 const MAX_NOTES_LENGTH = 600
+
+/**
+ * Whether the simulated bKash flow may settle an order as PAID.
+ *
+ * There is no gateway behind BKASH_DEMO — the client animates a payment and the server
+ * takes its word for it — so in production this is an open door to free goods. It is on
+ * by default outside production (local work, previews) and must be opted into in
+ * production with ALLOW_DEMO_PAYMENTS=true, which is the right trade for a showcase
+ * deployment but should never be the silent default for a real pharmacy.
+ */
+const DEMO_PAYMENTS_ENABLED =
+  process.env.ALLOW_DEMO_PAYMENTS === 'true' || process.env.NODE_ENV !== 'production'
 
 async function loadCart(userId: string) {
   return db.cartItem.findMany({ where: { userId }, include: { medicine: true }, orderBy: { createdAt: 'asc' } })
@@ -91,6 +110,13 @@ export async function POST(request: Request) {
       if (body.paymentMethod === 'COD' || body.paymentMethod === 'BKASH_DEMO') paymentMethod = body.paymentMethod
       else return badRequest('Invalid payment method')
     }
+    // BKASH_DEMO settles with no gateway: the dialog is a front-end animation and the
+    // order below is written PAID on the client's say-so. Anyone can POST this method
+    // directly and receive goods without paying, so it must be switched on deliberately
+    // rather than shipped by default. See DEMO_PAYMENTS_ENABLED.
+    if (paymentMethod === 'BKASH_DEMO' && !DEMO_PAYMENTS_ENABLED) {
+      return badRequest('bKash is unavailable right now. Please choose Cash on Delivery.')
+    }
 
     // 3b. Optional customer note for the order (delivery instructions etc.)
     let notes: string | null = null
@@ -100,7 +126,13 @@ export async function POST(request: Request) {
     }
 
     // 4. Totals
-    const subtotal = cartItems.reduce((sum, it) => sum + (it.medicine.discountPrice ?? it.medicine.price) * it.quantity, 0)
+    //
+    // Money columns are Float, so every figure that reaches the DB is rounded to 2dp here.
+    // Summing raw products drifts (162.5*3 + 19.99*7 + 0.1*3 stored as 627.7299999999999),
+    // and the coupon is resolved against `subtotal`, so it has to be rounded before that.
+    const subtotal = round2(
+      cartItems.reduce((sum, it) => sum + (it.medicine.discountPrice ?? it.medicine.price) * it.quantity, 0)
+    )
     const deliveryFee = subtotal >= FREE_DELIVERY_MIN ? 0 : DELIVERY_FEE
 
     let discount = 0
@@ -111,7 +143,7 @@ export async function POST(request: Request) {
       discount = res.coupon.discount
       couponCode = res.coupon.code
     }
-    const total = subtotal - discount + deliveryFee
+    const total = round2(subtotal - discount + deliveryFee)
 
     // 5. Prescription rules
     const needsRx = cartItems.some((it) => it.medicine.requiresPrescription)
@@ -124,15 +156,37 @@ export async function POST(request: Request) {
 
     if (needsRx) {
       if (typeof body.prescriptionId === 'string' && body.prescriptionId) {
-        const rx = await db.prescription.findFirst({ where: { id: body.prescriptionId, userId: user.id } })
+        // Reusing an approved prescription. Order.prescriptionId used to be @unique, so a
+        // second order threw P2002 — which the retry loop below mistook for an orderNo
+        // collision and surfaced as a 500. The column is now a plain FK, and the checks
+        // that actually matter happen here.
+        const rx = await db.prescription.findFirst({
+          where: { id: body.prescriptionId, userId: user.id },
+          include: { orders: { include: { items: { select: { medicineId: true } } } } },
+        })
         if (!rx) return notFound('Prescription not found')
         if (rx.status !== 'APPROVED') return badRequest('Prescription is not approved yet')
+
+        // Still inside its validity window (reviewedAt + RX_VALIDITY_DAYS).
+        const { daysLeft } = rxExpiryFields(rx.status, rx.reviewedAt)
+        if (daysLeft === null || daysLeft <= 0) return badRequest(RX_UNUSABLE_MESSAGE)
+
+        // Covers the medicines being bought. A prescription authorises the drugs a
+        // pharmacist saw on it — approximated by the Rx items across the orders it has
+        // already backed — not anything the customer later adds to the cart.
+        const authorised = new Set(
+          rx.orders.flatMap((o) => o.items.map((it) => it.medicineId).filter((id): id is string => id !== null))
+        )
+        const requested = cartItems.filter((it) => it.medicine.requiresPrescription)
+        if (requested.some((it) => !authorised.has(it.medicineId))) return badRequest(RX_UNUSABLE_MESSAGE)
+
         prescriptionId = rx.id
       } else if (typeof body.prescription === 'object' && body.prescription !== null) {
         const p = body.prescription as Record<string, unknown>
-        const image = typeof p.image === 'string' ? p.image : ''
-        if (!image.startsWith('data:image')) return badRequest('Please upload a valid image')
-        newRxImage = image
+        // Same unbounded-upload hole as POST /api/prescriptions: only the prefix was checked.
+        const parsedImage = parseImageInput(p.image, { label: 'prescription image' })
+        if ('error' in parsedImage) return badRequest(parsedImage.error)
+        newRxImage = parsedImage.data
         newRxNote = typeof p.note === 'string' && p.note.trim() !== '' ? p.note.trim() : null
         status = 'PRESCRIPTION_REVIEW'
         paymentStatus = 'PENDING'
@@ -252,7 +306,9 @@ export async function GET(request: Request) {
     if (user instanceof Response) return user
     const id = new URL(request.url).searchParams.get('id')
     if (id) {
-      const order = await db.order.findFirst({ where: { id, userId: user.id }, include: orderInclude })
+      // The single-order read is the one customer path that renders the prescription,
+      // so it is also the only one that pays to load the image column.
+      const order = await db.order.findFirst({ where: { id, userId: user.id }, include: orderIncludeRxImage })
       if (!order) return notFound('Order not found')
       return Response.json({ order: parseOrder(order, { prescriptionImage: true }) })
     }
@@ -284,10 +340,13 @@ export async function PUT(request: Request) {
 
       const oldOrder = await db.order.findFirst({ where: { id: orderId, userId: user.id }, include: { items: true, prescription: true } })
       if (!oldOrder) return notFound('Order not found')
-      const prescription = await db.prescription.findFirst({ where: { id: prescriptionId, userId: user.id }, include: { order: { select: { id: true } } } })
+      const prescription = await db.prescription.findFirst({ where: { id: prescriptionId, userId: user.id }, include: { orders: { select: { id: true } } } })
       if (!prescription) return notFound('Prescription not found')
       if (prescription.status !== 'PENDING') return badRequest('Prescription has already been reviewed')
-      if (prescription.order) return badRequest('Prescription is already linked to an order')
+      // This path attaches a freshly uploaded PENDING prescription, so it must not
+      // already be attached to anything. Reuse of an APPROVED prescription is a
+      // different flow, handled at checkout.
+      if (prescription.orders.length > 0) return badRequest('Prescription is already linked to an order')
 
       // Validate availability & stock of every item BEFORE creating anything
       const currentPrice = new Map<string, number>()

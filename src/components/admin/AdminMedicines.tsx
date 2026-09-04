@@ -375,8 +375,11 @@ function MedicineDialog({ open, onOpenChange, categories, initial, onSaved }: Me
         // create = include only when non-empty (undefined key is dropped by JSON)
         extraImages: initial ? form.extraImages : form.extraImages.length > 0 ? form.extraImages : undefined,
       }
+      // expectedStock is the stock this form was opened with. The server refuses the
+      // write if it has moved since — an order placed while the dialog was open would
+      // otherwise be silently undone by this absolute value.
       const body = initial
-        ? { action: 'update-medicine', id: initial.id, data }
+        ? { action: 'update-medicine', id: initial.id, data, expectedStock: initial.stock }
         : { action: 'create-medicine', data }
       await api<{ medicine: Medicine }>('/api/admin', { method: 'PUT', body })
       toast.success(initial ? 'Medicine updated' : 'Medicine created')
@@ -639,8 +642,21 @@ export default function AdminMedicines() {
     if (!deleteId) return
     setDeletePending(true)
     try {
-      await api('/api/admin', { method: 'PUT', body: { action: 'delete-medicine', id: deleteId } })
-      toast.success('Medicine deleted')
+      // The server removes the row outright only when nothing historical points at it;
+      // a medicine that appears in past orders is retired instead so those orders keep
+      // their catalog link. Report whichever happened rather than always claiming a delete.
+      const d = await api<{ deleted?: boolean; orderCount?: number }>('/api/admin', {
+        method: 'PUT',
+        body: { action: 'delete-medicine', id: deleteId },
+      })
+      if (d.deleted === false) {
+        const n = d.orderCount ?? 0
+        toast.success('Medicine retired', {
+          description: `It appears in ${n} past order ${n === 1 ? 'item' : 'items'}, so it was hidden from the catalog and removed from carts instead of deleted.`,
+        })
+      } else {
+        toast.success('Medicine deleted')
+      }
       setDeleteId(null)
       void load()
     } catch (e) {
@@ -852,10 +868,15 @@ export default function AdminMedicines() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete medicine?</AlertDialogTitle>
+            {/* Two outcomes, and the dialog has to admit both: the old copy promised
+                permanent removal while the API only ever flipped the status, so the row
+                stayed in the table and the admin was left guessing. */}
             <AlertDialogDescription>
-              {deleteTarget
-                ? `"${deleteTarget.name}" will be permanently removed from the catalog. This cannot be undone.`
-                : 'This medicine will be permanently removed.'}
+              {deleteTarget ? `"${deleteTarget.name}" will be removed from the catalog. ` : ''}
+              If it has never been ordered it is deleted permanently. If it appears in past
+              orders it is retired instead — hidden from the storefront and dropped from
+              customers&apos; carts — so order history stays intact. Either way this cannot be
+              undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

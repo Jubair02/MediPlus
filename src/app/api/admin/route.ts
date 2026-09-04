@@ -12,18 +12,59 @@ import {
   parseCategoryInput,
   slugify,
   orderInclude,
+  orderIncludeRxImage,
   parseOrder,
   notify,
   addressFromJson,
   escapeCsv,
   recordStockMovements,
   logAudit,
+  StockConflictError,
+  updateMedicineWithStockGuard,
   type StockMovementEntry,
 } from '../_lib'
-import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/types'
+import { ORDER_STATUS_LABELS, ORDER_TRANSITIONS, type OrderStatus } from '@/lib/types'
 
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
+
+/** States entered only after stock has been decremented for the order. */
+const STOCK_HELD_STATUSES = ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY']
+/** Terminal states that end an order unfulfilled, so held stock goes back. */
+const STOCK_RELEASING_STATUSES = ['CANCELLED', 'FAILED']
+
+class InsufficientStockError extends Error {
+  constructor(public itemName: string) {
+    super(`Insufficient stock for ${itemName}`)
+    this.name = 'InsufficientStockError'
+  }
+}
+
+/** Raised when another request changed the payment status between the read and the write. */
+class PaymentRaceError extends Error {
+  constructor() {
+    super('This payment was just updated elsewhere — reload and try again')
+    this.name = 'PaymentRaceError'
+  }
+}
 const PAYMENT_STATUSES = ['PENDING', 'PAID', 'FAILED', 'REFUNDED']
+
+/**
+ * Legal payment-status moves. The endpoint used to accept any value for any order, so
+ * the ledger would happily take REFUNDED -> PAID (re-collecting money that was returned)
+ * or PAID -> PENDING (un-collecting it), leaving the audit trail describing a sequence
+ * that cannot have happened. REFUNDED is terminal: reversing a refund is a new payment.
+ */
+const PAYMENT_TRANSITIONS: Record<string, readonly string[]> = {
+  PENDING: ['PAID', 'FAILED'],
+  PAID: ['REFUNDED'],
+  FAILED: ['PENDING', 'PAID'],
+  REFUNDED: [],
+}
+
+/** Order statuses whose stock has been deducted and would need returning on a refund. */
+const REFUND_RESTOCK_STATUSES = ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY']
+/** Order statuses a refund should not disturb: already ended, one way or the other. */
+const ORDER_TERMINAL_STATUSES = ['DELIVERED', 'CANCELLED', 'FAILED']
 const PAYMENT_METHODS = ['COD', 'BKASH_DEMO']
 const PAYMENTS_PAGE_SIZE = 20
 const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
@@ -456,7 +497,7 @@ export async function GET(request: Request) {
           statusCounts: statusGroups.map((g) => ({ status: g.status, count: g._count._all })),
           topSelling,
           lowStock,
-          recentOrders: recentOrdersRaw.map((o) => parseOrder(o, { prescriptionImage: true })),
+          recentOrders: recentOrdersRaw.map((o) => parseOrder(o)),
           totalReviews,
           avgRating: reviewAgg._avg.rating == null ? null : round1(reviewAgg._avg.rating),
           activeCoupons,
@@ -536,7 +577,22 @@ export async function GET(request: Request) {
         ]
       }
       const orders = await db.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' } })
-      return Response.json({ orders: orders.map((o) => parseOrder(o, { prescriptionImage: true })) })
+      return Response.json({ orders: orders.map((o) => parseOrder(o)) })
+    }
+
+    /**
+     * resource=order&id= — one order, with the prescription image.
+     *
+     * The list above deliberately no longer carries images: the admin table renders a
+     * prescription only in the detail dialog, so loading every order's base64 blob to
+     * show at most one of them made the list cost megabytes. The dialog fetches this.
+     */
+    if (resource === 'order') {
+      const id = sp.get('id')?.trim()
+      if (!id) return badRequest('Order id is required')
+      const order = await db.order.findUnique({ where: { id }, include: orderIncludeRxImage })
+      if (!order) return notFound('Order not found')
+      return Response.json({ order: parseOrder(order, { prescriptionImage: true }) })
     }
 
     if (resource === 'coupons') {
@@ -858,7 +914,7 @@ export async function PUT(request: Request) {
       const existing = await db.user.findUnique({ where: { email } })
       if (existing) return badRequest('An account with this email already exists')
       const created = await db.user.create({
-        data: { name, email, password: hashPassword(password), phone: phone || null, role, status: 'ACTIVE' },
+        data: { name, email, password: await hashPassword(password), phone: phone || null, role, status: 'ACTIVE' },
       })
       return Response.json({ user: publicUser(created) }, { status: 201 })
     }
@@ -884,26 +940,53 @@ export async function PUT(request: Request) {
       if (!existing) return notFound('Medicine not found')
       const parsed = await buildMedicineData(body.data, 'update')
       if ('error' in parsed) return badRequest(parsed.error)
-      const newStock = typeof parsed.data.stock === 'number' ? parsed.data.stock : undefined
-      const medicine = await db.medicine.update({
-        where: { id },
-        data: parsed.data,
-        include: { category: true, extraImages: { orderBy: { sort: 'asc' } } },
-      })
-      if (newStock !== undefined && newStock !== existing.stock) {
-        await recordStockMovements(db, [{ medicineId: medicine.id, delta: newStock - existing.stock, reason: 'MANUAL_EDIT', note: 'Manual stock update', userId: user.id }])
+      // `stock` is an absolute value, so it is only safe to write if it was computed
+      // from a current reading. `expectedStock` is what the editor's form was showing;
+      // the write lands only if that is still the truth. Absent (an older client, or a
+      // caller that only touches other fields) it falls back to the row just read, which
+      // still closes the read-then-write window inside this request.
+      const expectedStock = body.expectedStock === undefined ? undefined : numOr(body.expectedStock, NaN)
+      if (expectedStock !== undefined && !Number.isInteger(expectedStock)) {
+        return badRequest('Invalid expected stock')
       }
+      const medicine = await updateMedicineWithStockGuard({
+        id,
+        name: existing.name,
+        data: parsed.data,
+        previousStock: expectedStock ?? existing.stock,
+        actorId: user.id,
+      })
       return Response.json({ medicine: medicineStaffJson(medicine) })
     }
 
+    /**
+     * delete-medicine — a real delete when the row is safe to lose, a deactivation when
+     * it is not, and the response says which.
+     *
+     * This used to always deactivate while the dialog promised permanent removal, so the
+     * row stayed in the table with its status switch off and the admin had no way to tell
+     * whether the action had worked. Order history is the reason a delete is not always
+     * possible: OrderItem.medicineId is SetNull, so hard-deleting a medicine that has
+     * been sold silently severs past orders from their catalog entry. Referenced rows are
+     * therefore retired instead, and `deleted: false` tells the client to say so.
+     */
     if (action === 'delete-medicine') {
       const id = optStr(body.id)
       if (!id) return badRequest('Medicine id is required')
       const existing = await db.medicine.findUnique({ where: { id } })
       if (!existing) return notFound('Medicine not found')
-      await db.medicine.update({ where: { id }, data: { status: 'INACTIVE' } })
-      await db.cartItem.deleteMany({ where: { medicineId: id } })
-      return Response.json({ ok: true })
+      const soldCount = await db.orderItem.count({ where: { medicineId: id } })
+      if (soldCount > 0) {
+        await db.$transaction(async (tx) => {
+          await tx.medicine.update({ where: { id }, data: { status: 'INACTIVE' } })
+          await tx.cartItem.deleteMany({ where: { medicineId: id } })
+        })
+        return Response.json({ ok: true, deleted: false, orderCount: soldCount })
+      }
+      // Nothing historical points at it: cart items, wishlist entries, reviews, questions,
+      // stock movements, purchase orders and gallery images all cascade with the row.
+      await db.medicine.delete({ where: { id } })
+      return Response.json({ ok: true, deleted: true, orderCount: 0 })
     }
 
     // ---- categories ----
@@ -1002,83 +1085,141 @@ export async function PUT(request: Request) {
       if (!order) return notFound('Order not found')
 
       const status = optStr(body.status)
+
+      // Three distinct intents, and `optStr` could only express two of them: the client
+      // sends `null` to un-assign, optStr turned that into undefined, and undefined was
+      // read as "leave it alone" — so the Unassigned option silently did nothing.
+      //   key absent   -> leave the assignment as it is
+      //   key === null -> clear it
+      //   key a string -> assign that driver
+      const assignmentTouched = body.deliveryStaffId !== undefined
+      const clearingStaff = assignmentTouched && body.deliveryStaffId === null
       const deliveryStaffId = optStr(body.deliveryStaffId)
+      if (assignmentTouched && !clearingStaff && !deliveryStaffId) {
+        return badRequest('Invalid delivery staff')
+      }
 
       if (status && !ORDER_STATUSES.includes(status)) return badRequest('Invalid status')
       if (deliveryStaffId) {
         const staff = await db.user.findUnique({ where: { id: deliveryStaffId } })
         if (!staff || staff.role !== 'DELIVERY') return badRequest('Selected user is not delivery staff')
       }
+      // A finished order's assignment is part of its record. Re-pointing a DELIVERED
+      // order at a different driver, or handing a CANCELLED one to someone, only
+      // produces a task nobody can act on and a history that reads wrong.
+      if (assignmentTouched && ORDER_TERMINAL_STATUSES.includes(order.status)) {
+        const current = order.deliveryStaffId ?? null
+        const next = clearingStaff ? null : deliveryStaffId ?? null
+        if (current !== next) {
+          const label = ORDER_STATUS_LABELS[order.status as OrderStatus] ?? order.status
+          return badRequest(`Delivery staff cannot be changed on a ${label} order.`)
+        }
+      }
 
-      if (status && status !== order.status) {
-        if (status === 'CONFIRMED' && ['PENDING', 'PRESCRIPTION_REVIEW'].includes(order.status)) {
-          for (const item of order.items) {
-            if (!item.medicine || item.medicine.status !== 'ACTIVE' || item.medicine.stock < item.quantity) {
-              return badRequest(`Insufficient stock for ${item.name}`)
-            }
-          }
-          await db.$transaction(async (tx) => {
-            const movements: StockMovementEntry[] = []
+      const changingStatus = !!status && status !== order.status
+      if (changingStatus) {
+        const allowed: readonly string[] = ORDER_TRANSITIONS[order.status as OrderStatus] ?? []
+        if (!allowed.includes(status!)) {
+          const from = ORDER_STATUS_LABELS[order.status as OrderStatus] ?? order.status
+          const to = ORDER_STATUS_LABELS[status as OrderStatus] ?? status
+          return badRequest(
+            allowed.length === 0
+              ? `${from} is a final status — this order can no longer be changed.`
+              : `Cannot move an order from ${from} to ${to}.`
+          )
+        }
+      }
+
+      const wasPaid = order.paymentStatus === 'PAID'
+      const takesStock = changingStatus && status === 'CONFIRMED'
+      const releasesStock =
+        changingStatus &&
+        STOCK_HELD_STATUSES.includes(order.status) &&
+        STOCK_RELEASING_STATUSES.includes(status!)
+      const refunding = changingStatus && STOCK_RELEASING_STATUSES.includes(status!) && wasPaid
+
+      // Stock, payment and the order row move together. Previously these were three
+      // separate writes, so a failure between them left stock decremented against an
+      // order that never advanced, or a refunded payment on a live order.
+      let updated: { id: string }
+      try {
+        updated = await db.$transaction(async (tx) => {
+          const movements: StockMovementEntry[] = []
+
+          if (takesStock) {
             for (const item of order.items) {
-              if (item.medicineId) {
-                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { decrement: item.quantity } } })
-                movements.push({
-                  medicineId: item.medicineId,
-                  delta: -item.quantity,
-                  reason: 'ORDER_CONFIRM',
-                  note: `Order ${order.orderNo} confirmed`,
-                  userId: user.id,
-                })
+              if (!item.medicineId) continue
+              if (!item.medicine || item.medicine.status !== 'ACTIVE') {
+                throw new InsufficientStockError(item.name)
               }
+              // Conditional decrement inside the transaction. A plain `decrement` with
+              // the check done beforehand lets two concurrent confirms both pass the
+              // check and drive stock negative.
+              const decremented = await tx.medicine.updateMany({
+                where: { id: item.medicineId, stock: { gte: item.quantity } },
+                data: { stock: { decrement: item.quantity } },
+              })
+              if (decremented.count === 0) throw new InsufficientStockError(item.name)
+              movements.push({
+                medicineId: item.medicineId,
+                delta: -item.quantity,
+                reason: 'ORDER_CONFIRM',
+                note: `Order ${order.orderNo} confirmed`,
+                userId: user.id,
+              })
             }
-            await recordStockMovements(tx, movements)
+
             const existingPayment = await tx.payment.findUnique({ where: { orderId: order.id } })
             if (!existingPayment) {
               await tx.payment.create({
                 data: {
                   orderId: order.id,
                   method: order.paymentMethod,
-                  status: order.paymentStatus === 'PAID' ? 'PAID' : 'PENDING',
+                  status: wasPaid ? 'PAID' : 'PENDING',
                   amount: order.total,
                 },
               })
             }
-          })
-        }
-        if (status === 'CANCELLED' && ['CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY'].includes(order.status)) {
-          const movements: StockMovementEntry[] = []
-          await db.$transaction(async (tx) => {
-            for (const item of order.items) {
-              if (item.medicineId) {
-                await tx.medicine.update({ where: { id: item.medicineId }, data: { stock: { increment: item.quantity } } })
-                movements.push({
-                  medicineId: item.medicineId,
-                  delta: item.quantity,
-                  reason: 'ORDER_CANCEL',
-                  note: `Order ${order.orderNo} cancelled — stock restored`,
-                  userId: user.id,
-                })
-              }
-            }
-            await recordStockMovements(tx, movements)
-          })
-        }
-        if (status === 'CANCELLED' && order.paymentStatus === 'PAID') {
-          if (order.payment) {
-            await db.payment.update({ where: { id: order.payment.id }, data: { status: 'REFUNDED' } })
           }
-        }
-      }
 
-      const wasPaid = order.paymentStatus === 'PAID'
-      const updated = await db.order.update({
-        where: { id },
-        data: {
-          ...(status ? { status, statusNote: 'Updated by admin' } : {}),
-          ...(status === 'CANCELLED' && wasPaid ? { paymentStatus: 'REFUNDED' } : {}),
-          ...(deliveryStaffId ? { deliveryStaffId } : {}),
-        },
-      })
+          if (releasesStock) {
+            const label = status === 'FAILED' ? 'failed' : 'cancelled'
+            for (const item of order.items) {
+              if (!item.medicineId) continue
+              await tx.medicine.update({
+                where: { id: item.medicineId },
+                data: { stock: { increment: item.quantity } },
+              })
+              movements.push({
+                medicineId: item.medicineId,
+                delta: item.quantity,
+                reason: 'ORDER_CANCEL',
+                note: `Order ${order.orderNo} ${label} — stock restored`,
+                userId: user.id,
+              })
+            }
+          }
+
+          if (movements.length > 0) await recordStockMovements(tx, movements)
+
+          if (refunding && order.payment) {
+            await tx.payment.update({ where: { id: order.payment.id }, data: { status: 'REFUNDED' } })
+          }
+
+          return tx.order.update({
+            where: { id },
+            data: {
+              ...(status ? { status, statusNote: 'Updated by admin' } : {}),
+              ...(refunding ? { paymentStatus: 'REFUNDED' } : {}),
+              ...(clearingStaff ? { deliveryStaffId: null } : deliveryStaffId ? { deliveryStaffId } : {}),
+            },
+          })
+        })
+      } catch (e) {
+        // A lost stock race is the caller's to retry, not a server fault.
+        if (e instanceof InsufficientStockError) return badRequest(e.message)
+        throw e
+      }
 
       if (status && status !== order.status) {
         const label = ORDER_STATUS_LABELS[status as OrderStatus] ?? status
@@ -1093,7 +1234,7 @@ export async function PUT(request: Request) {
 
       const full = await db.order.findUnique({ where: { id: updated.id }, include: orderInclude })
       if (!full) return notFound('Order not found')
-      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+      return Response.json({ order: parseOrder(full) })
     }
 
     // ---- payments ----
@@ -1102,26 +1243,99 @@ export async function PUT(request: Request) {
       const status = optStr(body.status)
       if (!orderId) return badRequest('Order id is required')
       if (!status || !PAYMENT_STATUSES.includes(status)) return badRequest('Invalid payment status')
-      const existing = await db.order.findUnique({ where: { id: orderId }, select: { id: true, orderNo: true } })
+      const existing = await db.order.findUnique({
+        where: { id: orderId },
+        include: { items: true, payment: true },
+      })
       if (!existing) return notFound('Order not found')
+
+      // Enforce the transition graph — see PAYMENT_TRANSITIONS.
+      if (existing.paymentStatus !== status) {
+        const allowed = PAYMENT_TRANSITIONS[existing.paymentStatus] ?? []
+        if (!allowed.includes(status)) {
+          return badRequest(
+            allowed.length === 0
+              ? `${existing.paymentStatus} is a final payment status — it cannot be changed.`
+              : `Cannot move a payment from ${existing.paymentStatus} to ${status}.`
+          )
+        }
+      }
+
+      /**
+       * A refund is not a label change. Money going back means the order is not being
+       * fulfilled, so it has to be cancelled and any stock it was holding released —
+       * previously the order carried on to delivery with its inventory still deducted
+       * and a REFUNDED payment attached.
+       *
+       * The exception is an order that has already ended. A DELIVERED order's goods were
+       * handed over, so refunding it is a post-hoc adjustment and neither its status nor
+       * the stock should move; a CANCELLED or FAILED one has been settled already.
+       */
+      const refunding = status === 'REFUNDED' && existing.paymentStatus !== 'REFUNDED'
+      const cancelOrder = refunding && !ORDER_TERMINAL_STATUSES.includes(existing.status)
+      const restock = cancelOrder && REFUND_RESTOCK_STATUSES.includes(existing.status)
+
       await db.$transaction(async (tx) => {
-        await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } })
-        const payment = await tx.payment.findUnique({ where: { orderId } })
-        if (payment) await tx.payment.update({ where: { id: payment.id }, data: { status } })
+        // Claim the payment status the same way the order routes claim theirs, so two
+        // concurrent refunds cannot both restock the same units. The order status is part
+        // of the claim as well, because `cancelOrder` and `restock` were decided from the
+        // row read above — if the order has moved on since, those decisions are stale.
+        const claimed = await tx.order.updateMany({
+          where: { id: orderId, paymentStatus: existing.paymentStatus, status: existing.status },
+          data: {
+            paymentStatus: status,
+            ...(cancelOrder ? { status: 'CANCELLED', statusNote: 'Cancelled — payment refunded' } : {}),
+          },
+        })
+        if (claimed.count === 0) throw new PaymentRaceError()
+        if (existing.payment) {
+          await tx.payment.update({ where: { id: existing.payment.id }, data: { status } })
+        }
+        if (restock) {
+          const movements: StockMovementEntry[] = []
+          for (const item of existing.items) {
+            if (!item.medicineId) continue
+            await tx.medicine.update({
+              where: { id: item.medicineId },
+              data: { stock: { increment: item.quantity } },
+            })
+            movements.push({
+              medicineId: item.medicineId,
+              delta: item.quantity,
+              reason: 'ORDER_CANCEL',
+              note: `Order ${existing.orderNo} refunded — stock restored`,
+              userId: user.id,
+            })
+          }
+          await recordStockMovements(tx, movements)
+        }
         await logAudit(tx, user, {
           action: 'PAYMENT_STATUS',
           entityType: 'PAYMENT',
           entityRef: existing.orderNo,
-          detail: `Payment status set to ${status}`,
+          detail: cancelOrder
+            ? `Payment status set to ${status}; order cancelled${restock ? ' and stock restored' : ''}`
+            : `Payment status set to ${status}`,
         })
       })
+
+      if (cancelOrder) {
+        await notify(
+          existing.userId,
+          'Order cancelled',
+          `Order ${existing.orderNo} has been cancelled and your payment refunded.`
+        )
+      }
+
       const full = await db.order.findUnique({ where: { id: orderId }, include: orderInclude })
       if (!full) return notFound('Order not found')
-      return Response.json({ order: parseOrder(full, { prescriptionImage: true }) })
+      return Response.json({ order: parseOrder(full) })
     }
 
     return badRequest('Invalid action')
   } catch (e) {
+    // Lost races and stale-form conflicts are for the caller to retry, not 500s.
+    if (e instanceof PaymentRaceError || e instanceof StockConflictError) return badRequest(e.message)
     return serverError(e)
   }
 }

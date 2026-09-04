@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Heart, LogIn, ShoppingBag } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { Heart, LogIn, Loader2, RefreshCw, ShoppingBag, TriangleAlert } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
 import type { WishlistItem } from '@/lib/types'
@@ -17,16 +17,27 @@ export default function WishlistView() {
   const setView = useAppStore((s) => s.setView)
   const setDetailMedicine = useAppStore((s) => s.setDetailMedicine)
   const [items, setItems] = useState<WishlistItem[] | null>(null)
+  // A failed load is not an empty wishlist — it used to render the "nothing saved yet"
+  // card, which quietly told the user their saved items were gone.
+  const [error, setError] = useState<string | null>(null)
+  const [addingAll, setAddingAll] = useState(false)
+
+  const load = useCallback(async () => {
+    if (!user) return
+    setError(null)
+    try {
+      const d = await api<{ items: WishlistItem[]; ids: string[] }>('/api/wishlist')
+      setItems(d.items)
+      setWishlistIds(d.ids)
+    } catch (e) {
+      setItems(null)
+      setError(e instanceof Error ? e.message : 'Failed to load your wishlist')
+    }
+  }, [user, setWishlistIds])
 
   useEffect(() => {
-    if (!user) return
-    api<{ items: WishlistItem[]; ids: string[] }>('/api/wishlist')
-      .then((d) => {
-        setItems(d.items)
-        setWishlistIds(d.ids)
-      })
-      .catch(() => setItems([]))
-  }, [user, setWishlistIds])
+    void load()
+  }, [load])
 
   // If a heart on a card removed an item, drop it from the local list too
   const visible = items?.filter((i) => wishlistIds.includes(i.medicine.id)) ?? items
@@ -46,10 +57,17 @@ export default function WishlistView() {
     )
   }
 
+  // Guarded: the cart POST is additive, so a second click while the loop is still
+  // running would add every in-stock item a second time.
   const addAllToCart = async () => {
-    if (!visible?.length) return
-    for (const it of visible) {
-      if (it.medicine.stock > 0) await addToCart(it.medicine, 1)
+    if (!visible?.length || addingAll) return
+    setAddingAll(true)
+    try {
+      for (const it of visible) {
+        if (it.medicine.stock > 0) await addToCart(it.medicine, 1)
+      }
+    } finally {
+      setAddingAll(false)
     }
   }
 
@@ -62,18 +80,37 @@ export default function WishlistView() {
             My wishlist
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {visible ? `${visible.length} saved ${visible.length === 1 ? 'medicine' : 'medicines'}` : 'Loading…'}
+            {error
+              ? 'Unavailable'
+              : visible
+                ? `${visible.length} saved ${visible.length === 1 ? 'medicine' : 'medicines'}`
+                : 'Loading…'}
           </p>
         </div>
         {!!visible?.length && (
-          <Button onClick={() => void addAllToCart()}>
-            <ShoppingBag className="size-4" aria-hidden="true" />
-            Add all in-stock to cart
+          <Button onClick={() => void addAllToCart()} disabled={addingAll}>
+            {addingAll ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <ShoppingBag className="size-4" aria-hidden="true" />
+            )}
+            {addingAll ? 'Adding…' : 'Add all in-stock to cart'}
           </Button>
         )}
       </div>
 
-      {visible === null ? (
+      {error ? (
+        <Card className="mt-6 flex flex-col items-center gap-3 border-dashed p-12 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/15">
+            <TriangleAlert className="size-6 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+          </div>
+          <h2 className="text-lg font-semibold">Could not load your wishlist</h2>
+          <p className="max-w-sm text-sm text-muted-foreground">{error}</p>
+          <Button variant="outline" onClick={() => void load()}>
+            <RefreshCw className="size-4" aria-hidden="true" /> Try again
+          </Button>
+        </Card>
+      ) : visible === null ? (
         <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-72 rounded-xl" />

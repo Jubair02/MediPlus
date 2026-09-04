@@ -18,6 +18,7 @@ import { downloadCsv } from '@/lib/download'
 import { fmtBDT, fmtDateTime } from '@/lib/format'
 import {
   ORDER_STATUS_LABELS,
+  ORDER_TRANSITIONS,
   type AuthUser,
   type Order,
   type OrderStatus,
@@ -100,6 +101,11 @@ export default function AdminOrders() {
   const [editStaff, setEditStaff] = useState('NONE')
   const [savePending, setSavePending] = useState(false)
   const [exportPending, setExportPending] = useState(false)
+  // The prescription image is the one field the list no longer carries — it is a base64
+  // blob, and loading every order's copy to render at most one of them cost megabytes per
+  // page load. The dialog fetches the single order it needs instead. The fetched image is
+  // stamped with the order it belongs to so a slow response cannot land on the next order.
+  const [rx, setRx] = useState<{ orderId: string; image: string | null } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -133,6 +139,26 @@ export default function AdminOrders() {
 
   const selected = useMemo(() => orders.find((o) => o.id === selectedId) ?? null, [orders, selectedId])
 
+  /** Terminal orders are a record, not a work queue — their driver assignment is frozen. */
+  const assignmentLocked = !!selected && ORDER_TRANSITIONS[selected.status].length === 0
+
+  useEffect(() => {
+    if (!selectedId) return
+    const ac = new AbortController()
+    const settle = (image: string | null) => {
+      if (!ac.signal.aborted) setRx({ orderId: selectedId, image })
+    }
+    api<{ order: Order }>(`/api/admin?resource=order&id=${encodeURIComponent(selectedId)}`, {
+      signal: ac.signal,
+    })
+      .then((d) => settle(d.order.prescription?.image ?? null))
+      .catch(() => settle(null))
+    return () => ac.abort()
+  }, [selectedId])
+
+  const rxImage = rx && rx.orderId === selectedId ? rx.image : null
+  const rxLoading = !rx || rx.orderId !== selectedId
+
   async function exportCsv() {
     setExportPending(true)
     try {
@@ -164,7 +190,9 @@ export default function AdminOrders() {
           action: 'update-order',
           id: selected.id,
           status: editStatus,
-          deliveryStaffId: editStaff === 'NONE' ? null : editStaff,
+          // Omitted entirely when frozen, so a save that only changes the status is not
+          // rejected for "changing" an assignment it is merely echoing back.
+          ...(assignmentLocked ? {} : { deliveryStaffId: editStaff === 'NONE' ? null : editStaff }),
         },
       })
       setOrders((prev) => prev.map((o) => (o.id === d.order.id ? d.order : o)))
@@ -401,11 +429,15 @@ export default function AdminOrders() {
                   <div className="space-y-2">
                     <SectionTitle>Prescription</SectionTitle>
                     <div className="space-y-2 rounded-lg border p-3">
-                      <MedImage
-                        src={selected.prescription.image}
-                        alt="Prescription"
-                        className="max-h-64 w-full rounded-lg object-contain"
-                      />
+                      {rxLoading && !rxImage ? (
+                        <Skeleton className="h-64 w-full rounded-lg" />
+                      ) : (
+                        <MedImage
+                          src={rxImage}
+                          alt="Prescription"
+                          className="max-h-64 w-full rounded-lg object-contain"
+                        />
+                      )}
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge
                           variant={selected.prescription.status === 'PENDING' ? 'outline' : 'default'}
@@ -474,17 +506,32 @@ export default function AdminOrders() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
+                          {/* Only the moves the API will accept. Stock follows status, so
+                              an arbitrary jump would double-count or strand inventory. */}
                           {Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => (
-                            <SelectItem key={value} value={value}>
+                            <SelectItem
+                              key={value}
+                              value={value}
+                              disabled={
+                                value !== selected.status &&
+                                !ORDER_TRANSITIONS[selected.status].includes(value as OrderStatus)
+                              }
+                            >
                               {label}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {ORDER_TRANSITIONS[selected.status].length === 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          {ORDER_STATUS_LABELS[selected.status]} is a final status — this order can no
+                          longer be changed.
+                        </p>
+                      )}
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="order-staff">Delivery staff</Label>
-                      <Select value={editStaff} onValueChange={setEditStaff}>
+                      <Select value={editStaff} onValueChange={setEditStaff} disabled={assignmentLocked}>
                         <SelectTrigger id="order-staff" className="w-full">
                           <SelectValue placeholder="Unassigned" />
                         </SelectTrigger>
@@ -497,6 +544,12 @@ export default function AdminOrders() {
                           ))}
                         </SelectContent>
                       </Select>
+                      {assignmentLocked && (
+                        <p className="text-xs text-muted-foreground">
+                          Assignment is fixed once an order reaches{' '}
+                          {ORDER_STATUS_LABELS[selected.status]}.
+                        </p>
+                      )}
                     </div>
                   </div>
                   <DialogFooter className="gap-2">

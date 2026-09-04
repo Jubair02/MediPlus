@@ -13,6 +13,17 @@ export function setToken(token: string | null) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+/** Broadcast when the server rejects our token, so the app can drop the dead session. */
+export const UNAUTHORIZED_EVENT = 'medplus:unauthorized'
+
+/** Thrown for a 401 so callers can tell "signed out" apart from an ordinary failure. */
+export class UnauthorizedError extends Error {
+  constructor(message = 'Your session has expired. Please sign in again.') {
+    super(message)
+    this.name = 'UnauthorizedError'
+  }
+}
+
 interface ApiOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   body?: unknown
@@ -37,6 +48,17 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
     data = await res.json()
   } catch {
     /* no body */
+  }
+
+  // A 401 means the token is gone, expired, or was signed with a rotated secret.
+  // Nothing else in the app watches for this, so clear it here and announce it once —
+  // otherwise every view sits on its loading skeleton forever with no explanation.
+  if (res.status === 401) {
+    setToken(null)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    }
+    throw new UnauthorizedError((data as { error?: string })?.error || undefined)
   }
 
   if (!res.ok) {

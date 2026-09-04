@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { LogIn, MapPin, Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { isCustomer } from '@/lib/rbac'
 import { useAppStore } from '@/lib/store'
 import type { Address } from '@/lib/types'
 import {
@@ -48,14 +49,20 @@ export default function ProfileView() {
   const [deleteTarget, setDeleteTarget] = useState<Address | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // Saved addresses are a shopping feature: /api/addresses is requireCustomer, so for
+  // a staff account this request is a guaranteed 403. Skipping it (and the section it
+  // feeds, below) is what keeps admins and pharmacists off a permanent skeleton with a
+  // button that only ever errors.
+  const customer = isCustomer(user?.role)
+
   useEffect(() => {
-    if (!user) return
+    if (!customer) return
     const ac = new AbortController()
     api<{ addresses: Address[] }>('/api/addresses', { signal: ac.signal })
       .then((d) => setAddresses(d.addresses))
       .catch(() => {})
     return () => ac.abort()
-  }, [user])
+  }, [customer])
 
   // ---------- guard ----------
   if (!user) {
@@ -272,108 +279,112 @@ export default function ProfileView() {
           </div>
         </Card>
 
-        {/* ---------- 3. My addresses ---------- */}
-        <Card className="gap-4 p-5 shadow-sm lg:col-span-2">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="flex items-center gap-2 font-semibold">
-              <MapPin className="size-4 text-primary" aria-hidden="true" />
-              My addresses
-            </h2>
-            <Button
-              size="sm"
-              className="h-9 gap-1.5 rounded-lg"
-              onClick={() => {
-                setEditingAddress(null)
-                setAddressDialogOpen(true)
-              }}
-            >
-              <Plus className="size-4" aria-hidden="true" />
-              Add address
-            </Button>
-          </div>
-
-          {addresses === null ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {Array.from({ length: 2 }).map((_, i) => (
-                <Skeleton key={i} className="h-40 rounded-xl" />
-              ))}
+        {/* ---------- 3. My addresses (customers only — see `customer` above) ---------- */}
+        {customer && (
+          <Card className="gap-4 p-5 shadow-sm lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="flex items-center gap-2 font-semibold">
+                <MapPin className="size-4 text-primary" aria-hidden="true" />
+                My addresses
+              </h2>
+              <Button
+                size="sm"
+                className="h-9 gap-1.5 rounded-lg"
+                onClick={() => {
+                  setEditingAddress(null)
+                  setAddressDialogOpen(true)
+                }}
+              >
+                <Plus className="size-4" aria-hidden="true" />
+                Add address
+              </Button>
             </div>
-          ) : addresses.length === 0 ? (
-            <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              No saved addresses yet. Add one to speed up checkout.
-            </p>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {addresses.map((a) => (
-                <div
-                  key={a.id}
-                  className="rounded-xl border p-4 text-sm shadow-sm transition-shadow hover:shadow-md"
-                >
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary" className="rounded-md">
-                      {a.label}
-                    </Badge>
-                    {a.isDefault && (
-                      <Badge className="gap-1 rounded-md bg-emerald-100 text-emerald-700">
-                        <Star className="size-3" aria-hidden="true" />
-                        Default
+
+            {addresses === null ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-40 rounded-xl" />
+                ))}
+              </div>
+            ) : addresses.length === 0 ? (
+              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                No saved addresses yet. Add one to speed up checkout.
+              </p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {addresses.map((a) => (
+                  <div
+                    key={a.id}
+                    className="rounded-xl border p-4 text-sm shadow-sm transition-shadow hover:shadow-md"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="rounded-md">
+                        {a.label}
                       </Badge>
-                    )}
-                    <div className="ml-auto flex gap-1">
-                      {!a.isDefault && (
+                      {a.isDefault && (
+                        <Badge className="gap-1 rounded-md bg-emerald-100 text-emerald-700">
+                          <Star className="size-3" aria-hidden="true" />
+                          Default
+                        </Badge>
+                      )}
+                      <div className="ml-auto flex gap-1">
+                        {!a.isDefault && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 rounded-md px-2 text-xs"
+                            onClick={() => void setDefault(a)}
+                          >
+                            Set default
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
-                          size="sm"
-                          className="h-8 rounded-md px-2 text-xs"
-                          onClick={() => void setDefault(a)}
+                          size="icon"
+                          className="size-8 rounded-md"
+                          aria-label={`Edit ${a.label} address`}
+                          onClick={() => {
+                            setEditingAddress(a)
+                            setAddressDialogOpen(true)
+                          }}
                         >
-                          Set default
+                          <Pencil className="size-3.5" aria-hidden="true" />
                         </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 rounded-md"
-                        aria-label={`Edit ${a.label} address`}
-                        onClick={() => {
-                          setEditingAddress(a)
-                          setAddressDialogOpen(true)
-                        }}
-                      >
-                        <Pencil className="size-3.5" aria-hidden="true" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 rounded-md text-red-600 hover:bg-red-50 hover:text-red-600"
-                        aria-label={`Delete ${a.label} address`}
-                        onClick={() => setDeleteTarget(a)}
-                      >
-                        <Trash2 className="size-3.5" aria-hidden="true" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 rounded-md text-red-600 hover:bg-red-50 hover:text-red-600"
+                          aria-label={`Delete ${a.label} address`}
+                          onClick={() => setDeleteTarget(a)}
+                        >
+                          <Trash2 className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      </div>
                     </div>
+                    <p className="mt-2 font-semibold">{a.recipient}</p>
+                    <p className="text-muted-foreground">{a.phone}</p>
+                    <p className="mt-1 leading-snug">
+                      {a.line1}
+                      {a.area ? `, ${a.area}` : ''}, {a.city}
+                      {a.postcode ? ` ${a.postcode}` : ''}
+                    </p>
                   </div>
-                  <p className="mt-2 font-semibold">{a.recipient}</p>
-                  <p className="text-muted-foreground">{a.phone}</p>
-                  <p className="mt-1 leading-snug">
-                    {a.line1}
-                    {a.area ? `, ${a.area}` : ''}, {a.city}
-                    {a.postcode ? ` ${a.postcode}` : ''}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
       </div>
 
       {/* Add / edit address dialog */}
-      <AddressFormDialog
-        open={addressDialogOpen}
-        onOpenChange={setAddressDialogOpen}
-        initial={editingAddress}
-        onSaved={addressSaved}
-      />
+      {customer && (
+        <AddressFormDialog
+          open={addressDialogOpen}
+          onOpenChange={setAddressDialogOpen}
+          initial={editingAddress}
+          onSaved={addressSaved}
+        />
+      )}
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
