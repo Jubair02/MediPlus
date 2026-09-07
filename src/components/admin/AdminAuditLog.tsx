@@ -42,6 +42,7 @@ const ACTION_FILTERS: { value: ActionFilter; label: string }[] = [
   { value: 'PO_RECEIVE', label: 'PO received' },
   { value: 'PO_CANCEL', label: 'PO cancelled' },
   { value: 'USER_STATUS', label: 'User status' },
+  { value: 'USER_ROLE', label: 'User role' },
 ]
 
 const ACTION_LABELS: Record<string, string> = {
@@ -52,6 +53,7 @@ const ACTION_LABELS: Record<string, string> = {
   PO_RECEIVE: 'PO received',
   PO_CANCEL: 'PO cancelled',
   USER_STATUS: 'User status',
+  USER_ROLE: 'User role',
 }
 
 const ACTION_TONES: Record<string, string> = {
@@ -68,6 +70,7 @@ const ACTION_TONES: Record<string, string> = {
   PO_CANCEL:
     'border-red-300 bg-red-100 text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300',
   USER_STATUS: 'border-muted bg-muted text-muted-foreground',
+  USER_ROLE: 'border-muted bg-muted text-muted-foreground',
 }
 
 const MUTED_TONE = 'border-border bg-muted text-muted-foreground'

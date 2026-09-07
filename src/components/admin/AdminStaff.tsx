@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Bike, Loader2, Pill, UserPlus } from 'lucide-react'
+import { Bike, Loader2, Pencil, Pill, UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { fmtDate } from '@/lib/format'
@@ -26,9 +26,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 interface StaffFormState {
   name: string
   email: string
+  /** On edit this is a reset: blank means "keep the current password". */
   password: string
   phone: string
   role: 'PHARMACIST' | 'DELIVERY'
+  status: 'ACTIVE' | 'INACTIVE'
 }
 
 const EMPTY_STAFF_FORM: StaffFormState = {
@@ -37,9 +39,12 @@ const EMPTY_STAFF_FORM: StaffFormState = {
   password: '',
   phone: '',
   role: 'PHARMACIST',
+  status: 'ACTIVE',
 }
 
-function StaffList({ people }: { people: AuthUser[] }) {
+const EMAIL_RE = /^\S+@\S+\.\S+$/
+
+function StaffList({ people, onEdit }: { people: AuthUser[]; onEdit: (p: AuthUser) => void }) {
   if (people.length === 0) {
     return <p className="py-6 text-center text-sm text-muted-foreground">Nobody here yet.</p>
   }
@@ -56,13 +61,30 @@ function StaffList({ people }: { people: AuthUser[] }) {
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{p.name ?? 'Unnamed'}</p>
+            <div className="flex items-center gap-2">
+              <p className="truncate text-sm font-medium">{p.name ?? 'Unnamed'}</p>
+              {/* Deactivated accounts were previously indistinguishable in this list. */}
+              {p.status === 'INACTIVE' && (
+                <Badge variant="outline" className="shrink-0 border-amber-300 text-[10px] text-amber-700">
+                  Inactive
+                </Badge>
+              )}
+            </div>
             <p className="truncate text-xs text-muted-foreground">{p.email}</p>
           </div>
-          <div className="text-right">
+          <div className="hidden text-right sm:block">
             <p className="text-xs text-muted-foreground">{p.phone ?? '—'}</p>
             <p className="text-[11px] text-muted-foreground/70">Joined {fmtDate(p.createdAt)}</p>
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-9 shrink-0"
+            onClick={() => onEdit(p)}
+            aria-label={`Edit ${p.name ?? p.email}`}
+          >
+            <Pencil className="size-4" aria-hidden="true" />
+          </Button>
         </li>
       ))}
     </ul>
@@ -74,6 +96,8 @@ export default function AdminStaff() {
   const [deliveryStaff, setDeliveryStaff] = useState<AuthUser[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
+  /** null = creating a new account; otherwise the account being edited. */
+  const [editing, setEditing] = useState<AuthUser | null>(null)
   const [form, setForm] = useState<StaffFormState>(EMPTY_STAFF_FORM)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -97,40 +121,92 @@ export default function AdminStaff() {
     void load()
   }, [load])
 
-  async function createStaff() {
+  const openCreate = () => {
+    setEditing(null)
+    setForm(EMPTY_STAFF_FORM)
+    setError(null)
+    setDialogOpen(true)
+  }
+
+  const openEdit = (p: AuthUser) => {
+    setEditing(p)
+    setForm({
+      name: p.name ?? '',
+      email: p.email,
+      password: '',
+      phone: p.phone ?? '',
+      role: p.role === 'DELIVERY' ? 'DELIVERY' : 'PHARMACIST',
+      status: p.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+    })
+    setError(null)
+    setDialogOpen(true)
+  }
+
+  async function save() {
+    setError(null)
     if (!form.name.trim()) {
       setError('Name is required')
       return
     }
-    if (!form.email.trim() || !form.email.includes('@')) {
+    if (!EMAIL_RE.test(form.email.trim())) {
       setError('A valid email is required')
       return
     }
-    if (form.password.length < 6) {
+    // On create a password is mandatory; on edit it is a reset, so blank keeps the old one.
+    if (!editing && form.password.length < 6) {
       setError('Password must be at least 6 characters')
       return
     }
+    if (editing && form.password !== '' && form.password.length < 6) {
+      setError('New password must be at least 6 characters')
+      return
+    }
+
     setSaving(true)
     try {
-      await api<{ user: AuthUser }>('/api/admin', {
-        method: 'PUT',
-        body: {
-          action: 'create-staff',
-          data: {
-            name: form.name.trim(),
-            email: form.email.trim(),
-            password: form.password,
-            phone: form.phone.trim() || undefined,
-            role: form.role,
+      if (editing) {
+        await api<{ user: AuthUser }>('/api/admin', {
+          method: 'PUT',
+          body: {
+            action: 'update-staff',
+            id: editing.id,
+            data: {
+              name: form.name.trim(),
+              email: form.email.trim(),
+              phone: form.phone.trim(),
+              role: form.role,
+              status: form.status,
+              ...(form.password ? { password: form.password } : {}),
+            },
           },
-        },
-      })
-      toast.success(`${form.role === 'PHARMACIST' ? 'Pharmacist' : 'Delivery staff'} account created`)
+        })
+        toast.success(`${form.name.trim()} updated`)
+      } else {
+        await api<{ user: AuthUser }>('/api/admin', {
+          method: 'PUT',
+          body: {
+            action: 'create-staff',
+            data: {
+              name: form.name.trim(),
+              email: form.email.trim(),
+              password: form.password,
+              phone: form.phone.trim() || undefined,
+              role: form.role,
+            },
+          },
+        })
+        toast.success(
+          `${form.role === 'PHARMACIST' ? 'Pharmacist' : 'Delivery staff'} account created`
+        )
+      }
       setDialogOpen(false)
+      setEditing(null)
       setForm(EMPTY_STAFF_FORM)
       void load()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to create staff account')
+      // The server rejects things the form cannot know about — a duplicate email, or a
+      // rider still carrying orders. Show it inline, where the fields are.
+      setError(e instanceof Error ? e.message : 'Failed to save staff account')
     } finally {
       setSaving(false)
     }
@@ -139,7 +215,7 @@ export default function AdminStaff() {
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <Button onClick={() => setDialogOpen(true)}>
+        <Button onClick={openCreate}>
           <UserPlus className="h-4 w-4" /> Add Staff
         </Button>
       </div>
@@ -166,7 +242,7 @@ export default function AdminStaff() {
               <CardDescription>Review prescriptions and manage the catalog</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
-              <StaffList people={pharmacists} />
+              <StaffList people={pharmacists} onEdit={openEdit} />
             </CardContent>
           </Card>
 
@@ -184,19 +260,21 @@ export default function AdminStaff() {
               <CardDescription>Assigned to outgoing orders</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
-              <StaffList people={deliveryStaff} />
+              <StaffList people={deliveryStaff} onEdit={openEdit} />
             </CardContent>
           </Card>
         </div>
       )}
 
-      {/* Add staff dialog */}
+      {/* One dialog for both create and edit — the same fields govern both. */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add staff account</DialogTitle>
+            <DialogTitle>{editing ? 'Edit staff account' : 'Add staff account'}</DialogTitle>
             <DialogDescription>
-              Create a pharmacist or delivery account. Share the credentials with the team member.
+              {editing
+                ? 'Update details, move them between roles, or deactivate the account.'
+                : 'Create a pharmacist or delivery account. Share the credentials with the team member.'}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -220,13 +298,14 @@ export default function AdminStaff() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="staff-password">Password *</Label>
+              <Label htmlFor="staff-password">{editing ? 'New password' : 'Password *'}</Label>
               <Input
                 id="staff-password"
                 type="password"
+                autoComplete="new-password"
                 value={form.password}
                 onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                placeholder="Min 6 characters"
+                placeholder={editing ? 'Leave blank to keep current' : 'Min 6 characters'}
               />
             </div>
             <div className="space-y-1.5">
@@ -238,30 +317,59 @@ export default function AdminStaff() {
                 placeholder="+880..."
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="staff-role">Role</Label>
-              <Select
-                value={form.role}
-                onValueChange={(v) => setForm((f) => ({ ...f, role: v as StaffFormState['role'] }))}
-              >
-                <SelectTrigger id="staff-role" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="PHARMACIST">Pharmacist</SelectItem>
-                  <SelectItem value="DELIVERY">Delivery</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="staff-role">Role</Label>
+                <Select
+                  value={form.role}
+                  onValueChange={(v) => setForm((f) => ({ ...f, role: v as StaffFormState['role'] }))}
+                >
+                  <SelectTrigger id="staff-role" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PHARMACIST">Pharmacist</SelectItem>
+                    <SelectItem value="DELIVERY">Delivery</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* Status is only meaningful once the account exists — create always makes
+                  an ACTIVE one, matching the create-staff endpoint. */}
+              {editing && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="staff-status">Status</Label>
+                  <Select
+                    value={form.status}
+                    onValueChange={(v) =>
+                      setForm((f) => ({ ...f, status: v as StaffFormState['status'] }))
+                    }
+                  >
+                    <SelectTrigger id="staff-status" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ACTIVE">Active</SelectItem>
+                      <SelectItem value="INACTIVE">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
+            {editing && form.status === 'INACTIVE' && (
+              <p className="text-xs text-muted-foreground">
+                An inactive account cannot sign in. Existing sessions stop working on their next
+                request.
+              </p>
+            )}
             {error && <p className="text-sm font-medium text-red-600">{error}</p>}
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={() => void createStaff()} disabled={saving}>
+            <Button onClick={() => void save()} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              Create account
+              {editing ? 'Save changes' : 'Create account'}
             </Button>
           </DialogFooter>
         </DialogContent>

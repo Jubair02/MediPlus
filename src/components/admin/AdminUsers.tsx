@@ -8,16 +8,6 @@ import { downloadCsv } from '@/lib/download'
 import { useAppStore } from '@/lib/store'
 import { fmtDate } from '@/lib/format'
 import type { AuthUser, Role } from '@/lib/types'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -43,7 +33,6 @@ export default function AdminUsers() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('ALL')
-  const [pendingRole, setPendingRole] = useState<{ user: AuthUser; role: Role } | null>(null)
   const [rowPending, setRowPending] = useState<string | null>(null)
   const [exportPending, setExportPending] = useState(false)
 
@@ -88,25 +77,6 @@ export default function AdminUsers() {
       toast.error(e instanceof Error ? e.message : 'Failed to export users')
     } finally {
       setExportPending(false)
-    }
-  }
-
-  async function applyRole(change: { user: AuthUser; role: Role }) {
-    setRowPending(change.user.id)
-    try {
-      await api<{ user: AuthUser }>('/api/admin', {
-        method: 'PUT',
-        body: { action: 'update-user', id: change.user.id, role: change.role },
-      })
-      setUsers((prev) =>
-        prev.map((u) => (u.id === change.user.id ? { ...u, role: change.role } : u))
-      )
-      toast.success(`${change.user.name ?? change.user.email} is now ${ROLE_LABELS[change.role]}`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to update role')
-    } finally {
-      setRowPending(null)
-      setPendingRole(null)
     }
   }
 
@@ -230,24 +200,10 @@ export default function AdminUsers() {
                           {u.phone ?? '—'}
                         </TableCell>
                         <TableCell>
-                          <Select
-                            value={u.role}
-                            disabled={self || rowPending === u.id}
-                            onValueChange={(v) =>
-                              setPendingRole({ user: u, role: v as Role })
-                            }
-                          >
-                            <SelectTrigger className="h-8 w-[140px] text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {ROLES.map((r) => (
-                                <SelectItem key={r} value={r}>
-                                  {ROLE_LABELS[r]}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          {/* Read-only: roles are not editable from the Users page. */}
+                          <Badge variant="secondary" className="text-xs font-medium">
+                            {ROLE_LABELS[u.role]}
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-center">
                           <Switch
@@ -269,29 +225,6 @@ export default function AdminUsers() {
           </div>
         </CardContent>
       </Card>
-
-      {/* Role change confirm */}
-      <AlertDialog open={pendingRole !== null} onOpenChange={(o) => !o && setPendingRole(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Change user role?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingRole &&
-                `${pendingRole.user.name ?? pendingRole.user.email} will become ${ROLE_LABELS[pendingRole.role]}. Access changes immediately.`}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={rowPending !== null}
-              onClick={() => pendingRole && void applyRole(pendingRole)}
-            >
-              {(rowPending !== null) && <Loader2 className="h-4 w-4 animate-spin" />}
-              Confirm change
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }

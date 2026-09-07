@@ -139,11 +139,16 @@ export default function DashboardSidebar<T extends string>({
           collapsed ? 'w-[4.25rem] px-2 py-3' : 'w-60 p-3'
         )}
       >
-        {!collapsed && (
-          <p className="px-2 pb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {title}
-          </p>
-        )}
+        {/* Constant-height slot. The label is dropped in the rail, but its space is kept:
+            unmounting it outright lifted every nav icon by 28px on collapse, so the icons
+            jumped up and sat hard against the header. */}
+        <div className="mb-3 flex h-4 items-center px-2">
+          {!collapsed && (
+            <p className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {title}
+            </p>
+          )}
+        </div>
         {nav(collapsed)}
         {!collapsed && footer && <div className="mt-auto pt-3">{footer}</div>}
       </aside>

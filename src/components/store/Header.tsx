@@ -546,7 +546,19 @@ export default function Header() {
       )}
 
       {/* Main row */}
-      <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-3 sm:gap-3 sm:px-4 lg:px-6">
+      <div
+        className={cn(
+          'flex h-16 items-center gap-2 sm:gap-3',
+          sidebarView
+            ? // A dashboard is full-bleed, so the header must be too. Centring this row at
+              // max-w-7xl left the logo and the sidebar toggle stranded in the middle of
+              // the content area — 344px right of the sidebar at 1920px, 664px at 2560px.
+              // pl-3 matches the sidebar's p-3, so the toggle button and the nav buttons
+              // below it share one left edge.
+              'w-full pl-3 pr-3 sm:pr-4 lg:pr-6'
+            : 'mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6'
+        )}
+      >
         {/* On a dashboard the first control drives that panel's sidebar: it opens the
             drawer on mobile and collapses the rail on desktop. Elsewhere it is the
             storefront menu. Only ever one control, so there is never a second hamburger

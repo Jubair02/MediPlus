@@ -317,6 +317,7 @@ export type AuditAction =
   | 'PO_RECEIVE'
   | 'PO_CANCEL'
   | 'USER_STATUS'
+  | 'USER_ROLE'
 
 /** GET /api/admin?resource=audit-logs — one row per audit entry */
 export interface AuditLogRow {

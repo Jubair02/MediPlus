@@ -68,9 +68,12 @@ const ORDER_TERMINAL_STATUSES = ['DELIVERED', 'CANCELLED', 'FAILED']
 const PAYMENT_METHODS = ['COD', 'BKASH_DEMO']
 const PAYMENTS_PAGE_SIZE = 20
 const ROLES = ['CUSTOMER', 'PHARMACIST', 'ADMIN', 'DELIVERY']
+const STAFF_EMAIL_RE = /^\S+@\S+\.\S+$/
+/** A rider holding one of these cannot be moved off the role or switched off. */
+const IN_FLIGHT_DELIVERY = ['PROCESSING', 'OUT_FOR_DELIVERY']
 const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
 /** Round 10 — audit log filter values + page size. */
-const AUDIT_ACTIONS = ['PAYMENT_STATUS', 'ORDER_STATUS', 'RX_REVIEW', 'PO_CREATE', 'PO_RECEIVE', 'PO_CANCEL', 'USER_STATUS']
+const AUDIT_ACTIONS = ['PAYMENT_STATUS', 'ORDER_STATUS', 'RX_REVIEW', 'PO_CREATE', 'PO_RECEIVE', 'PO_CANCEL', 'USER_STATUS', 'USER_ROLE']
 const AUDIT_PAGE_SIZE = 20
 
 function dayKey(d: Date): string {
@@ -850,12 +853,13 @@ export async function GET(request: Request) {
 
 /**
  * PUT /api/admin
- *  {action:'update-user', id, status?, role?}          — status change writes a USER_STATUS audit entry
+ *  {action:'update-user', id, status}                   — status only; roles are not editable. Writes a USER_STATUS audit entry
  *  {action:'create-medicine'|'update-medicine'|'delete-medicine', ...} — data.extraImages optional gallery urls (Round 11)
  *  {action:'create-category'|'update-category'|'delete-category', ...}
  *  {action:'update-order', id, status?, deliveryStaffId?} — status change writes an ORDER_STATUS audit entry
  *  {action:'payment-status', orderId, status: PENDING|PAID|FAILED|REFUNDED} — writes a PAYMENT_STATUS audit entry
  *  {action:'create-staff', data:{name,email,password,phone?,role}}
+ *  {action:'update-staff', id, data:{name?,email?,phone?,role?,status?,password?}} — password omitted/blank keeps the current one
  *  {action:'create-coupon', coupon:{code,type,value,minAmount?,maxDiscount?,expiresAt?,isActive?}}
  *  {action:'update-coupon', id, coupon:{...partial coupon fields}}
  *  {action:'delete-coupon', id}
@@ -875,21 +879,18 @@ export async function PUT(request: Request) {
       const target = await db.user.findUnique({ where: { id } })
       if (!target) return notFound('User not found')
       const status = optStr(body.status)
-      const role = optStr(body.role)
-      if (status && status !== 'ACTIVE' && status !== 'INACTIVE') return badRequest('Status must be ACTIVE or INACTIVE')
-      if (role && !ROLES.includes(role)) return badRequest('Invalid role')
-      if (target.id === user.id) {
-        if (role && role !== target.role) return badRequest('You cannot change your own role')
-        if (status && status !== target.status) return badRequest('You cannot deactivate your own account')
+      // Roles are immutable here — assign staff roles at creation (`create-staff`) instead.
+      if (optStr(body.role) !== undefined) return badRequest('User roles cannot be changed')
+      if (!status) return badRequest('Status is required')
+      if (status !== 'ACTIVE' && status !== 'INACTIVE') return badRequest('Status must be ACTIVE or INACTIVE')
+      if (target.id === user.id && status !== target.status) {
+        return badRequest('You cannot deactivate your own account')
       }
       const updated = await db.user.update({
         where: { id },
-        data: {
-          ...(status ? { status } : {}),
-          ...(role ? { role } : {}),
-        },
+        data: { status },
       })
-      if (status && status !== target.status) {
+      if (status !== target.status) {
         await logAudit(db, user, {
           action: 'USER_STATUS',
           entityType: 'USER',
@@ -917,6 +918,101 @@ export async function PUT(request: Request) {
         data: { name, email, password: await hashPassword(password), phone: phone || null, role, status: 'ACTIVE' },
       })
       return Response.json({ user: publicUser(created) }, { status: 201 })
+    }
+
+    /**
+     * Full edit for a staff account: identity, contact, role, status, and an optional
+     * password reset (staff lose theirs and an admin has to be able to reissue one).
+     *
+     * Scoped to the two roles the Staff screen lists: a role may only move between
+     * PHARMACIST and DELIVERY here. Crossing into ADMIN is not possible from any
+     * screen — Users is read-only for roles, and allowing it here would quietly turn
+     * a staff editor into a privilege-escalation path. ADMIN and CUSTOMER accounts
+     * are not editable through this action at all.
+     */
+    if (action === 'update-staff') {
+      const id = optStr(body.id)
+      if (!id) return badRequest('Staff id is required')
+      const data = (typeof body.data === 'object' && body.data !== null ? body.data : {}) as Record<string, unknown>
+
+      const target = await db.user.findUnique({ where: { id } })
+      if (!target) return notFound('Staff account not found')
+      if (target.role !== 'PHARMACIST' && target.role !== 'DELIVERY') {
+        return badRequest('Only pharmacist and delivery accounts can be edited here')
+      }
+      if (target.id === user.id) return badRequest('Edit your own account from your profile')
+
+      const name = optStr(data.name)?.trim()
+      const email = optStr(data.email)?.trim().toLowerCase()
+      const phone = data.phone === undefined ? undefined : optStr(data.phone)?.trim() || null
+      const role = optStr(data.role)
+      const status = optStr(data.status)
+      const password = optStr(data.password)
+
+      if (name !== undefined && !name) return badRequest('Name cannot be empty')
+      if (email !== undefined) {
+        if (!STAFF_EMAIL_RE.test(email)) return badRequest('Please enter a valid email')
+        // email is @unique, so a clash would surface as a raw P2002 500 without this.
+        if (email !== target.email) {
+          const clash = await db.user.findUnique({ where: { email } })
+          if (clash) return badRequest('Another account already uses this email')
+        }
+      }
+      if (role !== undefined && role !== 'PHARMACIST' && role !== 'DELIVERY') {
+        return badRequest('Role must be PHARMACIST or DELIVERY')
+      }
+      if (status !== undefined && status !== 'ACTIVE' && status !== 'INACTIVE') {
+        return badRequest('Status must be ACTIVE or INACTIVE')
+      }
+      if (password !== undefined && password !== '' && password.length < 6) {
+        return badRequest('Password must be at least 6 characters')
+      }
+
+      // Moving a rider off DELIVERY, or switching them off, strands whatever they are
+      // carrying: update-order only accepts a DELIVERY assignee, and an INACTIVE user
+      // cannot sign in to close the run. Make the admin reassign first.
+      const losesDeliveryDuty =
+        target.role === 'DELIVERY' && ((role !== undefined && role !== 'DELIVERY') || status === 'INACTIVE')
+      if (losesDeliveryDuty) {
+        const inFlight = await db.order.count({
+          where: { deliveryStaffId: target.id, status: { in: IN_FLIGHT_DELIVERY } },
+        })
+        if (inFlight > 0) {
+          return badRequest(
+            `Reassign ${inFlight} in-flight ${inFlight === 1 ? 'order' : 'orders'} before changing this account`
+          )
+        }
+      }
+
+      const updated = await db.user.update({
+        where: { id },
+        data: {
+          ...(name !== undefined ? { name } : {}),
+          ...(email !== undefined ? { email } : {}),
+          ...(phone !== undefined ? { phone } : {}),
+          ...(role !== undefined ? { role } : {}),
+          ...(status !== undefined ? { status } : {}),
+          ...(password ? { password: await hashPassword(password) } : {}),
+        },
+      })
+
+      if (status && status !== target.status) {
+        await logAudit(db, user, {
+          action: 'USER_STATUS',
+          entityType: 'USER',
+          entityRef: target.email,
+          detail: `User status set to ${status}`,
+        })
+      }
+      if (role && role !== target.role) {
+        await logAudit(db, user, {
+          action: 'USER_ROLE',
+          entityType: 'USER',
+          entityRef: target.email,
+          detail: `Role changed from ${target.role} to ${role}`,
+        })
+      }
+      return Response.json({ user: publicUser(updated) })
     }
 
     // ---- medicines (data.extraImages optional: ≤5 data:/http(s): urls; on update key present = REPLACE-ALL, absent = untouched) ----
