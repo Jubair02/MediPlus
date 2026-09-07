@@ -20,9 +20,7 @@ import ProfileView from '@/components/store/ProfileView'
 import AuthModal from '@/components/store/AuthModal'
 import MedicineDetailModal from '@/components/store/MedicineDetailModal'
 import BackToTop from '@/components/store/BackToTop'
-import AdminDashboard from '@/components/admin/AdminDashboard'
-import PharmacistDashboard from '@/components/pharmacist/PharmacistDashboard'
-import DeliveryDashboard from '@/components/delivery/DeliveryDashboard'
+import Dashboard from '@/components/dashboard/Dashboard'
 
 export default function Page() {
   const hydrated = useAppStore((s) => s.hydrated)
@@ -106,12 +104,12 @@ export default function Page() {
         return <NotificationsView />
       case 'profile':
         return <ProfileView />
+      // One dashboard for every staff role. Which sections it offers comes from the
+      // registry, keyed on the signed-in role; effectiveView has already gated access.
       case 'admin':
-        return <AdminDashboard />
       case 'pharmacist':
-        return <PharmacistDashboard />
       case 'delivery':
-        return <DeliveryDashboard />
+        return <Dashboard />
       case 'home':
       default:
         return <HomeView />

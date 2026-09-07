@@ -73,6 +73,14 @@ export const ROLE_DASHBOARD: Partial<Record<Role, View>> = {
   DELIVERY: 'delivery',
 }
 
+/** Human name for a role, for identity chips and captions. */
+export const ROLE_LABEL: Record<Role, string> = {
+  CUSTOMER: 'Customer',
+  ADMIN: 'Admin',
+  PHARMACIST: 'Pharmacist',
+  DELIVERY: 'Delivery',
+}
+
 export const DASHBOARD_LABEL: Partial<Record<Role, string>> = {
   ADMIN: 'Admin dashboard',
   PHARMACIST: 'Pharmacist dashboard',

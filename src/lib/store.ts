@@ -44,6 +44,11 @@ interface AppState {
   detailMedicine: Medicine | null
   filters: CatalogFilters
   successOrderNo: string | null
+  /** Desktop: dashboard sidebar shown as a narrow icon rail. Remembered between visits. */
+  sidebarCollapsed: boolean
+  /** Mobile: dashboard sidebar drawer is open. Deliberately not persisted — it must
+   *  never restore open on a fresh load. */
+  sidebarOpen: boolean
 
   login: (token: string, user: AuthUser) => void
   logout: () => void
@@ -57,6 +62,8 @@ interface AppState {
   setFilters: (f: Partial<CatalogFilters>) => void
   resetFilters: () => void
   setSuccessOrderNo: (orderNo: string | null) => void
+  toggleSidebarCollapsed: () => void
+  setSidebarOpen: (open: boolean) => void
 }
 
 const defaultFilters: CatalogFilters = {
@@ -81,6 +88,8 @@ export const useAppStore = create<AppState>()(
       detailMedicine: null,
       filters: defaultFilters,
       successOrderNo: null,
+      sidebarCollapsed: false,
+      sidebarOpen: false,
 
       login: (token, user) => {
         setToken(token)
@@ -89,7 +98,7 @@ export const useAppStore = create<AppState>()(
       },
       logout: () => {
         setToken(null)
-        set({ user: null, view: 'home', cartCount: 0, wishlistIds: [], successOrderNo: null })
+        set({ user: null, view: 'home', cartCount: 0, wishlistIds: [], successOrderNo: null, sidebarOpen: false })
       },
       setUser: (user) =>
         set((s) => ({
@@ -103,6 +112,7 @@ export const useAppStore = create<AppState>()(
       setView: (view) =>
         set((s) => ({
           view: canAccessView(s.user?.role ?? null, view) ? view : fallbackViewFor(s.user?.role ?? null),
+          sidebarOpen: false,
         })),
       setAuthOpen: (authOpen) => set({ authOpen }),
       setCartCount: (cartCount) => set({ cartCount }),
@@ -122,11 +132,14 @@ export const useAppStore = create<AppState>()(
       setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
       resetFilters: () => set({ filters: defaultFilters }),
       setSuccessOrderNo: (successOrderNo) => set({ successOrderNo }),
+      toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+      setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
     }),
     {
       name: 'medplus-store',
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ user: state.user, view: state.view }) as AppState,
+      partialize: (state) =>
+        ({ user: state.user, view: state.view, sidebarCollapsed: state.sidebarCollapsed }) as AppState,
       // Deferred hydration: nothing is read from localStorage until something calls
       // `useAppStore.persist.rehydrate()`, which src/app/page.tsx does from a mount
       // effect. That keeps the first client render identical to the server's.
@@ -147,6 +160,10 @@ export const useAppStore = create<AppState>()(
           ...merged,
           hydrated: true,
           view: canAccessView(role, merged.view) ? merged.view : fallbackViewFor(role),
+          // partialize does not write this, but merge spreads whatever is actually in
+          // storage — a stale or hand-edited blob would otherwise restore the mobile
+          // drawer open, covering the page on first paint.
+          sidebarOpen: false,
         }
       },
       onRehydrateStorage: () => (_state, error) => {

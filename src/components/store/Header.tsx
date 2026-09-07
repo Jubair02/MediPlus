@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowRight,
@@ -13,6 +14,7 @@ import {
   LogIn,
   LogOut,
   Menu,
+  PanelLeft,
   Moon,
   Package,
   Pill,
@@ -25,7 +27,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
-import { canAccessView, isCustomer, DASHBOARD_LABEL, ROLE_DASHBOARD, type View } from '@/lib/rbac'
+import { canAccessView, isCustomer, ROLE_LABEL, ROLE_DASHBOARD, type View } from '@/lib/rbac'
 import { effectivePrice, fmtBDT, fmtDateTime } from '@/lib/format'
 import type { AuthUser, Medicine, NotificationItem } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
@@ -442,7 +444,30 @@ export default function Header() {
     setSearch(filters.search)
   }
 
+  const headerRef = useRef<HTMLElement>(null)
+  const isMobile = useIsMobile()
+  const toggleSidebarCollapsed = useAppStore((s) => s.toggleSidebarCollapsed)
+  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen)
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
+  const sidebarOpen = useAppStore((s) => s.sidebarOpen)
+
+  // Dashboards pin their sidebar below the header. The header is not a fixed 64px —
+  // the announcement bar appears at sm and up, and it wraps on narrow screens — so
+  // publish the measured height instead of letting layouts hardcode a guess.
+  useEffect(() => {
+    const el = headerRef.current
+    if (!el) return
+    const publish = () =>
+      document.documentElement.style.setProperty('--header-h', `${el.getBoundingClientRect().height}px`)
+    publish()
+    const ro = new ResizeObserver(publish)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   const dashboardView = user ? ROLE_DASHBOARD[user.role] : undefined
+  // Panels that own a sidebar; the header hosts its toggle.
+  const sidebarView = view === 'admin' || view === 'pharmacist' || view === 'delivery'
   // Staff accounts do not shop: hide cart, wishlist and the customer account links.
   // Signed-out visitors keep them — they browse and get the sign-in prompt.
   const showShopperUi = !user || isCustomer(user.role)
@@ -512,18 +537,51 @@ export default function Header() {
   }, [])
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-card/90 backdrop-blur">
-      {/* Announcement bar */}
-      <div className="hidden bg-emerald-600 py-1.5 text-center text-xs font-medium text-white sm:block">
-        Free delivery on orders over {fmtBDT(2000)} · Use code SAVE10 for 10% off
-      </div>
+    <header ref={headerRef} className="sticky top-0 z-40 border-b bg-card/90 backdrop-blur">
+      {/* Announcement bar — shoppers only. A staff console gets a plain 64px bar. */}
+      {showShopperUi && (
+        <div className="hidden bg-emerald-600 py-1.5 text-center text-xs font-medium text-white sm:block">
+          Free delivery on orders over {fmtBDT(2000)} · Use code SAVE10 for 10% off
+        </div>
+      )}
 
       {/* Main row */}
       <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-3 sm:gap-3 sm:px-4 lg:px-6">
+        {/* On a dashboard the first control drives that panel's sidebar: it opens the
+            drawer on mobile and collapses the rail on desktop. Elsewhere it is the
+            storefront menu. Only ever one control, so there is never a second hamburger
+            competing for the same corner. */}
+        {sidebarView && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-11 shrink-0"
+            aria-label={
+              isMobile
+                ? sidebarOpen
+                  ? 'Close navigation'
+                  : 'Open navigation'
+                : sidebarCollapsed
+                  ? 'Expand sidebar'
+                  : 'Collapse sidebar'
+            }
+            aria-expanded={isMobile ? sidebarOpen : !sidebarCollapsed}
+            aria-controls="dashboard-sidebar"
+            onClick={() => (isMobile ? setSidebarOpen(!sidebarOpen) : toggleSidebarCollapsed())}
+          >
+            <PanelLeft className="size-5" aria-hidden="true" />
+          </Button>
+        )}
+
         {/* Mobile menu */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" className="md:hidden" aria-label="Open menu">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn('md:hidden', sidebarView && 'hidden')}
+              aria-label="Open menu"
+            >
               <Menu className="size-5" aria-hidden="true" />
             </Button>
           </SheetTrigger>
@@ -558,7 +616,7 @@ export default function Header() {
                     className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-muted-foreground transition-colors hover:text-primary"
                   >
                     <LayoutDashboard className="size-4" aria-hidden="true" />
-                    {user ? DASHBOARD_LABEL[user.role] : null}
+                    Dashboard
                   </button>
                 )}
               </nav>
@@ -614,10 +672,24 @@ export default function Header() {
           <span className="text-lg font-bold tracking-tight">MediPlus</span>
         </button>
 
-        {/* Desktop nav */}
-        <nav className="hidden items-center md:flex" aria-label="Main navigation">
-          <NavLinks user={user} view={view} go={go} />
-        </nav>
+        {/* Desktop nav — storefront links only; staff navigate from their sidebar. */}
+        {showShopperUi && (
+          <nav className="hidden items-center md:flex" aria-label="Main navigation">
+            <NavLinks user={user} view={view} go={go} />
+          </nav>
+        )}
+
+        {/* Workspace label. Identifies which console you are in, and its mr-auto is what
+            pushes the actions right — the search block does that job for shoppers, and
+            staff have no search, which is why their bar used to bunch up on the left. */}
+        {user && !showShopperUi && (
+          <div className="mr-auto hidden min-w-0 items-center gap-3 md:flex">
+            <span className="h-5 w-px shrink-0 bg-border" aria-hidden="true" />
+            <span className="truncate text-sm font-medium text-muted-foreground">
+              {ROLE_LABEL[user.role]}
+            </span>
+          </div>
+        )}
 
         {/* Search (desktop) — storefront only; staff search inside their dashboard */}
         {showShopperUi && (
@@ -766,6 +838,14 @@ export default function Header() {
                       {(user.name?.[0] ?? user.email[0] ?? 'U').toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
+                  {/* Staff consoles have the room, and DELIVERY has no sidebar to carry
+                      an identity card — so name the signed-in operator here. A shopper's
+                      bar already holds search, cart and wishlist, so it stays icon-only. */}
+                  {!showShopperUi && (
+                    <span className="hidden max-w-[10rem] truncate text-sm font-medium lg:inline">
+                      {user.name ?? user.email}
+                    </span>
+                  )}
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
@@ -777,7 +857,7 @@ export default function Header() {
                 {dashboardView && (
                   <DropdownMenuItem onClick={() => setView(dashboardView)}>
                     <LayoutDashboard className="size-4" aria-hidden="true" />
-                    {DASHBOARD_LABEL[user.role]}
+                    Dashboard
                   </DropdownMenuItem>
                 )}
                 {showShopperUi && (

@@ -37,9 +37,10 @@ import {
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import type { PanelProps } from '../Dashboard'
+import PanelTransition from '../PanelTransition'
 import { Textarea } from '@/components/ui/textarea'
-import MedImage from './MedImage'
+import MedImage from '@/components/delivery/MedImage'
 
 const STATUS_TONES: Record<string, string> = {
   PENDING: 'bg-amber-100 text-amber-800 border-amber-300',
@@ -234,7 +235,14 @@ function RoutePlanPanel({ groups }: { groups: RouteGroup[] }) {
   )
 }
 
-export default function DeliveryDashboard() {
+/**
+ * Panel bodies for DELIVERY.
+ *
+ * Both sections are served by this one component because they share a single load and a
+ * single set of dialogs — splitting them would mean fetching the same data twice. The
+ * stats strip stays above the switch: it summarises both sections.
+ */
+export default function DeliveryPanels({ sectionId }: PanelProps) {
   const user = useAppStore((s) => s.user)
   const setAuthOpen = useAppStore((s) => s.setAuthOpen)
   const [active, setActive] = useState<Order[]>([])
@@ -354,7 +362,7 @@ export default function DeliveryDashboard() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4 md:space-y-6 md:p-6">
+    <div className="mx-auto max-w-5xl space-y-4 md:space-y-6">
       {/* Hero strip */}
       <section className="rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 p-5 text-white md:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -387,14 +395,8 @@ export default function DeliveryDashboard() {
         </div>
       </section>
 
-      <Tabs defaultValue="active">
-        <TabsList className="grid w-full max-w-sm grid-cols-2">
-          <TabsTrigger value="active">Active Orders</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
-        </TabsList>
-
-        {/* Active orders */}
-        <TabsContent value="active" className="mt-4">
+      <PanelTransition sectionId={sectionId}>
+        {sectionId === 'dlv:active' && (
           <motion.div
             className="space-y-4"
             initial={{ opacity: 0, y: 8 }}
@@ -534,11 +536,11 @@ export default function DeliveryDashboard() {
               </div>
             )}
           </motion.div>
-        </TabsContent>
+        )}
 
-        {/* History */}
-        <TabsContent value="history" className="mt-4">
-          {loading ? (
+        {sectionId === 'dlv:history' && (
+          <>
+            {loading ? (
             <Skeleton className="h-72 w-full rounded-xl" />
           ) : history.length === 0 ? (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed py-12 text-center">
@@ -597,9 +599,10 @@ export default function DeliveryDashboard() {
                 </div>
               </CardContent>
             </Card>
-          )}
-        </TabsContent>
-      </Tabs>
+            )}
+          </>
+        )}
+      </PanelTransition>
 
       {/* Delivered confirmation — see `deliverTarget` */}
       <Dialog open={deliverTarget !== null} onOpenChange={(o) => !o && setDeliverTarget(null)}>
