@@ -91,10 +91,36 @@ export interface ReviewSummary {
   distribution: { rating: number; count: number }[]
 }
 
+/**
+ * Every reason a stock movement can carry, and the single source of truth for them.
+ *
+ * This list exists because the Stock Log's own filter drifted out of sync with the
+ * writers: PO_RECEIVE — the main way stock arrives — was recorded by the receive path
+ * but missing from the UI's reason list, so those rows rendered with a raw enum label
+ * and could not be filtered for at all. Anything that displays or filters reasons now
+ * derives from here, so a new reason cannot go missing again.
+ *
+ * OPENING is written only by the reconciliation backfill and by the seed; it is the
+ * balance a medicine started with, so that SUM(delta) equals stock for every row.
+ */
+export const STOCK_MOVEMENT_REASONS = [
+  'OPENING',
+  'PO_RECEIVE',
+  'ORDER_CONFIRM',
+  'RX_APPROVE',
+  'ORDER_CANCEL',
+  'MANUAL_EDIT',
+  'SEED',
+] as const
+
+export type StockMovementReason = (typeof STOCK_MOVEMENT_REASONS)[number]
+
 export interface StockMovementItem {
   id: string
-  delta: number
+  // Stays a plain string: historic rows may carry a reason no longer in the list
+  // above, and the Stock Log must render them rather than crash on them.
   reason: string
+  delta: number
   note?: string | null
   createdAt: string
   medicine?: { id: string; name: string; image?: string | null; unit?: string } | null
@@ -283,12 +309,20 @@ export interface RestockSuggestion {
 
 // ---------- Purchase orders (Round 10) ----------
 
-export type PurchaseOrderStatus = 'ORDERED' | 'RECEIVED' | 'CANCELLED'
+// PARTIALLY_RECEIVED added in Phase 2 alongside PurchaseOrderReceipt: a purchase
+// order can now be received across several deliveries. Nothing writes it until the
+// receive path learns partial quantities, but the type has to admit it from the
+// moment the column can hold it.
+export type PurchaseOrderStatus = 'ORDERED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED'
 
 /** GET /api/pharmacist?resource=purchase-orders — one row per PO */
 export interface PurchaseOrderRow {
   id: string
   qty: number
+  /** Units booked in so far, across every delivery against this order. */
+  receivedQty: number
+  /** qty − receivedQty, never negative. What a receive dialog defaults to and caps at. */
+  remainingQty: number
   status: PurchaseOrderStatus
   note: string | null
   supplier: string | null
@@ -309,10 +343,21 @@ export interface PurchaseOrdersData {
 
 // ---------- Audit log (Round 10) ----------
 
+/**
+ * Kept in step with AUDIT_ACTIONS in the admin route (which filters them) and
+ * ACTION_FILTERS/ACTION_LABELS/ACTION_TONES in AdminAuditLog (which renders them).
+ * All four must list the same values — the audit log's filter is the one place a
+ * missing action is invisible until somebody goes looking for a record that is there.
+ */
 export type AuditAction =
   | 'PAYMENT_STATUS'
   | 'ORDER_STATUS'
   | 'RX_REVIEW'
+  | 'SR_CREATE'
+  | 'SR_SUBMIT'
+  | 'SR_REVIEW'
+  | 'SR_CONVERT'
+  | 'SR_CANCEL'
   | 'PO_CREATE'
   | 'PO_RECEIVE'
   | 'PO_CANCEL'
@@ -397,4 +442,22 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   DELIVERED: [],
   CANCELLED: [],
   FAILED: [],
+}
+
+/**
+ * Legal purchase order status transitions, in the same spirit as ORDER_TRANSITIONS.
+ *
+ * PARTIALLY_RECEIVED → PARTIALLY_RECEIVED is deliberately legal: the third of five
+ * deliveries is a valid move to the same state. Cancelling a partially received order
+ * is legal too, and means "the supplier will not send the rest" — the units already
+ * booked in stay received, because they are physically on the shelf.
+ *
+ * Declared here in Phase 2 alongside the schema that permits the new value; the
+ * receive path starts enforcing it in Phase 4.
+ */
+export const PO_TRANSITIONS: Record<PurchaseOrderStatus, readonly PurchaseOrderStatus[]> = {
+  ORDERED: ['PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'],
+  PARTIALLY_RECEIVED: ['PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'],
+  RECEIVED: [],
+  CANCELLED: [],
 }

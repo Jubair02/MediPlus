@@ -24,6 +24,13 @@ import {
   type StockMovementEntry,
 } from '../_lib'
 import { ORDER_STATUS_LABELS, ORDER_TRANSITIONS, type OrderStatus } from '@/lib/types'
+import {
+  ExpiredMedicineError,
+  expiredSaleMessage,
+  isExpired,
+  notExpiredFilter,
+  startOfToday,
+} from '@/lib/expiry'
 
 const ORDER_STATUSES = ['PENDING', 'PRESCRIPTION_REVIEW', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'FAILED']
 
@@ -73,7 +80,7 @@ const STAFF_EMAIL_RE = /^\S+@\S+\.\S+$/
 const IN_FLIGHT_DELIVERY = ['PROCESSING', 'OUT_FOR_DELIVERY']
 const USER_SELECT = { id: true, name: true, email: true, phone: true, role: true, status: true, createdAt: true, updatedAt: true } as const
 /** Round 10 — audit log filter values + page size. */
-const AUDIT_ACTIONS = ['PAYMENT_STATUS', 'ORDER_STATUS', 'RX_REVIEW', 'PO_CREATE', 'PO_RECEIVE', 'PO_CANCEL', 'USER_STATUS', 'USER_ROLE']
+const AUDIT_ACTIONS = ['PAYMENT_STATUS', 'ORDER_STATUS', 'RX_REVIEW', 'SR_CREATE', 'SR_SUBMIT', 'SR_REVIEW', 'SR_CONVERT', 'SR_CANCEL', 'PO_CREATE', 'PO_RECEIVE', 'PO_CANCEL', 'USER_STATUS', 'USER_ROLE']
 const AUDIT_PAGE_SIZE = 20
 
 function dayKey(d: Date): string {
@@ -1233,6 +1240,17 @@ export async function PUT(request: Request) {
         STOCK_HELD_STATUSES.includes(order.status) &&
         STOCK_RELEASING_STATUSES.includes(status!)
       const refunding = changingStatus && STOCK_RELEASING_STATUSES.includes(status!) && wasPaid
+      const asOf = startOfToday()
+
+      // Confirming is the moment this order becomes a sale, so it is refused outright
+      // if any line has gone out of date — named, so the admin knows what to amend.
+      // Checked before the transaction because there is nothing here worth retrying.
+      if (takesStock) {
+        const expiredItems = order.items
+          .filter((item) => isExpired(item.medicine?.expiryDate, asOf))
+          .map((item) => item.name)
+        if (expiredItems.length > 0) return badRequest(expiredSaleMessage(expiredItems))
+      }
 
       // Stock, payment and the order row move together. Previously these were three
       // separate writes, so a failure between them left stock decremented against an
@@ -1250,12 +1268,27 @@ export async function PUT(request: Request) {
               }
               // Conditional decrement inside the transaction. A plain `decrement` with
               // the check done beforehand lets two concurrent confirms both pass the
-              // check and drive stock negative.
+              // check and drive stock negative. Expiry is claimed here too, so the
+              // check above cannot be outrun by a medicine going out of date.
               const decremented = await tx.medicine.updateMany({
-                where: { id: item.medicineId, stock: { gte: item.quantity } },
+                where: {
+                  id: item.medicineId,
+                  stock: { gte: item.quantity },
+                  ...notExpiredFilter(asOf),
+                },
                 data: { stock: { decrement: item.quantity } },
               })
-              if (decremented.count === 0) throw new InsufficientStockError(item.name)
+              if (decremented.count === 0) {
+                // The claim covers two conditions, so re-read the row to say which failed.
+                const current = await tx.medicine.findUnique({
+                  where: { id: item.medicineId },
+                  select: { expiryDate: true },
+                })
+                if (isExpired(current?.expiryDate, asOf)) {
+                  throw new ExpiredMedicineError([item.name])
+                }
+                throw new InsufficientStockError(item.name)
+              }
               movements.push({
                 medicineId: item.medicineId,
                 delta: -item.quantity,
@@ -1312,7 +1345,9 @@ export async function PUT(request: Request) {
           })
         })
       } catch (e) {
-        // A lost stock race is the caller's to retry, not a server fault.
+        // A lost stock race is the caller's to retry, not a server fault. An expired
+        // line is not retryable at all, but it is equally the caller's to fix.
+        if (e instanceof ExpiredMedicineError) return badRequest(e.message)
         if (e instanceof InsufficientStockError) return badRequest(e.message)
         throw e
       }

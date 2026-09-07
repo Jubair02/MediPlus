@@ -2,6 +2,7 @@
 import { Prisma } from '@prisma/client'
 import type { User } from '@prisma/client'
 import { db } from '@/lib/db'
+import { deriveItemProgressStatus, deriveRequestProgressStatus } from '@/lib/stock-request'
 
 // ---------- generic body / query / math helpers ----------
 
@@ -278,6 +279,36 @@ export function parseOrder(order: FullOrder | FullOrderRxImage, opts: { prescrip
 
 export async function notify(userId: string, title: string, message: string): Promise<void> {
   await db.notification.create({ data: { userId, title, message } })
+}
+
+/**
+ * Notify every active admin. Until stock requests existed, notifications only ever
+ * went to customers about their own orders — nothing told staff that something needed
+ * their attention, which is why an EMERGENCY request would otherwise sit unseen until
+ * somebody happened to open the right panel.
+ *
+ * Best-effort by design: a request must not fail to submit because a notification row
+ * could not be written, so callers pass the transaction client only when the notice is
+ * genuinely part of the unit of work.
+ */
+export async function notifyAdmins(
+  client: Prisma.TransactionClient | typeof db,
+  title: string,
+  message: string,
+  opts: { exceptUserId?: string } = {}
+): Promise<void> {
+  const admins = await client.user.findMany({
+    where: {
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      ...(opts.exceptUserId ? { id: { not: opts.exceptUserId } } : {}),
+    },
+    select: { id: true },
+  })
+  if (admins.length === 0) return
+  await client.notification.createMany({
+    data: admins.map((a) => ({ userId: a.id, title, message })),
+  })
 }
 
 // ---------- prescription approval expiry (Round 10) ----------
@@ -605,6 +636,61 @@ export interface StockMovementEntry {
   reason: string
   note?: string | null
   userId?: string | null
+}
+
+/**
+ * Roll a stock request forward after a delivery lands against one of its lines.
+ *
+ * Ordered and received quantities are recomputed from the purchase orders and their
+ * receipts rather than read from a counter — nothing here gates a write, so there is
+ * no counter to keep in step and nothing to drift. Cancelled purchase orders are
+ * excluded: an order the supplier will not fulfil is not outstanding demand.
+ *
+ * Call inside the receiving transaction, so a request can never report COMPLETED
+ * while a delivery is still outstanding, or stay ORDERED after the last one arrives.
+ */
+export async function refreshRequestProgress(
+  client: Prisma.TransactionClient | typeof db,
+  stockRequestItemId: string
+): Promise<void> {
+  const item = await client.stockRequestItem.findUnique({
+    where: { id: stockRequestItemId },
+    select: { id: true, requestId: true, approvedQty: true },
+  })
+  if (!item) return
+
+  const siblings = await client.stockRequestItem.findMany({
+    where: { requestId: item.requestId },
+    select: {
+      id: true,
+      approvedQty: true,
+      purchaseOrders: { select: { qty: true, status: true, receivedQty: true } },
+    },
+  })
+
+  const progressOf = (s: (typeof siblings)[number]) => {
+    const live = s.purchaseOrders.filter((po) => po.status !== 'CANCELLED')
+    return {
+      approvedQty: s.approvedQty ?? 0,
+      orderedQty: live.reduce((t, po) => t + po.qty, 0),
+      receivedQty: live.reduce((t, po) => t + po.receivedQty, 0),
+    }
+  }
+
+  for (const s of siblings) {
+    const next = deriveItemProgressStatus(progressOf(s))
+    await client.stockRequestItem.update({ where: { id: s.id }, data: { status: next } })
+  }
+
+  const req = await client.stockRequest.findUnique({
+    where: { id: item.requestId },
+    select: { status: true },
+  })
+  if (!req) return
+  const next = deriveRequestProgressStatus(siblings.map(progressOf), req.status)
+  if (next !== req.status) {
+    await client.stockRequest.update({ where: { id: item.requestId }, data: { status: next } })
+  }
 }
 
 /** Create StockMovement audit rows; pass a transaction client (or db) to keep it atomic with the caller. */

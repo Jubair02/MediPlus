@@ -16,6 +16,7 @@ import {
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { downloadCsv } from '@/lib/download'
+import { useAppStore } from '@/lib/store'
 import { fmtBDT } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { RestockSuggestion } from '@/lib/types'
@@ -151,6 +152,10 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
   // Per-row create-po pending ids (Round 10; the per-row pending state is now
   // tied to the create-PO dialog submit, Round 11)
   const [orderingIds, setOrderingIds] = useState<Set<string>>(new Set())
+  // Raising a purchase order directly is admin-only: everyone else goes through a
+  // stock request, which is reviewed before anything is ordered. Without this the
+  // ordering controls would simply 403 for a pharmacist.
+  const canOrderDirectly = useAppStore((s) => s.user?.role) === 'ADMIN'
   const [orderAllPending, setOrderAllPending] = useState(false)
   const [orderAllConfirm, setOrderAllConfirm] = useState(false)
   // Round 11 — per-row "Mark as ordered" create-PO dialog state
@@ -392,7 +397,14 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
             )}
             Export CSV
           </Button>
-          {needOrdering.length === 0 && suggestions && suggestions.length > 0 ? (
+          {!canOrderDirectly ? (
+            <span title="Direct ordering is admin-only — raise a stock request instead">
+              <Button variant="default" disabled>
+                <PackagePlus className="h-4 w-4" />
+                Order all
+              </Button>
+            </span>
+          ) : needOrdering.length === 0 && suggestions && suggestions.length > 0 ? (
             <span title="All lines already covered">
               <Button variant="default" disabled title="All lines already covered">
                 <PackagePlus className="h-4 w-4" />
@@ -582,7 +594,12 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
                                   variant="outline"
                                   size="sm"
                                   className="h-8 focus-visible:ring-primary/30"
-                                  disabled={orderingIds.has(s.id)}
+                                  disabled={orderingIds.has(s.id) || !canOrderDirectly}
+                                  title={
+                                    canOrderDirectly
+                                      ? undefined
+                                      : 'Direct ordering is admin-only — raise a stock request instead'
+                                  }
                                   onClick={() => openPoDialog(s)}
                                 >
                                   {orderingIds.has(s.id) ? (

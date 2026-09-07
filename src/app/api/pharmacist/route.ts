@@ -1,7 +1,14 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
-import { requireRole, badRequest, notFound, serverError } from '@/lib/auth'
-import { readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, StockConflictError, updateMedicineWithStockGuard, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
+import { requireRole, badRequest, notFound, forbidden, serverError } from '@/lib/auth'
+import { ExpiredMedicineError, expiredSaleMessage, isExpired, notExpiredFilter, startOfToday } from '@/lib/expiry'
+import {
+  RECEIVABLE_PO_STATUSES,
+  nextPoStatus,
+  receiptClaimReceivedQty,
+  resolveReceiptQty,
+} from '@/lib/stock-request'
+import { refreshRequestProgress, readJson, optStr, numParam, numOr, round2, escapeCsv, buildMedicineData, medicineStaffJson, orderInclude, parseOrder, notify, recordStockMovements, logAudit, rxExpiryFields, StockConflictError, updateMedicineWithStockGuard, RX_VALIDITY_DAYS, RX_EXPIRY_WARNING_DAYS, type StockMovementEntry } from '../_lib'
 
 /** Raised inside the review transaction when another request already reviewed this prescription. */
 class AlreadyReviewedError extends Error {
@@ -103,6 +110,10 @@ function poToRow(po: FullPO) {
   return {
     id: po.id,
     qty: po.qty,
+    // Deliveries can arrive in instalments, so the client needs progress, not just a
+    // status: `remainingQty` is what the receive dialog defaults to and caps at.
+    receivedQty: po.receivedQty,
+    remainingQty: Math.max(0, po.qty - po.receivedQty),
     status: po.status,
     note: po.note,
     supplier: po.supplier,
@@ -189,10 +200,19 @@ async function restockSuggestions() {
  */
 export async function GET(request: Request) {
   try {
-    const user = await requireRole(request, ['PHARMACIST'])
+    // Admins are admitted to this route so they can see procurement and the stock
+    // ledger — being locked out of it entirely is what left the role with the widest
+    // authority over stock and the narrowest view of it. Clinical resources stay
+    // pharmacist-only, enforced per resource just below.
+    const user = await requireRole(request, ['PHARMACIST', 'ADMIN'])
     if (user instanceof Response) return user
     const sp = new URL(request.url).searchParams
     const resource = sp.get('resource') || 'stats'
+
+    // Prescriptions and customer questions are clinical work, not procurement.
+    if (user.role !== 'PHARMACIST' && (resource === 'prescriptions' || resource === 'questions')) {
+      return forbidden('Requires role: PHARMACIST')
+    }
 
     if (resource === 'stats') {
       const todayStart = new Date()
@@ -386,7 +406,10 @@ export async function GET(request: Request) {
  *      supplier trimmed, empty → null, ≤120 chars else 400 'Supplier must be 120 characters or less'; expectedAt
  *      'YYYY-MM-DD' (local midnight) or ISO string, NaN → 400 'Invalid expected date', before today → 400
  *      'Expected date cannot be in the past'
- *  {action:'receive-po', id, note?}                  — receive PO: stock +qty, StockMovement PO_RECEIVE, audit entry
+ *  {action:'receive-po', id, qty?, note?}            — book in one delivery: stock +qty, a PurchaseOrderReceipt row,
+ *      StockMovement PO_RECEIVE and an audit entry, all in one transaction. `qty` omitted means everything still
+ *      outstanding (the previous behaviour); a smaller qty leaves the order PARTIALLY_RECEIVED for the balance.
+ *      Over-receipt is refused, and `note` describes this delivery — it no longer overwrites the order's own note.
  *  {action:'cancel-po', id}                          — cancel an ORDERED purchase order (PO_CANCEL audit entry)
  *  {action:'create-medicine', data:{...}}            — data.extraImages (optional, ≤5 data:/http(s): urls) persisted with sort = index
  *  {action:'update-medicine', id, data:{...}}        — data.extraImages present = REPLACE-ALL (empty array clears); absent = untouched
@@ -395,11 +418,17 @@ export async function GET(request: Request) {
  */
 export async function PUT(request: Request) {
   try {
-    const user = await requireRole(request, ['PHARMACIST'])
+    const user = await requireRole(request, ['PHARMACIST', 'ADMIN'])
     if (user instanceof Response) return user
     const body = await readJson(request)
     if (!body) return badRequest('Invalid request body')
     const action = optStr(body.action)
+
+    // Clinical decisions stay with the pharmacist.
+    const PHARMACIST_ONLY = ['review', 'answer', 'reject']
+    if (user.role !== 'PHARMACIST' && PHARMACIST_ONLY.includes(action ?? '')) {
+      return forbidden('Requires role: PHARMACIST')
+    }
 
     if (action === 'review') {
       const prescriptionId = optStr(body.prescriptionId)
@@ -420,7 +449,17 @@ export async function PUT(request: Request) {
       // CONFIRMED and must not be touched by a later review of the same prescription.
       const order = prescription.orders.find((o) => o.status === 'PRESCRIPTION_REVIEW') ?? null
 
+      const asOf = startOfToday()
+
       if (decision === 'APPROVED' && order) {
+        // Approving is what commits the stock this order has been waiting on, so it is
+        // a sale — an out-of-date item has to stop it, and the pharmacist is told which
+        // ones so they can reject the prescription or have the order amended.
+        const expiredItems = order.items
+          .filter((item) => isExpired(item.medicine?.expiryDate, asOf))
+          .map((item) => item.name)
+        if (expiredItems.length > 0) return badRequest(expiredSaleMessage(expiredItems))
+
         // Check stock for all Rx order items BEFORE approving
         for (const item of order.items) {
           if (!item.medicine) return badRequest(`Insufficient stock for ${item.name}`)
@@ -440,12 +479,27 @@ export async function PUT(request: Request) {
           const movements: StockMovementEntry[] = []
           for (const item of order.items) {
             if (item.medicineId) {
-              // Conditional decrement: the stock check above also ran outside the transaction.
+              // Conditional decrement: the stock and expiry checks above also ran outside
+              // the transaction, so both conditions are re-asserted here as one claim.
               const decremented = await tx.medicine.updateMany({
-                where: { id: item.medicineId, stock: { gte: item.quantity } },
+                where: {
+                  id: item.medicineId,
+                  stock: { gte: item.quantity },
+                  ...notExpiredFilter(asOf),
+                },
                 data: { stock: { decrement: item.quantity } },
               })
-              if (decremented.count === 0) throw new InsufficientStockError(item.name)
+              if (decremented.count === 0) {
+                // The claim covers two conditions, so re-read the row to say which failed.
+                const current = await tx.medicine.findUnique({
+                  where: { id: item.medicineId },
+                  select: { expiryDate: true },
+                })
+                if (isExpired(current?.expiryDate, asOf)) {
+                  throw new ExpiredMedicineError([item.name])
+                }
+                throw new InsufficientStockError(item.name)
+              }
               movements.push({
                 medicineId: item.medicineId,
                 delta: -item.quantity,
@@ -549,17 +603,32 @@ export async function PUT(request: Request) {
       })
     }
 
+    // Raising a purchase order with no stock request behind it bypasses the review
+    // that the request workflow exists to impose, so it is kept as a deliberate
+    // exception rather than the normal path: admins only, and it must say why.
+    // Everyone else routes through Stock Request → Review → Approval → convert-to-po.
     if (action === 'create-po') {
+      if (user.role !== 'ADMIN') {
+        return forbidden(
+          'Direct purchase orders are admin-only. Raise a stock request instead — it becomes a purchase order once approved.'
+        )
+      }
       const medicineId = optStr(body.medicineId)?.trim()
       if (!medicineId) return badRequest('Medicine id is required')
       const medicine = await db.medicine.findUnique({ where: { id: medicineId } })
       if (!medicine) return notFound('Medicine not found')
+      if (medicine.status !== 'ACTIVE') return badRequest(`${medicine.name} is not an active product and cannot be ordered`)
       const qty = numOr(body.qty, NaN)
       if (!Number.isInteger(qty) || qty < 1 || qty > PO_MAX_QTY) return badRequest('Quantity must be between 1 and 10000')
       let note: string | null = null
       if (typeof body.note === 'string' && body.note.trim() !== '') {
         note = body.note.trim()
         if (note.length > PO_MAX_NOTE_LENGTH) return badRequest('Note must be 300 characters or less')
+      }
+      // Required here, unlike on a converted order, which carries its request number as
+      // its justification. An order that skipped review has to record why it did.
+      if (!note) {
+        return badRequest('A reason is required for a direct purchase order raised without a stock request')
       }
       // Round 11 — optional supplier (trimmed, empty → null) + expected delivery date
       let supplier: string | null = null
@@ -590,7 +659,9 @@ export async function PUT(request: Request) {
         action: 'PO_CREATE',
         entityType: 'PURCHASE_ORDER',
         entityRef: created.id,
-        detail: `Ordered ${qty} × ${medicine.name}`,
+        // Says plainly that this one skipped review, so the exception is legible in
+        // the audit log rather than looking like any other purchase order.
+        detail: `Ordered ${qty} × ${medicine.name} — direct order, no stock request. Reason: ${note}`,
       })
       const fresh = await db.purchaseOrder.findUnique({ where: { id: created.id }, include: poInclude })
       if (!fresh) return notFound('Purchase order not found')
@@ -605,38 +676,84 @@ export async function PUT(request: Request) {
         include: { medicine: { select: { id: true, name: true } } },
       })
       if (!po) return notFound('Purchase order not found')
-      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be received')
-      // body.note replaces the note only when provided as a non-empty string; otherwise the note is kept
-      const replacementNote = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
+
+      // `qty` omitted means "everything still outstanding", which is exactly what this
+      // endpoint did before it understood partial deliveries — so callers that send no
+      // quantity keep their previous behaviour byte for byte.
+      const requestedQty = body.qty === undefined || body.qty === null ? null : numOr(body.qty, NaN)
+      const resolved = resolveReceiptQty(po, requestedQty)
+      if ('error' in resolved) return badRequest(resolved.error)
+      const receiptQty = resolved.qty
+      const nextStatus = nextPoStatus(po, receiptQty)
+
+      // The note now describes THIS delivery and lands on the receipt row. It used to
+      // overwrite the purchase order's own note, destroying the reason the order was
+      // raised in the first place.
+      const receiptNote = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null
+      if (receiptNote !== null && receiptNote.length > PO_MAX_NOTE_LENGTH) {
+        return badRequest('Note must be 300 characters or less')
+      }
+
       await db.$transaction(async (tx) => {
-        // The status check above ran outside the transaction, so a double-click sent two
-        // requests that both passed it and both incremented stock — the same delivery
-        // counted twice. Claiming the ORDERED row is the guard: the loser writes nothing
-        // and aborts before it can add the second increment.
+        // The checks above ran outside the transaction, so a double-click sent two
+        // requests that both passed and both incremented stock — the same delivery
+        // counted twice. Claiming the row is the guard: the loser writes nothing and
+        // aborts before it can add the second increment.
+        //
+        // The claim pins the exact receivedQty this request read, not merely an upper
+        // bound. A bound would refuse over-receipt but still let a stale request write
+        // a status computed from what it saw — booking the delivery that completes an
+        // order while stamping it PARTIALLY_RECEIVED. Pinning the value makes this a
+        // true optimistic lock, the same idiom as updateMedicineWithStockGuard.
         const claimed = await tx.purchaseOrder.updateMany({
-          where: { id: po.id, status: 'ORDERED' },
+          where: {
+            id: po.id,
+            status: { in: [...RECEIVABLE_PO_STATUSES] },
+            receivedQty: receiptClaimReceivedQty(po),
+          },
           data: {
-            status: 'RECEIVED',
+            status: nextStatus,
+            receivedQty: { increment: receiptQty },
             receivedAt: new Date(),
             receivedById: user.id,
-            ...(replacementNote !== null ? { note: replacementNote } : {}),
           },
         })
         if (claimed.count === 0) throw new AlreadyReceivedError()
-        await tx.medicine.update({ where: { id: po.medicineId }, data: { stock: { increment: po.qty } } })
+
+        // Append-only: one row per physical delivery, and the place batch number,
+        // expiry and cost per unit will be captured when batch tracking arrives.
+        await tx.purchaseOrderReceipt.create({
+          data: {
+            purchaseOrderId: po.id,
+            qty: receiptQty,
+            receivedById: user.id,
+            note: receiptNote,
+          },
+        })
+
+        await tx.medicine.update({ where: { id: po.medicineId }, data: { stock: { increment: receiptQty } } })
         await recordStockMovements(tx, [{
           medicineId: po.medicineId,
-          delta: po.qty,
+          delta: receiptQty,
           reason: 'PO_RECEIVE',
-          note: `PO received — ${po.qty} × ${po.medicine.name}`,
+          // The delivered quantity, not the ordered one — with partial deliveries those
+          // differ, and the ledger has to say what actually arrived.
+          note: `PO received — ${receiptQty} × ${po.medicine.name}`,
           userId: user.id,
         }])
         await logAudit(tx, user, {
           action: 'PO_RECEIVE',
           entityType: 'PURCHASE_ORDER',
           entityRef: po.id,
-          detail: `Received ${po.qty} × ${po.medicine.name}`,
+          detail: `Received ${receiptQty} of ${po.qty} × ${po.medicine.name}`,
         })
+
+        // Roll the originating stock request forward, in the same transaction, from
+        // quantities derived off the purchase orders — so a request cannot report
+        // COMPLETED while a delivery is still outstanding, or vice versa.
+        if (po.stockRequestItemId) {
+          await refreshRequestProgress(tx, po.stockRequestItemId)
+        }
       })
       const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
       const medicine = await db.medicine.findUnique({ where: { id: po.medicineId }, select: { id: true, stock: true } })
@@ -652,16 +769,30 @@ export async function PUT(request: Request) {
         include: { medicine: { select: { name: true } } },
       })
       if (!po) return notFound('Purchase order not found')
-      if (po.status !== 'ORDERED') return badRequest('Only ordered purchase orders can be cancelled')
+      // A partially received order can be cancelled too, and means "the supplier will
+      // not send the rest". Without this it could never be closed: it is no longer
+      // ORDERED, and it can never reach RECEIVED. Units already booked in stay booked
+      // in — they are physically on the shelf, so nothing is restocked or reversed.
+      const cancellable: readonly string[] = RECEIVABLE_PO_STATUSES
+      if (!cancellable.includes(po.status)) {
+        return badRequest('Only open purchase orders can be cancelled')
+      }
       // Claimed, not overwritten: cancelling a PO that another request just received
       // would leave the stock increment standing against a CANCELLED order.
-      const cancelled = await db.purchaseOrder.updateMany({ where: { id: po.id, status: 'ORDERED' }, data: { status: 'CANCELLED' } })
-      if (cancelled.count === 0) return badRequest('Only ordered purchase orders can be cancelled')
+      const cancelled = await db.purchaseOrder.updateMany({
+        where: { id: po.id, status: { in: [...RECEIVABLE_PO_STATUSES] } },
+        data: { status: 'CANCELLED' },
+      })
+      if (cancelled.count === 0) return badRequest('Only open purchase orders can be cancelled')
+      const outstanding = po.qty - po.receivedQty
       await logAudit(db, user, {
         action: 'PO_CANCEL',
         entityType: 'PURCHASE_ORDER',
         entityRef: po.id,
-        detail: `Cancelled ${po.qty} × ${po.medicine.name}`,
+        detail:
+          po.receivedQty > 0
+            ? `Cancelled ${outstanding} outstanding of ${po.qty} × ${po.medicine.name} (${po.receivedQty} already received)`
+            : `Cancelled ${po.qty} × ${po.medicine.name}`,
       })
       const fresh = await db.purchaseOrder.findUnique({ where: { id: po.id }, include: poInclude })
       if (!fresh) return notFound('Purchase order not found')
@@ -749,6 +880,7 @@ export async function PUT(request: Request) {
       e instanceof AlreadyReviewedError ||
       e instanceof AlreadyReceivedError ||
       e instanceof InsufficientStockError ||
+      e instanceof ExpiredMedicineError ||
       e instanceof StockConflictError
     ) {
       return badRequest(e.message)

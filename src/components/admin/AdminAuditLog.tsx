@@ -38,6 +38,11 @@ const ACTION_FILTERS: { value: ActionFilter; label: string }[] = [
   { value: 'PAYMENT_STATUS', label: 'Payment status' },
   { value: 'ORDER_STATUS', label: 'Order status' },
   { value: 'RX_REVIEW', label: 'Rx review' },
+  { value: 'SR_CREATE', label: 'Request raised' },
+  { value: 'SR_SUBMIT', label: 'Request submitted' },
+  { value: 'SR_REVIEW', label: 'Request reviewed' },
+  { value: 'SR_CONVERT', label: 'Request ordered' },
+  { value: 'SR_CANCEL', label: 'Request cancelled' },
   { value: 'PO_CREATE', label: 'PO created' },
   { value: 'PO_RECEIVE', label: 'PO received' },
   { value: 'PO_CANCEL', label: 'PO cancelled' },
@@ -49,6 +54,11 @@ const ACTION_LABELS: Record<string, string> = {
   PAYMENT_STATUS: 'Payment status',
   ORDER_STATUS: 'Order status',
   RX_REVIEW: 'Rx review',
+  SR_CREATE: 'Request raised',
+  SR_SUBMIT: 'Request submitted',
+  SR_REVIEW: 'Request reviewed',
+  SR_CONVERT: 'Request ordered',
+  SR_CANCEL: 'Request cancelled',
   PO_CREATE: 'PO created',
   PO_RECEIVE: 'PO received',
   PO_CANCEL: 'PO cancelled',
@@ -63,6 +73,14 @@ const ACTION_TONES: Record<string, string> = {
     'border-teal-300 bg-teal-100 text-teal-800 dark:border-teal-500/40 dark:bg-teal-500/10 dark:text-teal-300',
   RX_REVIEW:
     'border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300',
+  SR_CREATE: 'border-muted bg-muted text-muted-foreground',
+  SR_SUBMIT:
+    'border-sky-300 bg-sky-100 text-sky-800 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-300',
+  SR_REVIEW:
+    'border-violet-300 bg-violet-100 text-violet-800 dark:border-violet-500/40 dark:bg-violet-500/10 dark:text-violet-300',
+  SR_CONVERT:
+    'border-indigo-300 bg-indigo-100 text-indigo-800 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-300',
+  SR_CANCEL: 'border-muted bg-muted text-muted-foreground',
   PO_CREATE:
     'border-purple-300 bg-purple-100 text-purple-800 dark:border-purple-500/40 dark:bg-purple-500/10 dark:text-purple-300',
   PO_RECEIVE:

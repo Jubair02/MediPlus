@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, History, PackageOpen, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { fmtDateTime } from '@/lib/format'
-import type { Medicine, StockMovementItem } from '@/lib/types'
+import { STOCK_MOVEMENT_REASONS, type Medicine, type StockMovementItem, type StockMovementReason } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -13,7 +13,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import MedImage from './MedImage'
 
-const REASON_META: Record<string, { label: string; tone: string }> = {
+// Keyed by StockMovementReason so the compiler refuses a reason without a label —
+// which is how PO_RECEIVE went missing from this screen in the first place.
+const REASON_META: Record<StockMovementReason, { label: string; tone: string }> = {
+  OPENING: { label: 'Opening balance', tone: 'bg-violet-100 text-violet-700 border-violet-300' },
+  PO_RECEIVE: { label: 'PO received', tone: 'bg-sky-100 text-sky-800 border-sky-300' },
   ORDER_CONFIRM: { label: 'Confirmed', tone: 'bg-teal-100 text-teal-800 border-teal-300' },
   RX_APPROVE: { label: 'Rx approved', tone: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
   ORDER_CANCEL: { label: 'Cancelled', tone: 'bg-amber-100 text-amber-800 border-amber-300' },
@@ -21,7 +25,7 @@ const REASON_META: Record<string, { label: string; tone: string }> = {
   SEED: { label: 'Seed', tone: 'border-gray-300 text-gray-500' },
 }
 
-const REASONS = ['ORDER_CONFIRM', 'ORDER_CANCEL', 'RX_APPROVE', 'MANUAL_EDIT', 'SEED'] as const
+const REASONS = STOCK_MOVEMENT_REASONS
 
 function formatDelta(delta: number): string {
   if (delta > 0) return `+${delta}`

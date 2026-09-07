@@ -52,12 +52,16 @@ function startOfToday(): Date {
 
 const STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
   ORDERED: 'Ordered',
+  PARTIALLY_RECEIVED: 'Part received',
   RECEIVED: 'Received',
   CANCELLED: 'Cancelled',
 }
 
 const STATUS_CHIP: Record<PurchaseOrderStatus, string> = {
   ORDERED: 'border-amber-300 bg-amber-100 text-amber-800 dark:text-amber-300',
+  // Between ordered and received, and read as such: the same family as RECEIVED,
+  // a step short of its confidence.
+  PARTIALLY_RECEIVED: 'border-teal-300 bg-teal-100 text-teal-800 dark:text-teal-300',
   RECEIVED: 'border-emerald-300 bg-emerald-100 text-emerald-800 dark:text-emerald-300',
   CANCELLED: 'border-muted bg-muted text-muted-foreground',
 }
@@ -65,6 +69,7 @@ const STATUS_CHIP: Record<PurchaseOrderStatus, string> = {
 const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'ALL', label: 'All' },
   { key: 'ORDERED', label: 'Ordered' },
+  { key: 'PARTIALLY_RECEIVED', label: 'Part received' },
   { key: 'RECEIVED', label: 'Received' },
   { key: 'CANCELLED', label: 'Cancelled' },
 ]

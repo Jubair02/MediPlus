@@ -2,6 +2,13 @@ import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireCustomer, badRequest, notFound, serverError } from '@/lib/auth'
 import {
+  ExpiredMedicineError,
+  expiredSaleMessage,
+  isExpired,
+  notExpiredFilter,
+  startOfToday,
+} from '@/lib/expiry'
+import {
   readJson,
   orderInclude,
   orderIncludeRxImage,
@@ -73,7 +80,18 @@ export async function POST(request: Request) {
     const cartItems = await loadCart(user.id)
     if (cartItems.length === 0) return badRequest('Your cart is empty')
 
-    // 1. Validate medicines & stock BEFORE creating anything
+    // 1. Validate medicines, expiry & stock BEFORE creating anything
+    //
+    // The expiry sweep runs across the whole cart rather than failing on the first
+    // item, so a customer holding three out-of-date products is told about all three
+    // at once instead of discovering them one checkout attempt at a time. The claim
+    // inside the transaction below is what actually guarantees it.
+    const asOf = startOfToday()
+    const expiredInCart = cartItems
+      .filter((it) => isExpired(it.medicine.expiryDate, asOf))
+      .map((it) => it.medicine.name)
+    if (expiredInCart.length > 0) return badRequest(expiredSaleMessage(expiredInCart))
+
     for (const it of cartItems) {
       if (it.medicine.status !== 'ACTIVE') return badRequest(`${it.medicine.name} is no longer available`)
       if (it.quantity > it.medicine.stock) return badRequest(`Insufficient stock for ${it.medicine.name}`)
@@ -261,11 +279,28 @@ export async function POST(request: Request) {
           if (deductStock) {
             const movements: StockMovementEntry[] = []
             for (const it of cartItems) {
+              // Expiry rides along in the same conditional claim as quantity, so the
+              // sale cannot be committed for a medicine that went out of date between
+              // the sweep above and this write.
               const decremented = await tx.medicine.updateMany({
-                where: { id: it.medicineId, stock: { gte: it.quantity } },
+                where: {
+                  id: it.medicineId,
+                  stock: { gte: it.quantity },
+                  ...notExpiredFilter(asOf),
+                },
                 data: { stock: { decrement: it.quantity } },
               })
-              if (decremented.count === 0) throw new InsufficientStockError(it.medicine.name)
+              if (decremented.count === 0) {
+                // The claim covers two conditions, so re-read the row to say which failed.
+                const current = await tx.medicine.findUnique({
+                  where: { id: it.medicineId },
+                  select: { expiryDate: true },
+                })
+                if (isExpired(current?.expiryDate, asOf)) {
+                  throw new ExpiredMedicineError([it.medicine.name])
+                }
+                throw new InsufficientStockError(it.medicine.name)
+              }
               movements.push({
                 medicineId: it.medicineId,
                 delta: -it.quantity,
@@ -284,6 +319,7 @@ export async function POST(request: Request) {
         })
         break
       } catch (e) {
+        if (e instanceof ExpiredMedicineError) return badRequest(e.message)
         if (e instanceof InsufficientStockError) return badRequest(e.message)
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && attempt < 4) continue
         return serverError(e)
@@ -470,10 +506,14 @@ export async function PUT(request: Request) {
     if (action === 'reorder') {
       const order = await db.order.findFirst({ where: { id, userId: user.id }, include: { items: true } })
       if (!order) return notFound('Order not found')
+      const reorderAsOf = startOfToday()
       for (const item of order.items) {
         if (!item.medicineId) continue
         const medicine = await db.medicine.findUnique({ where: { id: item.medicineId } })
         if (!medicine || medicine.status !== 'ACTIVE' || medicine.stock <= 0) continue
+        // Skipped for the same reason as an out-of-stock line: re-filling the cart with
+        // something checkout will refuse only moves the failure later.
+        if (isExpired(medicine.expiryDate, reorderAsOf)) continue
         const quantity = Math.min(item.quantity, medicine.stock)
         await db.cartItem.upsert({
           where: { userId_medicineId: { userId: user.id, medicineId: medicine.id } },

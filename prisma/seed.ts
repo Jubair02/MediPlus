@@ -167,6 +167,20 @@ async function main() {
         expiryDate: m.expiresInDays ? daysFromNow(m.expiresInDays) : null,
       },
     })
+    // Every stock-bearing row needs an opening movement, or the ledger cannot
+    // explain the number on the shelf. Seeding stock directly without one is
+    // exactly how 27 of 28 medicines came to fail SUM(delta) = stock and had to
+    // be reconciled by migration 5_ledger_opening_balance. Do not remove this.
+    if (med.stock !== 0) {
+      await prisma.stockMovement.create({
+        data: {
+          medicineId: med.id,
+          delta: med.stock,
+          reason: 'OPENING',
+          note: 'Opening balance (seed)',
+        },
+      })
+    }
     medIds[m.name] = { id: med.id, price: med.discountPrice ?? med.price, discountPrice: med.discountPrice ?? null, name: med.name, image: med.image, requiresPrescription: med.requiresPrescription }
   }
 
@@ -346,9 +360,24 @@ async function main() {
         receivedById: s.status === 'RECEIVED' ? pharmacist.id : null,
         orderedAt: s.orderedAt,
         receivedAt: s.receivedAt,
+        // A received purchase order received its full quantity. Without this a
+        // seeded RECEIVED order reads as "0 of N received" and breaks the
+        // invariant receivedQty = SUM(receipts.qty) that db:reconcile asserts.
+        receivedQty: s.status === 'RECEIVED' ? s.qty : 0,
       },
     })
-    if (s.status === 'RECEIVED') receivedPoId = po.id
+    if (s.status === 'RECEIVED') {
+      receivedPoId = po.id
+      await prisma.purchaseOrderReceipt.create({
+        data: {
+          purchaseOrderId: po.id,
+          qty: s.qty,
+          receivedById: pharmacist.id,
+          note: 'Seeded delivery',
+          receivedAt: s.receivedAt ?? new Date(),
+        },
+      })
+    }
   }
 
   // ---------- Q&A edit-window demo question (Round 11) ----------

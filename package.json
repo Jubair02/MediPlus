@@ -8,12 +8,14 @@
     "start": "node scripts/start.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm run test",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
     "db:seed": "node prisma/seed.ts",
+    "db:reconcile": "node --env-file=.env scripts/reconcile-stock.mjs",
     "db:status": "prisma migrate status"
   },
   "prisma": {

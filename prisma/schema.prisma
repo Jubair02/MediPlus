@@ -9,31 +9,34 @@ datasource db {
 }
 
 model User {
-  id                     String          @id @default(cuid())
-  email                  String          @unique
+  id                     String                 @id @default(cuid())
+  email                  String                 @unique
   name                   String?
   password               String?
   phone                  String?
-  role                   String          @default("CUSTOMER") // CUSTOMER | PHARMACIST | ADMIN | DELIVERY
-  status                 String          @default("ACTIVE") // ACTIVE | INACTIVE
+  role                   String                 @default("CUSTOMER") // CUSTOMER | PHARMACIST | ADMIN | DELIVERY
+  status                 String                 @default("ACTIVE") // ACTIVE | INACTIVE
   addresses              Address[]
   cartItems              CartItem[]
   wishlistItems          WishlistItem[]
-  orders                 Order[]         @relation("OrderCustomer")
+  orders                 Order[]                @relation("OrderCustomer")
   prescriptions          Prescription[]
   notifications          Notification[]
-  deliveries             Order[]         @relation("DeliveryStaff")
-  reviewsDone            Prescription[]  @relation("ReviewedBy")
+  deliveries             Order[]                @relation("DeliveryStaff")
+  reviewsDone            Prescription[]         @relation("ReviewedBy")
   reviews                Review[]
   questions              Question[]
-  answeredQuestions      Question[]      @relation("QuestionAnswerer")
+  answeredQuestions      Question[]             @relation("QuestionAnswerer")
   helpfulVotesGiven      HelpfulVote[]
   stockMovements         StockMovement[]
-  purchaseOrdersOrdered  PurchaseOrder[] @relation("PoOrderer")
-  purchaseOrdersReceived PurchaseOrder[] @relation("PoReceiver")
+  purchaseOrdersOrdered  PurchaseOrder[]        @relation("PoOrderer")
+  purchaseOrdersReceived PurchaseOrder[]        @relation("PoReceiver")
+  purchaseOrderReceipts  PurchaseOrderReceipt[] @relation("PoReceiptReceiver")
+  stockRequests          StockRequest[]         @relation("SrRequester")
+  stockRequestsReviewed  StockRequest[]         @relation("SrReviewer")
   auditLogs              AuditLog[]
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 }
 
 model Address {
@@ -64,21 +67,21 @@ model Category {
 }
 
 model Medicine {
-  id                   String          @id @default(cuid())
+  id                   String             @id @default(cuid())
   name                 String
   genericName          String?
   brand                String?
   description          String?
   categoryId           String?
-  category             Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  category             Category?          @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   price                Float
   discountPrice        Float?
-  stock                Int             @default(0)
-  unit                 String          @default("piece") // piece | strip | bottle | box | tube
+  stock                Int                @default(0)
+  unit                 String             @default("piece") // piece | strip | bottle | box | tube
   image                String?
-  requiresPrescription Boolean         @default(false)
+  requiresPrescription Boolean            @default(false)
   expiryDate           DateTime?
-  status               String          @default("ACTIVE") // ACTIVE | INACTIVE
+  status               String             @default("ACTIVE") // ACTIVE | INACTIVE
   manufacturer         String?
   cartItems            CartItem[]
   wishlistItems        WishlistItem[]
@@ -87,9 +90,10 @@ model Medicine {
   questions            Question[]
   stockMovements       StockMovement[]
   purchaseOrders       PurchaseOrder[]
+  stockRequestItems    StockRequestItem[]
   extraImages          MedicineImage[]
-  createdAt            DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   @@index([categoryId])
   @@index([status, name])
@@ -279,7 +283,11 @@ model StockMovement {
   userId     String?
   user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   delta      Int // positive = restock, negative = deduction
-  reason     String // ORDER_CONFIRM | ORDER_CANCEL | MANUAL_EDIT | RX_APPROVE | SEED
+  // Kept in step with STOCK_MOVEMENT_REASONS in src/lib/types.ts, which is the
+  // source of truth anything displaying or filtering reasons derives from.
+  // OPENING is the balance a medicine started with, written only by the
+  // reconciliation backfill and the seed so that SUM(delta) == stock.
+  reason     String // OPENING | PO_RECEIVE | ORDER_CONFIRM | RX_APPROVE | ORDER_CANCEL | MANUAL_EDIT | SEED
   note       String?
   createdAt  DateTime @default(now())
 
@@ -301,12 +309,111 @@ model Notification {
   @@index([userId, read])
 }
 
+// ---------------------------------------------------------------------------
+// Stock requests — the ask, and the authority to act on it.
+//
+// A request records that inventory is needed and who approved buying it. It
+// deliberately holds NO link to stock: creating, approving or rejecting one
+// moves zero units. Stock changes only when a delivery is physically received,
+// which remains the job of PurchaseOrder + StockMovement below.
+//
+// These are the first enums in this schema. Existing status columns are plain
+// Strings with a trailing comment; converting those is a separate migration
+// with its own risk, so new models get real enums and old ones are left alone.
+// ---------------------------------------------------------------------------
+
+enum StockRequestStatus {
+  DRAFT // requester is still editing; not visible to reviewers
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED // every line approved in full
+  PARTIALLY_APPROVED // some lines cut or rejected
+  REJECTED // nothing approved
+  ORDERED // every approved line has a purchase order
+  PARTIALLY_RECEIVED
+  COMPLETED
+  CANCELLED
+}
+
+enum StockRequestPriority {
+  LOW
+  MEDIUM
+  HIGH
+  EMERGENCY // raises visibility only — never bypasses physical receiving
+}
+
+enum StockRequestItemStatus {
+  PENDING
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model StockRequest {
+  id            String               @id @default(cuid())
+  requestNo     String               @unique // "SR-100001", mirrors Order.orderNo
+  status        StockRequestStatus   @default(DRAFT)
+  priority      StockRequestPriority @default(MEDIUM)
+  reason        String?
+  requestedById String
+  requestedBy   User                 @relation("SrRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  submittedAt   DateTime?
+  // Authority record. Never the requester — enforced server-side, not by the schema.
+  reviewedById  String?
+  reviewedBy    User?                @relation("SrReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt    DateTime?
+  reviewNote    String?
+  expectedAt    DateTime?
+  items         StockRequestItem[]
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([status, createdAt])
+  @@index([requestedById])
+  @@index([reviewedById])
+  @@index([priority, status]) // the EMERGENCY queue
+}
+
+model StockRequestItem {
+  id             String                 @id @default(cuid())
+  requestId      String
+  request        StockRequest           @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  medicineId     String
+  // Restrict, deliberately unlike the Cascade used elsewhere: deleting a medicine
+  // must not erase the procurement record that asked for it.
+  medicine       Medicine               @relation(fields: [medicineId], references: [id], onDelete: Restrict)
+  requestedQty   Int
+  // null = not yet reviewed; 0 = reviewed and rejected. Collapsing the two loses
+  // the distinction the review queue depends on.
+  approvedQty    Int?
+  // Snapshot at submit, not a live read: "we asked for 100 while holding 10".
+  stockAtRequest Int
+  status         StockRequestItemStatus @default(PENDING)
+  note           String? // requester's justification for this line
+  reviewNote     String? // reviewer's reason for a cut or rejection
+  // An approved line fans out to one purchase order per supplier. Ordered and
+  // received quantities are derived from these and their receipts rather than
+  // stored, because nothing here gates a write — see PurchaseOrder.receivedQty
+  // for the one counter that does.
+  purchaseOrders PurchaseOrder[]
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@unique([requestId, medicineId]) // one line per medicine, or partial approval is ambiguous
+  @@index([medicineId])
+  @@index([status])
+}
+
 model PurchaseOrder {
   id           String    @id @default(cuid())
   medicineId   String
   medicine     Medicine  @relation(fields: [medicineId], references: [id], onDelete: Cascade)
   qty          Int
-  status       String    @default("ORDERED") // ORDERED | RECEIVED | CANCELLED
+  status       String    @default("ORDERED") // ORDERED | PARTIALLY_RECEIVED | RECEIVED | CANCELLED
   note         String?
   supplier     String?
   expectedAt   DateTime?
@@ -318,9 +425,55 @@ model PurchaseOrder {
   receivedAt   DateTime?
   updatedAt    DateTime  @updatedAt
 
+  // Running total of units booked in, and the ONE derived quantity in this design
+  // that is stored rather than summed. It exists because over-receipt has to be
+  // refused atomically, which a SUM-then-write cannot do: the receive path claims
+  // this row with `receivedQty: { lte: qty - receiptQty }`, exactly as the sell
+  // path claims stock with `stock: { gte: qty }`. Invariant, asserted by the
+  // reconciliation script: receivedQty == SUM(receipts.qty).
+  receivedQty Int @default(0)
+
+  // Nullable forever: an ad-hoc purchase order raised without a request is still
+  // legal (restricted to ADMIN from Phase 4), and the purchase orders that predate
+  // stock requests have nothing to point at.
+  stockRequestItemId String?
+  stockRequestItem   StockRequestItem? @relation(fields: [stockRequestItemId], references: [id], onDelete: SetNull)
+
+  receipts PurchaseOrderReceipt[]
+
   @@index([status, orderedAt])
   @@index([medicineId, status])
   @@index([orderedById])
+  @@index([receivedById])
+  @@index([stockRequestItemId])
+}
+
+// One physical delivery against a purchase order. Append-only: a correction is a
+// new row (or a manual adjustment), never an edit, so the receipt history stays a
+// faithful record of what actually arrived and when.
+//
+// This is also where batch tracking will live. batchNo / expiryDate / costPerUnit
+// are nullable and unwritten today; a delivery is precisely the event that has a
+// lot number, an expiry and a price, so populating them later is additive rather
+// than a restructure of receiving.
+model PurchaseOrderReceipt {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  qty             Int // units in THIS delivery, never a running total
+  receivedById    String?
+  receivedBy      User?         @relation("PoReceiptReceiver", fields: [receivedById], references: [id], onDelete: SetNull)
+  note            String?
+
+  // Reserved for the batch phase — see the comment above.
+  batchNo     String?
+  expiryDate  DateTime?
+  costPerUnit Float?
+
+  receivedAt DateTime @default(now())
+
+  @@index([purchaseOrderId])
+  @@index([receivedAt])
   @@index([receivedById])
 }
 
