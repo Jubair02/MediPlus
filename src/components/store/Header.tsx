@@ -866,12 +866,6 @@ export default function Header() {
                   <p className="truncate text-xs font-normal text-muted-foreground">{user.email}</p>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {dashboardView && (
-                  <DropdownMenuItem onClick={() => setView(dashboardView)}>
-                    <LayoutDashboard className="size-4" aria-hidden="true" />
-                    Dashboard
-                  </DropdownMenuItem>
-                )}
                 {showShopperUi && (
                   <>
                     <DropdownMenuItem onClick={() => setView('wishlist')}>
