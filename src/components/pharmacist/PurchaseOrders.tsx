@@ -31,6 +31,8 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import MedImage from './MedImage'
@@ -187,6 +189,10 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<StatusFilter>('ALL')
   const [receiveTarget, setReceiveTarget] = useState<PurchaseOrderRow | null>(null)
+  // Defaults to everything outstanding, which is what the endpoint assumes when no
+  // quantity is sent — so the common case is one click and unchanged behaviour.
+  const [receiveQty, setReceiveQty] = useState('')
+  const [receiveError, setReceiveError] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<PurchaseOrderRow | null>(null)
   const [actingId, setActingId] = useState<string | null>(null)
 
@@ -220,8 +226,9 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
   const unitsOnOrder = useMemo(
     () =>
       orders
-        .filter((o) => o.status === 'ORDERED')
-        .reduce((sum, o) => sum + o.qty, 0),
+        .filter((o) => o.status === 'ORDERED' || o.status === 'PARTIALLY_RECEIVED')
+        // remainingQty, not qty: a part-received order is only still owed the balance.
+        .reduce((sum, o) => sum + o.remainingQty, 0),
     [orders]
   )
 
@@ -231,18 +238,35 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
   )
 
   async function receive(row: PurchaseOrderRow) {
+    const qty = Number(receiveQty)
+    if (receiveQty.trim() === '' || !Number.isInteger(qty) || qty < 1) {
+      setReceiveError('Enter a whole quantity of 1 or more')
+      return
+    }
+    if (qty > row.remainingQty) {
+      setReceiveError(
+        `Only ${row.remainingQty} of the ${row.qty} ordered ${row.remainingQty === 1 ? 'unit is' : 'units are'} still outstanding.`
+      )
+      return
+    }
     setActingId(row.id)
+    setReceiveError(null)
     try {
       const d = await api<{ order: PurchaseOrderRow; medicine: { id: string; stock: number } }>(
         '/api/pharmacist',
-        { method: 'PUT', body: { action: 'receive-po', id: row.id } }
+        { method: 'PUT', body: { action: 'receive-po', id: row.id, qty } }
       )
-      toast.success(`Received ${row.qty} × ${row.medicine.name} — stock now ${d.medicine.stock}`)
+      const done = d.order.remainingQty === 0
+      toast.success(
+        done
+          ? `Received ${qty} × ${row.medicine.name} — order complete, stock now ${d.medicine.stock}`
+          : `Received ${qty} × ${row.medicine.name} — ${d.order.remainingQty} still outstanding, stock now ${d.medicine.stock}`
+      )
       setReceiveTarget(null)
       onStatsChanged?.()
       await load(true)
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to receive purchase order')
+      setReceiveError(e instanceof Error ? e.message : 'Failed to book in this delivery')
     } finally {
       setActingId(null)
     }
@@ -412,7 +436,8 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                     </TableHeader>
                     <TableBody>
                       {filtered.map((o) => {
-                        const isOrdered = o.status === 'ORDERED'
+                        // Open = still expecting stock, which now includes a part-received order.
+                        const isOrdered = o.status === 'ORDERED' || o.status === 'PARTIALLY_RECEIVED'
                         const acting = actingId === o.id
                         const expected = o.expectedAt ? parseDateOnly(o.expectedAt) : null
                         const overdue =
@@ -529,7 +554,11 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
                                     size="sm"
                                     className="h-8 px-2.5 focus-visible:ring-primary/30"
                                     disabled={actingId !== null}
-                                    onClick={() => setReceiveTarget(o)}
+                                    onClick={() => {
+                                      setReceiveQty(String(o.remainingQty))
+                                      setReceiveError(null)
+                                      setReceiveTarget(o)
+                                    }}
                                   >
                                     {acting ? (
                                       <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -565,20 +594,60 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
         </>
       )}
 
-      {/* Receive confirm */}
+      {/* Receive — a delivery can be short, so the quantity is editable */}
       <AlertDialog
         open={receiveTarget !== null}
         onOpenChange={(o) => !busyDialog && !o && setReceiveTarget(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Receive this purchase order?</AlertDialogTitle>
+            <AlertDialogTitle>Book in this delivery</AlertDialogTitle>
             <AlertDialogDescription>
               {receiveTarget
-                ? `Adds ${receiveTarget.qty} × ${receiveTarget.medicine.name} to stock immediately. Stock will go from ${receiveTarget.currentStock} to ${receiveTarget.currentStock + receiveTarget.qty}.`
+                ? `${receiveTarget.remainingQty} of ${receiveTarget.qty} × ${receiveTarget.medicine.name} ${receiveTarget.remainingQty === 1 ? 'is' : 'are'} still outstanding.` +
+                  (receiveTarget.receivedQty > 0 ? ` ${receiveTarget.receivedQty} already received.` : '')
                 : ''}
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {receiveTarget && (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="po-receive-qty">Quantity arriving now</Label>
+                <Input
+                  id="po-receive-qty"
+                  value={receiveQty}
+                  onChange={(e) => {
+                    setReceiveQty(e.target.value.replace(/[^\d]/g, ''))
+                    setReceiveError(null)
+                  }}
+                  inputMode="numeric"
+                  className="w-32 tabular-nums"
+                  disabled={busyDialog}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter less than {receiveTarget.remainingQty} for a short delivery — the order stays
+                  open for the balance. Stock rises by what you enter, not by what was ordered.
+                </p>
+              </div>
+              {receiveError && (
+                <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300">
+                  {receiveError}
+                </p>
+              )}
+              {!receiveError && Number(receiveQty) > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Stock will go from{' '}
+                  <span className="font-medium tabular-nums">{receiveTarget.currentStock}</span> to{' '}
+                  <span className="font-medium tabular-nums">
+                    {receiveTarget.currentStock + Number(receiveQty)}
+                  </span>
+                  .
+                </p>
+              )}
+            </div>
+          )}
+
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busyDialog}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -590,7 +659,7 @@ export default function PurchaseOrders({ onStatsChanged, onGoToRestock }: Purcha
               }}
             >
               {busyDialog && <Loader2 className="h-4 w-4 animate-spin" />}
-              Receive
+              Book in
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

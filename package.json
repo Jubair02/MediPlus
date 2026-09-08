@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\"",
+    "test:integration": "node --env-file=.env --test \"tests/**/*.test.mjs\"",
     "check": "npm run typecheck && npm run lint && npm run test",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",

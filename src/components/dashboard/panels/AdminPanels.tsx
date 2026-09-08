@@ -12,6 +12,8 @@ import AdminUsers from '@/components/admin/AdminUsers'
 import AdminStaff from '@/components/admin/AdminStaff'
 import AdminReports from '@/components/admin/AdminReports'
 import AdminAuditLog from '@/components/admin/AdminAuditLog'
+import StockRequests from '@/components/inventory/StockRequests'
+import StockLog from '@/components/pharmacist/StockLog'
 
 /** Panel bodies for ADMIN. The shell owns the frame; this owns only the content. */
 export default function AdminPanels({ sectionId, goto }: PanelProps) {
@@ -28,6 +30,11 @@ function body(sectionId: string, goto: (id: string) => void) {
       return <AdminPayments />
     case 'admin:medicines':
       return <AdminMedicines />
+    case 'admin:stock-requests':
+      // An admin lands on the review queue: what is waiting on them, not what they raised.
+      return <StockRequests defaultFilter="SUBMITTED" />
+    case 'admin:stocklog':
+      return <StockLog />
     case 'admin:categories':
       return <AdminCategories />
     case 'admin:coupons':

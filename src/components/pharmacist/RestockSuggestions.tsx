@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   CheckCircle2,
+  ClipboardCheck,
   Copy,
   Download,
   HandCoins,
@@ -45,6 +46,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import StockRequestForm from '@/components/inventory/StockRequestForm'
 import MedImage from './MedImage'
 
 /** 1dp when fractional, plain integer otherwise (100 → "100", 2.1 → "2.1"). */
@@ -156,6 +158,7 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
   // stock request, which is reviewed before anything is ordered. Without this the
   // ordering controls would simply 403 for a pharmacist.
   const canOrderDirectly = useAppStore((s) => s.user?.role) === 'ADMIN'
+  const [requesting, setRequesting] = useState(false)
   const [orderAllPending, setOrderAllPending] = useState(false)
   const [orderAllConfirm, setOrderAllConfirm] = useState(false)
   // Round 11 — per-row "Mark as ordered" create-PO dialog state
@@ -398,12 +401,22 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
             Export CSV
           </Button>
           {!canOrderDirectly ? (
-            <span title="Direct ordering is admin-only — raise a stock request instead">
-              <Button variant="default" disabled>
-                <PackagePlus className="h-4 w-4" />
-                Order all
-              </Button>
-            </span>
+            // A pharmacist cannot raise purchase orders directly, so the shortfall
+            // becomes a stock request instead — one request covering every low line,
+            // pre-filled with the netted quantities computed here.
+            <Button
+              variant="default"
+              onClick={() => setRequesting(true)}
+              disabled={needOrdering.length === 0}
+              title={
+                needOrdering.length === 0
+                  ? 'Nothing needs requesting — every low line is already covered'
+                  : 'Raise one stock request covering every line below'
+              }
+            >
+              <ClipboardCheck className="h-4 w-4" />
+              Request all
+            </Button>
           ) : needOrdering.length === 0 && suggestions && suggestions.length > 0 ? (
             <span title="All lines already covered">
               <Button variant="default" disabled title="All lines already covered">
@@ -655,6 +668,17 @@ export default function RestockSuggestions({ onStatsChanged }: RestockSuggestion
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Pharmacist path: the shortfall becomes one multi-line stock request. */}
+      <StockRequestForm
+        open={requesting}
+        onOpenChange={setRequesting}
+        prefill={needOrdering.map((n) => ({ medicineId: n.id, suggestedQty: shortfallOf(n) }))}
+        onCreated={() => {
+          onStatsChanged?.()
+          void load(true)
+        }}
+      />
 
       {/* Round 11 — "Mark as ordered" create-PO dialog (supplier / expected delivery / note) */}
       <Dialog

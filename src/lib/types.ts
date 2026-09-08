@@ -315,6 +315,86 @@ export interface RestockSuggestion {
 // moment the column can hold it.
 export type PurchaseOrderStatus = 'ORDERED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED'
 
+// ---------- Stock requests ----------
+
+export type StockRequestStatusValue =
+  | 'DRAFT'
+  | 'SUBMITTED'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'PARTIALLY_APPROVED'
+  | 'REJECTED'
+  | 'ORDERED'
+  | 'PARTIALLY_RECEIVED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+
+export type StockRequestPriorityValue = 'LOW' | 'MEDIUM' | 'HIGH' | 'EMERGENCY'
+
+export type StockRequestItemStatusValue =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'PARTIALLY_APPROVED'
+  | 'REJECTED'
+  | 'ORDERED'
+  | 'PARTIALLY_RECEIVED'
+  | 'RECEIVED'
+  | 'CANCELLED'
+
+/** One medicine on a stock request. Ordered/received are derived server-side from its POs. */
+export interface StockRequestItemRow {
+  id: string
+  medicine: { id: string; name: string; unit: string; image: string | null; brand: string | null; stock: number }
+  /** Stock at the moment the request was raised — a snapshot, not the live figure. */
+  stockAtRequest: number
+  requestedQty: number
+  /** null until reviewed; 0 means reviewed and rejected. */
+  approvedQty: number | null
+  orderedQty: number
+  receivedQty: number
+  remainingQty: number
+  status: StockRequestItemStatusValue
+  note: string | null
+  reviewNote: string | null
+  purchaseOrders: {
+    id: string
+    qty: number
+    status: PurchaseOrderStatus
+    receivedQty: number
+    supplier: string | null
+    expectedAt: string | null
+    orderedAt: string
+  }[]
+}
+
+export interface StockRequestRow {
+  id: string
+  requestNo: string
+  status: StockRequestStatusValue
+  priority: StockRequestPriorityValue
+  reason: string | null
+  requestedBy: { id: string; name: string | null; email: string }
+  reviewedBy: { id: string; name: string | null; email: string } | null
+  submittedAt: string | null
+  reviewedAt: string | null
+  reviewNote: string | null
+  expectedAt: string | null
+  createdAt: string
+  updatedAt: string
+  items: StockRequestItemRow[]
+  itemCount: number
+  totalRequested: number
+  totalApproved: number
+  totalReceived: number
+}
+
+/** GET /api/stock-requests?resource=list */
+export interface StockRequestsData {
+  requests: StockRequestRow[]
+  counts: Partial<Record<StockRequestStatusValue, number>>
+  awaitingReview: number
+}
+
 /** GET /api/pharmacist?resource=purchase-orders — one row per PO */
 export interface PurchaseOrderRow {
   id: string
@@ -338,7 +418,7 @@ export interface PurchaseOrderRow {
 /** GET /api/pharmacist?resource=purchase-orders — payload */
 export interface PurchaseOrdersData {
   orders: PurchaseOrderRow[]
-  counts: { ORDERED: number; RECEIVED: number; CANCELLED: number }
+  counts: Record<PurchaseOrderStatus, number>
 }
 
 // ---------- Audit log (Round 10) ----------

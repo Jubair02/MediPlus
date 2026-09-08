@@ -358,15 +358,23 @@ export async function GET(request: Request) {
     }
 
     if (resource === 'purchase-orders') {
-      const [orders, orderedCount, receivedCount, cancelledCount] = await Promise.all([
+      const [orders, orderedCount, partialCount, receivedCount, cancelledCount] = await Promise.all([
         db.purchaseOrder.findMany({ include: poInclude, orderBy: { orderedAt: 'desc' } }),
         db.purchaseOrder.count({ where: { status: 'ORDERED' } }),
+        // Counted separately: a part-received order is neither fully open nor closed,
+        // and leaving it out of the counts would make it disappear from the summary.
+        db.purchaseOrder.count({ where: { status: 'PARTIALLY_RECEIVED' } }),
         db.purchaseOrder.count({ where: { status: 'RECEIVED' } }),
         db.purchaseOrder.count({ where: { status: 'CANCELLED' } }),
       ])
       return Response.json({
         orders: orders.map(poToRow),
-        counts: { ORDERED: orderedCount, RECEIVED: receivedCount, CANCELLED: cancelledCount },
+        counts: {
+          ORDERED: orderedCount,
+          PARTIALLY_RECEIVED: partialCount,
+          RECEIVED: receivedCount,
+          CANCELLED: cancelledCount,
+        },
       })
     }
 

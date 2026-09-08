@@ -12,6 +12,7 @@ import PharmacistMedicines from '@/components/pharmacist/PharmacistMedicines'
 import PurchaseOrders from '@/components/pharmacist/PurchaseOrders'
 import RestockSuggestions from '@/components/pharmacist/RestockSuggestions'
 import StockLog from '@/components/pharmacist/StockLog'
+import StockRequests from '@/components/inventory/StockRequests'
 import PharmacistOrders from '@/components/pharmacist/PharmacistOrders'
 
 /**
@@ -83,6 +84,8 @@ export default function PharmacistPanels({ sectionId, goto, setBadges }: PanelPr
       return <PharmacistQA onCountsChanged={setQaCounts} />
     case 'rx:medicines':
       return <PharmacistMedicines />
+    case 'rx:stock-requests':
+      return <StockRequests defaultFilter="OPEN" onStatsChanged={() => void refreshStats()} />
     case 'rx:restock':
       return <RestockSuggestions onStatsChanged={() => void refreshStats()} />
     case 'rx:purchase-orders':
